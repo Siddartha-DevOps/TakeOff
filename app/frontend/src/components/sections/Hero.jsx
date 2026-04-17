@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Sparkles, Play } from 'lucide-react';
+import { motion } from 'framer-motion';
 import FloorPlanCanvas from '../FloorPlanCanvas';
 import { HERO_STATS } from '../../mock/mockData';
 
@@ -11,37 +12,62 @@ export default function Hero() {
 
       <div className="relative max-w-7xl mx-auto px-6 lg:px-8 pt-24 pb-20">
         {/* Eyebrow */}
-        <div className="flex justify-center animate-fade-up">
-          <Link to="/features" className="inline-flex items-center gap-2 pl-1.5 pr-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className=\"flex justify-center\"
+          >
+          <Link to=\"/features\" className=\"inline-flex items-center gap-2 pl-1.5 pr-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300 transition-colors\"></div>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-[10px] font-semibold uppercase tracking-wide">
               <Sparkles className="w-3 h-3" /> New
             </span>
             TakeOff Chat · ask your plans anything
             <ArrowRight className="w-3 h-3 opacity-60" />
           </Link>
-        </div>
+        </motion.div>
 
         {/* Headline */}
-        <h1 className="mt-8 text-center text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-slate-900 text-balance animate-fade-up" style={{ animationDelay: '80ms' }}>
+        motion.h1 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+          className=\"mt-8 text-center text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-slate-900 text-balance\"
+        >
           Takeoff in minutes.<br />
           <span className="gradient-text">Not days.</span>
-        </h1>
+          </motion.h1>
 
-        <p className="mt-6 max-w-2xl mx-auto text-center text-lg md:text-xl text-slate-600 leading-relaxed text-balance animate-fade-up" style={{ animationDelay: '160ms' }}>
+        <motion.p 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.2 }}
+          className=\"mt-6 max-w-2xl mx-auto text-center text-lg md:text-xl text-slate-600 leading-relaxed text-balance\"
+        >
           The AI takeoff tool built by estimators. Upload any drawing and TakeOff detects rooms, measures quantities and compares revisions — with 98% accuracy.
-        </p>
+         </motion.p>
+
+         <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.3 }}
 
         <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center animate-fade-up" style={{ animationDelay: '240ms' }}>
           <Link to="/demo" className="group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-slate-900 text-white font-medium text-sm shadow-lg shadow-slate-900/20 hover:bg-slate-800">
             Book a demo <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5" />
           </Link>
-          <Link to="/app" className="group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-white border border-slate-300 text-slate-900 font-medium text-sm hover:border-slate-400 hover:bg-slate-50">
+           <Link to=\"/app\" className=\"group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-white border border-slate-300 text-slate-900 font-medium text-sm hover:border-slate-400 hover:bg-slate-50 transition-colors\"></div>
             <Play className="w-3.5 h-3.5" fill="currentColor" /> Take a tour
           </Link>
-        </div>
+        </motion.div>
 
         {/* Product screenshot */}
-        <div className="relative mt-16 animate-fade-up" style={{ animationDelay: '320ms' }}>
+        motion.div 
+          initial={{ opacity: 0, y: 40, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          className=\"relative mt-16\"
+        >
           <div className="absolute -inset-8 bg-gradient-to-b from-indigo-100/40 via-violet-100/30 to-transparent rounded-[2rem] blur-2xl pointer-events-none" />
           <div className="relative rounded-2xl bg-white border border-slate-200 shadow-2xl shadow-slate-900/10 overflow-hidden">
             {/* Browser chrome */}
@@ -60,7 +86,7 @@ export default function Hero() {
                   <div key={s} className={`px-2 py-1.5 rounded mb-0.5 ${i === 1 ? 'bg-indigo-50 text-indigo-900 font-medium' : 'text-slate-600 hover:bg-white'}`}>{s}</div>
                 ))}
                 <div className="mt-4 text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-2 py-1">Detections</div>
-                {[['Rooms', 9, '#818cf8'], ['Doors', 14, '#06b6d4'], ['Windows', 18, '#fbbf24'], ['Walls', 42, '#f43f5e']].map(([n, c, col]) => (
+                {[['Rooms', 9, '#a78bfa'], ['Doors', 14, '#10b981'], ['Windows', 18, '#3b82f6'], ['Walls', 42, '#eab308']].map(([n, c, col]) => (
                   <div key={n} className="flex items-center justify-between px-2 py-1.5 text-slate-700">
                     <div className="flex items-center gap-2"><span className="w-2 h-2 rounded-sm" style={{ background: col }} />{n}</div>
                     <span className="mono text-[11px] text-slate-500">{c}</span>
@@ -98,18 +124,29 @@ export default function Hero() {
               </div>
             </div>
           </div>
-        </div>
+        </motion.div>
 
         {/* Stats */}
-        <div className="mt-16 grid grid-cols-2 lg:grid-cols-4 gap-8 animate-fade-up" style={{ animationDelay: '400ms' }}>
-          {HERO_STATS.map((s) => (
-            <div key={s.label} className="text-center">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.6 }}
+          className="mt-16 grid grid-cols-2 lg:grid-cols-4 gap-8"
+          {HERO_STATS.map(s, i) => (
+            <motion.div 
+              key={s.label} 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.7 + i * 0.1 }}
+              className=\"text-center\"
+            >
               <div className="text-3xl md:text-4xl font-semibold tracking-tight text-slate-900">{s.value}</div>
               <div className="text-xs text-slate-500 uppercase tracking-wider mt-1">{s.label}</div>
-            </div>
+            </motion.div>
           ))}
-        </div>
+        </motion.div>
       </div>
     </section>
   );
 }
+

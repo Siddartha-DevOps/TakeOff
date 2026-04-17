@@ -5,10 +5,10 @@ import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 
 const LAYER_CONFIG = [
-  { key: 'rooms', label: 'Rooms', color: '#818cf8' },
-  { key: 'doors', label: 'Doors', color: '#06b6d4' },
-  { key: 'windows', label: 'Windows', color: '#fbbf24' },
-  { key: 'walls', label: 'Walls', color: '#f43f5e' },
+  { key: 'rooms', label: 'Rooms', color: '#a78bfa' },     // Purple
+  { key: 'doors', label: 'Doors', color: '#10b981' },     // Green
+  { key: 'windows', label: 'Windows', color: '#3b82f6' }, // Blue
+  { key: 'walls', label: 'Walls', color: '#eab308' },     // Yellow
 ];
 
 export default function Takeoff() {
@@ -201,12 +201,11 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
       </defs>
       <rect width="800" height="680" fill="#fafbff" />
       <rect width="800" height="680" fill="url(#grid2)" />
-      {/* Walls */}
-      <g stroke="#0f172a" strokeWidth="4" fill="none" opacity={layers.walls ? 1 : 0.15}>
+      {/* Walls - Yellow */}
+      <g stroke=\"#eab308\" strokeWidth=\"4\" fill=\"none\" opacity={layers.walls ? 1 : 0.15}></svg>
         <rect x="60" y="60" width="660" height="560" />
-      </g>
-      <g stroke="#1e293b" strokeWidth="2" fill="none" opacity={layers.walls ? 1 : 0.15}>
-        <line x1="300" y1="60" x2="300" y2="200" />
+      </>
+     <g stroke=\"#ca8a04\" strokeWidth=\"2\" fill=\"none\" opacity={layers.walls ? 1 : 0.15}>
         <line x1="60" y1="200" x2="300" y2="200" />
         <line x1="260" y1="200" x2="260" y2="440" />
         <line x1="340" y1="200" x2="340" y2="440" />
@@ -240,20 +239,20 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
         );
       })}
 
-      {/* Doors */}
+      {/* Doors - Green */}
       {detection && layers.doors && detection.doors.map((d) => (
         <g key={d.id} transform={`translate(${d.x},${d.y}) rotate(${d.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(d.id); }}>
           <rect x="-4" y="-14" width="8" height="28" fill="#fff" />
-          <path d={`M 0 -14 A ${d.width} ${d.width} 0 0 1 ${d.width} 14`} stroke={selectedId === d.id ? '#0891b2' : '#06b6d4'} strokeWidth={selectedId === d.id ? 3 : 1.5} fill="none" />
-          <circle cx="0" cy="-14" r="3" fill="#06b6d4" />
+           <path d={`M 0 -14 A ${d.width} ${d.width} 0 0 1 ${d.width} 14`} stroke={selectedId === d.id ? '#059669' : '#10b981'} strokeWidth={selectedId === d.id ? 3 : 1.5} fill=\"none\" />
+          <circle cx=\"0\" cy=\"-14\" r=\"3\" fill=\"#10b981\" />
         </g>
       ))}
 
-      {/* Windows */}
+      {/* Windows - Blue */}
       {detection && layers.windows && detection.windows.map((w) => (
         <g key={w.id} transform={`translate(${w.x},${w.y}) rotate(${w.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(w.id); }}>
-          <rect x="0" y="-4" width={w.width} height="8" fill={selectedId === w.id ? '#f59e0b' : '#fbbf24'} stroke="#d97706" strokeWidth="1" />
-          <line x1="0" y1="0" x2={w.width} y2="0" stroke="#fff" strokeWidth="1" />
+          rect x=\"0\" y=\"-4\" width={w.width} height=\"8\" fill={selectedId === w.id ? '#2563eb' : '#3b82f6'} stroke=\"#1d4ed8\" strokeWidth=\"1\" />
+          <line x1=\"0\" y1=\"0\" x2={w.width} y2=\"0\" stroke=\"#fff\" strokeWidth=\"1\" />
         </g>
       ))}
     </svg>

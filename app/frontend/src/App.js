@@ -3,6 +3,9 @@ import './App.css';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import ChatWidget from './components/ChatWidget';
+import ProtectedRoute from './components/ProtectedRoute';
+import { AuthProvider } from './context/AuthContext';
 import Home from './pages/Home';
 import Features from './pages/Features';
 import Trades from './pages/Trades';
@@ -30,6 +33,7 @@ function App() {
   return (
     <div className="App min-h-screen bg-white text-slate-900">
       <BrowserRouter>
+      <AuthProvider>
         <Routes>
           <Route path="/" element={<MarketingShell><Home /></MarketingShell>} />
           <Route path="/features" element={<MarketingShell><Features /></MarketingShell>} />
@@ -40,9 +44,11 @@ function App() {
           <Route path="/demo" element={<MarketingShell><Demo /></MarketingShell>} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
-          <Route path="/app" element={<Dashboard />} />
-          <Route path="/app/projects/:id" element={<Takeoff />} />
+          <Route path=\"/app\" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path=\"/app/projects/:id\" element={<ProtectedRoute><Takeoff /></ProtectedRoute>} />
         </Routes>
+         <ChatWidget />
+         <AuthProvider>
       </BrowserRouter>
       <Toaster />
     </div>
@@ -50,3 +56,4 @@ function App() {
 }
 
 export default App;
+
