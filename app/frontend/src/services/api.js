@@ -7,6 +7,14 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+maxRedirects: 5,
+  beforeRedirect: (options, responseDetails) => {
+    // Preserve Authorization header on redirects
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      options.headers.Authorization = `Bearer ${token}`;
+    }
+  },
 });
 
 // Request interceptor to add auth token
@@ -27,11 +35,14 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      // Token expired or invalid
+    // Handle auth errors
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // Token expired, invalid, or forbidden
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
+      if (window.location.pathname !== '/login') {
       window.location.href = '/login';
+      }
     }
     return Promise.reject(error);
   }

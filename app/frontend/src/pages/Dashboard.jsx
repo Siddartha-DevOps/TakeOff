@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Sparkles, LayoutDashboard, FolderOpen, Users, Settings, LogOut, Search, Plus, MoreVertical, Upload, Bell, HelpCircle, ArrowUpRight } from 'lucide-react';
+import { Sparkles, LayoutDashboard, FolderOpen, Users, Settings, LogOut, Search, Plus, MoreVertical, Upload, Bell, HelpCircle, ArrowUpRight, Loader2 } from 'lucide-react';
 import * as LIcons from 'lucide-react';
-import { SAMPLE_PROJECTS, DASHBOARD_ACTIVITY } from '../mock/mockData';
+import { DASHBOARD_ACTIVITY } from '../mock/mockData';
+import { projectsAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+function AppSidebar({ user, onLogout }) {
 
 const STATUS_STYLES = {
-  Active: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
-  Review: 'bg-amber-50 text-amber-700 ring-amber-200',
-  Draft: 'bg-slate-100 text-slate-700 ring-slate-200',
-  Archived: 'bg-slate-50 text-slate-500 ring-slate-200',
+  active: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  review: 'bg-amber-50 text-amber-700 ring-amber-200',
+  draft: 'bg-slate-100 text-slate-700 ring-slate-200',
+  archived: 'bg-slate-50 text-slate-500 ring-slate-200',
 };
 
 const ACTIVITY_COLORS = {
@@ -30,20 +33,59 @@ function StatCard({ label, value, delta, color, icon: Icon }) {
 
 export default function Dashboard() {
   const nav = useNavigate();
+  const { user, logout } = useAuth();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('All');
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [showNewProject, setShowNewProject] = useState(false);
   const user = JSON.parse(localStorage.getItem('takeoff_user') || '{"name":"Alex Rivera","email":"alex@acme.com"}');
 
-  const filtered = SAMPLE_PROJECTS.filter((p) => {
-    if (filter !== 'All' && p.status !== filter) return false;
+  seEffect(() => {
+    fetchProjects();
+  }, []);
+
+  const fetchProjects = async () => {
+    try {
+      setLoading(true);
+      const response = await projectsAPI.list();
+      const projectData = response.data || [];
+      setProjects(Array.isArray(projectData) ? projectData : []);
+    } catch (error) {
+      console.error('Failed to fetch projects:', error);
+      setProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
+
+  const filtered = Array.isArray(projects) ? projects.filter((p) => {
+    if (filter !== 'All' && p.status !== filter.toLowerCase()) return false;
     if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
-  });
+  }) : [];
+  const handleLogout = () => {
+    logout();
+    nav('/login');
+  };
+
+  function AppSidebar({ user }) {
+  const items = [
+    { icon: LayoutDashboard, label: 'Dashboard', to: '/app', active: true },
+    { icon: FolderOpen, label: 'Projects', to: '/app' },
+    { icon: Users, label: 'Team', to: '#' },
+    { icon: Settings, label: 'Settings', to: '#' },
+  ];
+
+const initials = user?.full_name 
+    ? user.full_name.split(' ').map(x => x[0]).slice(0, 2).join('')
+    : user?.email?.substring(0, 2).toUpperCase() || 'U';
 
   return (
     <div className="min-h-screen bg-slate-50/60">
-      <AppSidebar user={user} />
+      <AppSidebar user={user} onLogout={handleLogout} />
       <div className="lg:pl-64">
         {/* Top bar */}
         <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-slate-200">
@@ -70,13 +112,13 @@ export default function Dashboard() {
           {/* Welcome + stats */}
           <div className="flex items-end justify-between">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Welcome back, {(user.name || user.email).split(' ')[0]}.</h1>
-              <p className="mt-1 text-sm text-slate-500">You have 3 active projects and 2 review items today.</p>
+              <h1 className=\"text-2xl font-semibold tracking-tight text-slate-900\">Welcome back, {user?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'User'}.</h1>
+              <p className=\"mt-1 text-sm text-slate-500\">You have {projects.filter(p => p.status === 'active').length} active projects and {projects.filter(p => p.status === 'review').length} review items today.</p>
             </div>
           </div>
 
           <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Active projects" value="3" delta="+1 this week" color="indigo" icon={FolderOpen} />
+      > <StatCard label=\"Active projects\" value={projects.filter(p => p.status === 'active').length.toString()} delta=\"+1 this week\" color=\"indigo\" icon={FolderOpen} />
             <StatCard label="AI detections (30d)" value="2,418" delta="+18% vs last month" color="violet" icon={Sparkles} />
             <StatCard label="Hours saved (est.)" value="142h" delta="Team total" color="cyan" icon={LIcons.Clock} />
             <StatCard label="Bids submitted" value="9" delta="3 in review" color="emerald" icon={LIcons.FileCheck} />
@@ -97,24 +139,47 @@ export default function Dashboard() {
                 <div className="hidden md:grid grid-cols-[1fr_120px_130px_100px_60px] gap-4 px-5 py-3 text-[11px] uppercase tracking-wider text-slate-500 font-semibold border-b border-slate-200 bg-slate-50/60">
                   <div>Project</div><div>Status</div><div>Updated</div><div>Progress</div><div />
                 </div>
-                {filtered.length === 0 ? (
+                {loading ? (
+                  <div className=\"p-10 text-center\">
+                    <Loader2 className=\"w-6 h-6 animate-spin mx-auto text-indigo-600\" />
+                    <p className=\"mt-2 text-sm text-slate-500\">Loading projects...</p>
+                  </div>
+                ) : filtered.length === 0 ? (
                   <div className="p-10 text-center text-sm text-slate-500">No projects match.</div>
-                ) : filtered.map((p) => (
+                ) : (
+                  filtered.map((p) => (
+                    <div key={p.id} onClick={() => nav(`/app/projects/${p.id}`)} className="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_120px_130px_100px_60px] gap-4 px-5 py-4 items-center border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer group">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-900 truncate">{p.name}</span>
+                          <ArrowUpRight className="w-3.5 h-3.5 text-slate-400 opacity-0 group-hover:opacity-100" />
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-500 truncate">{p.type} · {p.sheets} sheets · {p.owner}</div>
+                      </div>
+                    </div>
+
+                  {loading ? (
+                  <div className=\"p-10 text-center\">
+                    <Loader2 className=\"w-6 h-6 animate-spin mx-auto text-indigo-600\" />
+                    <p className=\"mt-2 text-sm text-slate-500\">Loading projects...</p>
+                  </div>
+                ) : filtered.length === 0 ? (
                   <div key={p.id} onClick={() => nav(`/app/projects/${p.id}`)} className="grid grid-cols-[1fr_auto] md:grid-cols-[1fr_120px_130px_100px_60px] gap-4 px-5 py-4 items-center border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer group">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-slate-900 truncate">{p.name}</span>
                         <ArrowUpRight className="w-3.5 h-3.5 text-slate-400 opacity-0 group-hover:opacity-100" />
                       </div>
-                      <div className="mt-0.5 text-xs text-slate-500 truncate">{p.type} · {p.sheets} sheets · {p.owner}</div>
+                       <div className=\"mt-0.5 text-xs text-slate-500 truncate\">{p.project_type || 'General'} · {p.sheets_count || 0} sheets · {user?.full_name || user?.email}</div>
                     </div>
-                    <div className="hidden md:block"><span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ring-1 ${STATUS_STYLES[p.status]}`}>{p.status}</span></div>
-                    <div className="hidden md:block text-xs text-slate-500">{p.updated}</div>
+                    </div>
+                     <div className=\"hidden md:block\"><span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium ring-1 ${STATUS_STYLES[p.status] || STATUS_STYLES.active}`}>{p.status.charAt(0).toUpperCase() + p.status.slice(1)}</span></div>
+                    <div className=\"hidden md:block text-xs text-slate-500\">{new Date(p.updated_at).toLocaleDateString()}</div>
                     <div className="hidden md:flex items-center gap-2">
                       <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                        <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500" style={{ width: `${p.progress}%` }} />
+                        Name=\"h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500\" style={{ width: `${p.progress || 0}%` }} />>
                       </div>
-                      <span className="mono text-[10px] text-slate-600 w-7 text-right">{p.progress}%</span>
+                      <span className=\"mono text-[10px] text-slate-600 w-7 text-right\">{p.progress || 0}%</span>
                     </div>
                     <div className="hidden md:flex justify-end"><button onClick={(e) => e.stopPropagation()} className="w-7 h-7 rounded-md hover:bg-slate-200 flex items-center justify-center text-slate-500"><MoreVertical className="w-3.5 h-3.5" /></button></div>
                   </div>
@@ -175,13 +240,17 @@ function StatCard({ label, value, delta, color, icon: Icon }) {
   );
 }
 
-function AppSidebar({ user }) {
+function AppSidebar({ user, onLogout }) {
   const items = [
     { icon: LayoutDashboard, label: 'Dashboard', to: '/app', active: true },
     { icon: FolderOpen, label: 'Projects', to: '/app' },
     { icon: Users, label: 'Team', to: '#' },
     { icon: Settings, label: 'Settings', to: '#' },
   ];
+
+  const initials = user?.full_name 
+    ? user.full_name.split(' ').map(x => x[0]).slice(0, 2).join('')
+    : user?.email?.substring(0, 2).toUpperCase() || 'U';
   return (
     <aside className="hidden lg:flex fixed top-0 left-0 h-screen w-64 flex-col border-r border-slate-200 bg-white z-40">
       <div className="h-14 px-5 flex items-center gap-2 border-b border-slate-200">
@@ -198,24 +267,16 @@ function AppSidebar({ user }) {
           </Link>
         ))}
       </nav>
-      <div className="p-3">
-        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 py-2">Recent projects</div>
-        {SAMPLE_PROJECTS.slice(0, 4).map((p) => (
-          <Link key={p.id} to={`/app/projects/${p.id}`} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-slate-600 hover:bg-slate-100 truncate">
-            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 flex-shrink-0" /> <span className="truncate">{p.name}</span>
-          </Link>
-        ))}
-      </div>
       <div className="mt-auto p-3 border-t border-slate-200">
         <div className="flex items-center gap-2.5 px-2 py-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-xs font-semibold">
-            {(user.name || 'U').split(' ').map((x) => x[0]).slice(0, 2).join('')}
+            initials}
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold text-slate-900 truncate">{user.name || user.email}</div>
-            <div className="text-[10px] text-slate-500 truncate">{user.email}</div>
+             <div className=\"text-xs font-semibold text-slate-900 truncate\">{user?.full_name || user?.email}</div>
+            <div className=\"text-[10px] text-slate-500 truncate\">{user?.email}</div>
           </div>
-          <Link to="/" className="w-7 h-7 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-500"><LogOut className="w-3.5 h-3.5" /></Link>
+          <button onClick={onLogout} className=\"w-7 h-7 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-500\"><LogOut className=\"w-3.5 h-3.5\" /></button>
         </div>
       </div>
     </aside>
