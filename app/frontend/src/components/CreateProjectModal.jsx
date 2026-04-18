@@ -148,7 +148,7 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
                 >
                   {loading ? (
                     <>
-                      <Loader2 className=\"w-4 h-4 animate-spin\" />
+                      <Loader2 className="w-4 h-4 animate-spin" />
                       Creating...
                     </>
                   ) : (
