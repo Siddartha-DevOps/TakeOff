@@ -256,4 +256,3 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
     </div>
   );
 }
-"

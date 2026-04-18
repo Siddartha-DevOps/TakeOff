@@ -119,32 +119,32 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className=\"block text-sm font-medium text-slate-700 mb-1.5\">
-                    Description <span className=\"text-slate-400\">(optional)</span>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    Description <span className="text-slate-400">(optional)</span>
                   </label>
                   <textarea
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    placeholder=\"Brief project description...\"
+                    placeholder="Brief project description..."
                     rows={3}
-                    className=\"w-full px-3 py-2.5 text-sm rounded-lg border border-slate-300 bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none resize-none\"
+                    className="w-full px-3 py-2.5 text-sm rounded-lg border border-slate-300 bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none resize-none"
                   />
                 </div>
               </div>
 
               {/* Footer */}
-              <div className=\"flex items-center gap-2 mt-6\">
+              <div className="flex items-center gap-2 mt-6">
                 <button
-                  type=\"button\"
+                  type="button"
                   onClick={onClose}
-                  className=\"flex-1 px-4 py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50\"
+                  className="flex-1 px-4 py-2.5 rounded-lg border border-slate-300 text-sm font-medium text-slate-700 hover:bg-slate-50"
                 >
                   Cancel
                 </button>
                 <button
-                  type=\"submit\"
+                  type="submit"
                   disabled={loading}
-                  className=\"flex-1 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2\"
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {loading ? (
                     <>
