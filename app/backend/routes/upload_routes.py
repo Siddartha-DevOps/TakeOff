@@ -133,3 +133,35 @@ async def get_drawing(
         )
     
     return drawing
+
+@router.get(\"/drawings/{drawing_id}/file\")
+async def download_drawing_file(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    from fastapi.responses import FileResponse
+    import os
+    
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id
+    ).first()
+    
+    if not drawing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=\"Drawing not found\"
+        )
+    
+    if not os.path.exists(drawing.file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=\"File not found on server\"
+        )
+    
+    return FileResponse(
+        path=drawing.file_path,
+        media_type=f'image/{drawing.file_type.lower()}' if drawing.file_type != 'PDF' else 'application/pdf',
+        filename=drawing.original_filename
+    )

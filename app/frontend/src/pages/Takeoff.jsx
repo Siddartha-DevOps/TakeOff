@@ -3,6 +3,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2 } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
+import { projectsAPI, uploadsAPI } from '../services/api';
+import FileUploadZone from '../components/FileUploadZone';
+import DrawingRenderer from '../components/DrawingRenderer';
 
 const LAYER_CONFIG = [
   { key: 'rooms', label: 'Rooms', color: '#a78bfa' },     // Purple
@@ -14,7 +17,11 @@ const LAYER_CONFIG = [
 export default function Takeoff() {
   const { id } = useParams();
   const nav = useNavigate();
-  const project = SAMPLE_PROJECTS.find((p) => p.id === id) || SAMPLE_PROJECTS[0];
+  const [project, setProject] = useState(null);
+  const [drawings, setDrawings] = useState([]);
+  const [selectedDrawing, setSelectedDrawing] = useState(null);
+  const [loadingProject, setLoadingProject] = useState(true);
+  const [showUpload, setShowUpload] = useState(false);
   const [status, setStatus] = useState('idle'); // idle, processing, ready
   const [progress, setProgress] = useState({ msg: '', pct: 0 });
   const [detection, setDetection] = useState(null);
@@ -25,7 +32,67 @@ export default function Takeoff() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragRef = useRef(null);
 
-  useEffect(() => { runAnalysis(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => {
+    fetchProject();
+    // eslint-disable-next-line
+  }, [id]);
+
+  useEffect(() => {
+    if (project) {
+      fetchDrawings();
+      runAnalysis();
+    }
+    // eslint-disable-next-line
+  }, [project]);
+
+  async function fetchProject() {
+    try {
+      setLoadingProject(true);
+      const response = await projectsAPI.get(id);
+      setProject(response.data);
+    } catch (error) {
+      console.error('Failed to fetch project:', error);
+      // Fallback to mock data
+      const mockProject = SAMPLE_PROJECTS.find((p) => p.id === id) || SAMPLE_PROJECTS[0];
+      setProject(mockProject);
+    } finally {
+      setLoadingProject(false);
+    }
+  }
+
+  async function fetchDrawings() {
+    try {
+      const response = await uploadsAPI.listDrawings(id);
+      setDrawings(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch drawings:', error);
+      setDrawings([]);
+    }
+  }
+
+  const handleUploadComplete = (newDrawing) => {
+    setDrawings((prev) => [newDrawing, ...prev]);
+    setShowUpload(false);
+      // Auto-select the new drawing
+    setSelectedDrawing(newDrawing);
+    // Trigger mock AI for this drawing
+    runAnalysisForDrawing(newDrawing);
+  };
+
+  const runAnalysisForDrawing = async (drawing) => {
+    setStatus('processing');
+    const result = await runTakeoffAI({
+      onProgress: setProgress,
+      seed: drawing.id,
+    });
+    setDetection(result);
+    setStatus('ready');
+  };
+const selectDrawing = (drawing) => {
+    setSelectedDrawing(drawing);
+    // You could load specific detection results for this drawing here
+    runAnalysisForDrawing(drawing);
+  };
 
   async function runAnalysis() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
@@ -58,8 +125,11 @@ export default function Takeoff() {
         </button>
         <div className="w-px h-5 bg-slate-700" />
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-white truncate">{project.name}</div>
-          <div className="text-[10px] mono text-slate-400 truncate">A-101 Level 12 · Scale 1/8" = 1'-0"</div>
+        <div className=\"text-sm font-semibold text-white truncate\">{project?.name || 'Loading...'}</div>
+          <div className=\"text-[10px] mono text-slate-400 truncate\">
+            {drawings.length > 0 ? `${drawings.length} drawing${drawings.length > 1 ? 's' : ''} · ` : ''}
+            Scale 1/8\" = 1'-0\"
+          </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
@@ -69,6 +139,7 @@ export default function Takeoff() {
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
           <div className="w-px h-5 bg-slate-700" />
+          button onClick={() => setShowUpload(!showUpload)} className=\"inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white\"><Upload className=\"w-3.5 h-3.5\" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
           <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
           <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100"><FileDown className="w-3.5 h-3.5" /> Export</button>
@@ -78,10 +149,39 @@ export default function Takeoff() {
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
         {/* Left rail: layers + sheets */}
         <aside className="bg-slate-900 text-slate-200 border-r border-slate-800 p-4 overflow-auto">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Sheets</div>
+          /* Upload Zone */}
+          {showUpload && (
+            <div className=\"mb-4 p-3 rounded-lg bg-slate-800 border border-slate-700\">
+              <div className=\"text-xs font-semibold text-white mb-2\">Upload Blueprints</div>
+              <FileUploadZone projectId={id} onUploadComplete={handleUploadComplete} />
+            </div>
+          )}
+
+          {/* Drawings List */}
+          {drawings.length > 0 && (
+            <>
+              <div className=\"text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2\">Drawings</div>
+              <div className=\"space-y-0.5 mb-4\">
+                {drawings.map((drawing, i) => (
+                  <button
+                    key={drawing.id}
+                    onClick={() => selectDrawing(drawing)}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${
+                      selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'
+                    }`}
+                  >
+                    <div className=\"truncate\">{drawing.sheet_name || drawing.original_filename}</div>
+                    <div className=\"text-[10px] text-slate-500\">{drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB</div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className=\"text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2\">Mock Sheets</div>
           <div className="space-y-0.5">
             {['A-001 Cover', 'A-101 Level 12', 'A-102 Level 13', 'A-201 Elevations', 'M-101 HVAC', 'E-101 Power'].map((s, i) => (
-              <button key={s} className={`w-full text-left px-2 py-1.5 rounded text-xs ${i === 1 ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}>{s}</button>
+            <button key={s} className={`w-full text-left px-2 py-1.5 rounded text-xs ${i === 1 && drawings.length === 0 ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}>{s}</button>
             ))}
           </div>
 
@@ -113,8 +213,14 @@ export default function Takeoff() {
           </div>
         </aside>
 
-        {/* Canvas */}
+        {/*Center: Canvas */}
         <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+          selectedDrawing ? (
+            /* Render uploaded file */
+            <DrawingRenderer drawing={selectedDrawing} onLoad={(data) => console.log('Drawing loaded:', data)} />
+          ) : (
+            /* Mock floor plan canvas */
+            vg ref={dragRef} viewBox=\"0 0 800 700\" className=\"w-full h-full\" style={{ transform: `scale(${zoom}) translate(${pan.x}px, ${pan.y}px)`, transition: 'transform 0.1s' }} onMouseDown={startDrag}>
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
 
           <div className="absolute inset-0 flex items-center justify-center" onMouseDown={onMouseDown}>

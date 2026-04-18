@@ -8,7 +8,7 @@ from database import get_db
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
-@router.post("/", response_model=schemas.Project)
+@router.post(\"\", response_model=schemas.Project)
 async def create_project(
     project_data: schemas.ProjectCreate,
     current_user: models.User = Depends(get_current_user),
@@ -27,7 +27,7 @@ async def create_project(
     db.refresh(db_project)
     return db_project
 
-@router.get("/", response_model=List[schemas.ProjectList])
+@router.get(\"\", response_model=List[schemas.ProjectList])
 async def list_projects(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)

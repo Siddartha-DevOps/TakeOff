@@ -42,8 +42,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=[\"*\"],
-    allow_headers=[\"*\"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Create a router with the /api prefix
@@ -71,11 +71,6 @@ async def root():
         \"health\": \"/api/health\"
     }
 
-
-# Load environment variables
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
  Create FastAPI app
 app = FastAPI(
     title="TakeOff.ai API",
@@ -91,37 +86,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Include routers with /api prefix
-app.include_router(auth_routes.router, prefix="/api")
-app.include_router(project_routes.router, prefix="/api")
-app.include_router(upload_routes.router, prefix="/api")
-
-# Health check endpoint
-@app.get("/api/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "service": "TakeOff.ai API",
-        "version": "1.0.0"
-    }
-
-@app.get("/api")
-async def root():
-    return {
-        "message": "TakeOff.ai API v1.0",
-        "docs": "/docs",
-        "health": "/api/health"
-    }
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-logger.info("TakeOff.ai API started successfully")
 
 # Import routes
 from routes import auth_routes, project_routes, upload_routes
