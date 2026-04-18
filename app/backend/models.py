@@ -90,3 +90,39 @@ class TakeoffResult(Base):
     
     # Relationships
     drawing = relationship("Drawing", back_populates="takeoff_results")
+
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(255), unique=True, index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="usd")
+    payment_status = Column(String(50), default="pending")  # pending, paid, failed, expired
+    status = Column(String(50), default="initiated")  # initiated, completed, failed
+    payment_metadata = Column(Text)  # JSON string (renamed from 'metadata' - reserved in SQLAlchemy)
+    stripe_price_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    user = relationship("User")
+
+class UserSubscription(Base):
+    __tablename__ = "user_subscriptions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    plan_name = Column(String(50), nullable=False)  # starter, growth
+    status = Column(String(50), default="active")  # active, cancelled, expired
+    stripe_session_id = Column(String(255), nullable=True)
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="usd")
+    started_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    user = relationship("User")

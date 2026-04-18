@@ -9,13 +9,15 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 import uuid
 from datetime import datetime, timezone
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes
 
 # Import database and models
 from database import engine, Base
 import models
 
 # Import routes
-from routes import auth_routes, project_routes, upload_routes
+from routes import auth_routes, project_routes, upload_routes,  takeoff_routes
+rom routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes
 
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
@@ -53,6 +55,22 @@ api_router = APIRouter(prefix="/api")
 app.include_router(auth_routes.router, prefix=\"/api\")
 app.include_router(project_routes.router, prefix=\"/api\")
 app.include_router(upload_routes.router, prefix=\"/api\")
+app.include_router(takeoff_routes.router, prefix=\"/api\")
+app.include_router(blog_routes.router, prefix=\"/api\")  # Public, no auth    
+app.include_router(stripe_routes.router, prefix=\"/api\")
+app.include_router(export_routes.router, prefix=\"/api\")                   
+
+# Stripe webhook endpoint (must be at /api/webhook/stripe)
+from routes.stripe_routes import stripe_webhook
+app.post(\"/api/webhook/stripe\")(stripe_webhook)                                  
+
+
+// Takeoff/AI API
+export const takeoffAPI = {
+  saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
+  getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
+};
 
 # Health check endpoint
 @app.get(\"/api/health\")

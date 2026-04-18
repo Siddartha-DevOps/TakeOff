@@ -7,7 +7,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-maxRedirects: 5,
+  maxRedirects: 5,
   beforeRedirect: (options, responseDetails) => {
     // Preserve Authorization header on redirects
     const token = localStorage.getItem('auth_token');
@@ -41,7 +41,7 @@ api.interceptors.response.use(
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
       if (window.location.pathname !== '/login') {
-      window.location.href = '/login';
+        window.location.href = '/login';
       }
     }
     return Promise.reject(error);
@@ -83,3 +83,30 @@ export const uploadsAPI = {
   listDrawings: (projectId) => api.get(`/api/uploads/project/${projectId}/drawings`),
   getDrawing: (drawingId) => api.get(`/api/uploads/drawings/${drawingId}`),
 };
+
+// Takeoff/AI API
+export const takeoffAPI = {
+  saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
+  getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
+};
+
+// Payments API
+export const paymentsAPI = {
+  createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {
+    params: { package_id: packageId, origin_url: originUrl }
+  }),
+  getCheckoutStatus: (sessionId) => api.get(`/api/payments/checkout/status/${sessionId}`),
+  getUserSubscription: () => api.get('/api/payments/subscription'),
+};
+
+// Export API
+export const exportAPI = {
+  exportDrawing: (drawingId, format) => api.get(`/api/export/drawings/${drawingId}/${format}`, {
+    responseType: 'blob'
+  }),
+  exportProject: (projectId, format) => api.get(`/api/export/projects/${projectId}/${format}`, {
+    responseType: 'blob'
+  }),
+};
+

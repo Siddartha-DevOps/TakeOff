@@ -17,7 +17,10 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import Takeoff from './pages/Takeoff';
+import Blog from './pages/Blog';
 import { Toaster } from './components/ui/sonner';
+import PaymentSuccess from './pages/PaymentSuccess';
+
 
 function MarketingShell({ children }) {
   return (
@@ -42,8 +45,10 @@ function App() {
           <Route path="/about" element={<MarketingShell><About /></MarketingShell>} />
           <Route path="/compare/:competitor" element={<MarketingShell><Comparison /></MarketingShell>} />
           <Route path="/demo" element={<MarketingShell><Demo /></MarketingShell>} />
+          <Route path="/blog" element={<MarketingShell><Blog /></MarketingShell>} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path=\"/payment-success\" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
           <Route path=\"/app\" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path=\"/app/projects/:id\" element={<ProtectedRoute><Takeoff /></ProtectedRoute>} />
         </Routes>

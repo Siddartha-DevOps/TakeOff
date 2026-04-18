@@ -114,3 +114,5 @@ class TakeoffResult(TakeoffResultCreate):
     
     class Config:
         from_attributes = True
+
+
