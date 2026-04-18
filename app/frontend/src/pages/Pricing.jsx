@@ -49,7 +49,7 @@ export default function Pricing() {
   };
 
   return (
-    <>
+    <div>
       <section className="relative overflow-hidden gradient-soft-bg pt-24 pb-16">
         <div className="absolute inset-0 grid-pattern opacity-50 [mask-image:radial-gradient(ellipse_at_center,black_40%,transparent_70%)]" />
         <div className="relative max-w-4xl mx-auto px-6 lg:px-8 text-center">
@@ -118,3 +118,6 @@ export default function Pricing() {
           ))}
         </div>
       </section>
+      </div>
+  );
+}

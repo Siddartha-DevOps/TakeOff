@@ -8,10 +8,10 @@ import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 
 const LAYER_CONFIG = [
-  { key: 'rooms', label: 'Rooms', color: '#a78bfa' },     // Purple
-  { key: 'doors', label: 'Doors', color: '#10b981' },     // Green
-  { key: 'windows', label: 'Windows', color: '#3b82f6' }, // Blue
-  { key: 'walls', label: 'Walls', color: '#eab308' },     // Yellow
+  { key: 'rooms', label: 'Rooms', color: '#a78bfa' },
+  { key: 'doors', label: 'Doors', color: '#10b981' },
+  { key: 'windows', label: 'Windows', color: '#3b82f6' },
+  { key: 'walls', label: 'Walls', color: '#eab308' },
 ];
 
 export default function Takeoff() {
@@ -21,7 +21,7 @@ export default function Takeoff() {
   const [drawings, setDrawings] = useState([]);
   const [loadingProject, setLoadingProject] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
-  const [status, setStatus] = useState('idle'); // idle, processing, ready
+  const [status, setStatus] = useState('idle');
   const [progress, setProgress] = useState({ msg: '', pct: 0 });
   const [detection, setDetection] = useState(null);
   const [layers, setLayers] = useState({ rooms: true, doors: true, windows: true, walls: true });
@@ -33,7 +33,6 @@ export default function Takeoff() {
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
-
 
   useEffect(() => {
     fetchProject();
@@ -55,7 +54,6 @@ export default function Takeoff() {
       setProject(response.data);
     } catch (error) {
       console.error('Failed to fetch project:', error);
-      // Fallback to mock data
       const mockProject = SAMPLE_PROJECTS.find((p) => p.id === id) || SAMPLE_PROJECTS[0];
       setProject(mockProject);
     } finally {
@@ -76,9 +74,7 @@ export default function Takeoff() {
   const handleUploadComplete = (newDrawing) => {
     setDrawings((prev) => [newDrawing, ...prev]);
     setShowUpload(false);
-    // Auto-select the new drawing
     setSelectedDrawing(newDrawing);
-    // Trigger mock AI for this drawing
     runAnalysisForDrawing(newDrawing);
   };
 
@@ -90,8 +86,6 @@ export default function Takeoff() {
     });
     setDetection(result);
     setStatus('ready');
-    
-    // Save results to database
     try {
       await takeoffAPI.saveResults(drawing.id, {
         detection_data: JSON.stringify(result),
@@ -107,7 +101,6 @@ export default function Takeoff() {
 
   const selectDrawing = (drawing) => {
     setSelectedDrawing(drawing);
-    // Load specific detection results for this drawing
     runAnalysisForDrawing(drawing);
   };
 
@@ -118,33 +111,26 @@ export default function Takeoff() {
     setStatus('ready');
   }
 
-async function handleExport(format) {
+  async function handleExport(format) {
     if (!selectedDrawing && !id) {
       alert('No drawing or project selected');
       return;
     }
-
     try {
       setExporting(true);
       setShowExportMenu(false);
-
       let response;
       let filename;
-
       if (selectedDrawing) {
-        // Export specific drawing
         response = await exportAPI.exportDrawing(selectedDrawing.id, format);
         filename = `takeoff_${selectedDrawing.original_filename.split('.')[0]}_${Date.now()}.${format === 'excel' ? 'xlsx' : 'csv'}`;
       } else {
-        // Export entire project
         response = await exportAPI.exportProject(id, format);
         filename = `project_${project?.name || 'export'}_${Date.now()}.${format === 'excel' ? 'xlsx' : 'csv'}`;
       }
-
-      // Create blob and download
       const blob = new Blob([response.data], {
-        type: format === 'excel' 
-          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+        type: format === 'excel'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           : 'text/csv'
       });
       const url = window.URL.createObjectURL(blob);
@@ -155,15 +141,13 @@ async function handleExport(format) {
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-
     } catch (error) {
       console.error('Export error:', error);
       alert(error.response?.data?.detail || 'Failed to export. Please try again.');
     } finally {
       setExporting(false);
     }
-  };
-
+  }
 
   function zoomBy(delta) { setZoom((z) => Math.max(0.5, Math.min(3, z + delta))); }
   function resetView() { setZoom(1); setPan({ x: 0, y: 0 }); }
@@ -182,7 +166,6 @@ async function handleExport(format) {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900">
-      {/* Top bar */}
       <header className="h-14 bg-slate-900 text-white border-b border-slate-800 flex items-center px-4 gap-4 flex-shrink-0">
         <button onClick={() => nav('/app')} className="flex items-center gap-2 text-sm text-slate-300 hover:text-white">
           <ArrowLeft className="w-4 h-4" /> <span>Dashboard</span>
@@ -198,7 +181,7 @@ async function handleExport(format) {
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {['AR', 'PK', 'JL'].map((x, i) => (
-              <div key={x} className={`w-7 h-7 rounded-full border-2 border-slate-900 flex items-center justify-center text-[10px] font-semibold text-white`} style={{ background: ['#6366f1', '#8b5cf6', '#06b6d4'][i] }}>{x}</div>
+              <div key={x} className="w-7 h-7 rounded-full border-2 border-slate-900 flex items-center justify-center text-[10px] font-semibold text-white" style={{ background: ['#6366f1', '#8b5cf6', '#06b6d4'][i] }}>{x}</div>
             ))}
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
@@ -206,56 +189,40 @@ async function handleExport(format) {
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
           <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
-          {/* Export dropdown */}
           <div className="relative">
-            <button 
+            <button
               onClick={() => setShowExportMenu(!showExportMenu)}
               disabled={exporting}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 disabled:opacity-50"
             >
               {exporting ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...
-                </>
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...</>
               ) : (
-                <>
-                  <FileDown className="w-3.5 h-3.5" /> Export <ChevronDown className="w-3 h-3" />
-                </>
+                <><FileDown className="w-3.5 h-3.5" /> Export <ChevronDown className="w-3 h-3" /></>
               )}
             </button>
-            
             {showExportMenu && !exporting && (
               <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-xl border border-slate-200 py-1 z-50">
-                <button
-                  onClick={() => handleExport('excel')}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                >
+                <button onClick={() => handleExport('excel')} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                   <FileDown className="w-3.5 h-3.5" /> Export as Excel
                 </button>
-                <button
-                  onClick={() => handleExport('csv')}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
-                >
+                <button onClick={() => handleExport('csv')} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                   <FileDown className="w-3.5 h-3.5" /> Export as CSV
                 </button>
-        </div>
+              </div>
             )}
-            </div>
-            </div>
+          </div>
+        </div>
       </header>
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
-        {/* Left rail: layers + sheets */}
         <aside className="bg-slate-900 text-slate-200 border-r border-slate-800 p-4 overflow-auto">
-          {/* Upload Zone */}
           {showUpload && (
             <div className="mb-4 p-3 rounded-lg bg-slate-800 border border-slate-700">
               <div className="text-xs font-semibold text-white mb-2">Upload Blueprints</div>
               <FileUploadZone projectId={id} onUploadComplete={handleUploadComplete} />
             </div>
           )}
-
-          {/* Drawings List */}
           {drawings.length > 0 && (
             <>
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Drawings</div>
@@ -264,9 +231,7 @@ async function handleExport(format) {
                   <button
                     key={drawing.id}
                     onClick={() => selectDrawing(drawing)}
-                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${
-                      selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'
-                    }`}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
                   >
                     <div className="truncate">{drawing.sheet_name || drawing.original_filename}</div>
                     <div className="text-[10px] text-slate-500">{drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB</div>
@@ -275,14 +240,12 @@ async function handleExport(format) {
               </div>
             </>
           )}
-
           <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Mock Sheets</div>
           <div className="space-y-0.5">
             {['A-001 Cover', 'A-101 Level 12', 'A-102 Level 13', 'A-201 Elevations', 'M-101 HVAC', 'E-101 Power'].map((s, i) => (
               <button key={s} className={`w-full text-left px-2 py-1.5 rounded text-xs ${i === 1 && drawings.length === 0 ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}>{s}</button>
             ))}
           </div>
-
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2 flex items-center gap-1.5"><Layers className="w-3 h-3" /> Detection layers</div>
           <div className="space-y-1">
             {LAYER_CONFIG.map((l) => {
@@ -299,7 +262,6 @@ async function handleExport(format) {
               );
             })}
           </div>
-
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Revisions</div>
           <div className="space-y-1">
             {[['Rev C', 'Current', true], ['Rev B', '3 days ago', false], ['Rev A', 'Mar 14', false]].map(([r, t, cur]) => (
@@ -311,25 +273,19 @@ async function handleExport(format) {
           </div>
         </aside>
 
-        {/* Canvas */}
         <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
-
           {selectedDrawing ? (
-            /* Render real uploaded file */
             <div className="absolute inset-0">
               <DrawingRenderer drawing={selectedDrawing} onLoad={(data) => console.log('Drawing loaded:', data)} />
             </div>
           ) : (
-            /* Mock floor plan canvas */
             <div className="absolute inset-0 flex items-center justify-center" onMouseDown={onMouseDown}>
               <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: dragRef.current ? 'none' : 'transform 180ms ease' }}>
                 <CanvasFull detection={detection} layers={layers} selectedId={selectedId} onSelect={setSelectedId} />
               </div>
             </div>
           )}
-
-          {/* Canvas toolbar */}
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 p-1 rounded-xl bg-white border border-slate-200 shadow-lg">
             <ToolBtn onClick={() => zoomBy(-0.2)}><ZoomOut className="w-4 h-4" /></ToolBtn>
             <div className="mono text-xs px-2 text-slate-700 w-14 text-center">{Math.round(zoom * 100)}%</div>
@@ -337,20 +293,15 @@ async function handleExport(format) {
             <div className="w-px h-5 bg-slate-200 mx-1" />
             <ToolBtn onClick={resetView}><Maximize2 className="w-4 h-4" /></ToolBtn>
           </div>
-
-          {/* Status chip */}
           {status === 'ready' && (
             <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm text-xs font-medium text-slate-800">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               AI complete · {detection.processingTimeMs}ms · {detection.rooms.length + detection.doors.length + detection.windows.length} detections
             </div>
           )}
-
-          {/* Selection hover card */}
           {selected && <DetectionHoverCard item={selected} onClose={() => setSelectedId(null)} />}
         </main>
 
-        {/* Right panel */}
         <aside className="bg-white border-l border-slate-200 flex flex-col min-h-0">
           <div className="flex border-b border-slate-200">
             {[
@@ -384,7 +335,6 @@ function ProcessingOverlay({ progress }) {
           <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 shadow-lg shadow-indigo-500/30 flex items-center justify-center">
             <Sparkles className="w-6 h-6 text-white animate-pulse" />
           </div>
-          <div className="absolute inset-0 rounded-2xl bg-indigo-400 animate-pulse-ring" />
         </div>
         <h3 className="mt-5 text-lg font-semibold text-slate-900">Running AI takeoff</h3>
         <p className="mt-1 text-sm text-slate-600 h-5">{progress.msg}</p>
@@ -407,7 +357,6 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
       </defs>
       <rect width="800" height="680" fill="#fafbff" />
       <rect width="800" height="680" fill="url(#grid2)" />
-      {/* Walls - Yellow */}
       <g stroke="#eab308" strokeWidth="4" fill="none" opacity={layers.walls ? 1 : 0.15}>
         <rect x="60" y="60" width="660" height="560" />
       </g>
@@ -423,8 +372,6 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
         <line x1="340" y1="600" x2="560" y2="600" />
         <line x1="260" y1="510" x2="340" y2="510" />
       </g>
-
-      {/* Rooms */}
       {detection && layers.rooms && detection.rooms.map((r) => {
         const [x1, y1, x2, y2] = r.bbox;
         const sel = selectedId === r.id;
@@ -445,8 +392,6 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
           </g>
         );
       })}
-
-      {/* Doors - Green */}
       {detection && layers.doors && detection.doors.map((d) => (
         <g key={d.id} transform={`translate(${d.x},${d.y}) rotate(${d.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(d.id); }}>
           <rect x="-4" y="-14" width="8" height="28" fill="#fff" />
@@ -454,8 +399,6 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
           <circle cx="0" cy="-14" r="3" fill="#10b981" />
         </g>
       ))}
-
-      {/* Windows - Blue */}
       {detection && layers.windows && detection.windows.map((w) => (
         <g key={w.id} transform={`translate(${w.x},${w.y}) rotate(${w.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(w.id); }}>
           <rect x="0" y="-4" width={w.width} height="8" fill={selectedId === w.id ? '#2563eb' : '#3b82f6'} stroke="#1d4ed8" strokeWidth="1" />
@@ -531,7 +474,7 @@ function QuantitiesPanel({ detection }) {
 
 function ChatPanel({ detection }) {
   const [messages, setMessages] = useState([
-    { role: 'assistant', text: 'Hi! I’ve parsed this sheet. Ask me anything about rooms, doors, windows, quantities or scope.', time: 'now' },
+    { role: 'assistant', text: "Hi! I've parsed this sheet. Ask me anything about rooms, doors, windows, quantities or scope.", time: 'now' },
   ]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -592,11 +535,11 @@ function SummaryPanel({ detection }) {
       <p className="text-xs text-slate-500 mt-0.5">Sheet {detection.sheet}</p>
       <div className="mt-4 grid grid-cols-2 gap-2">
         {[
-          ['Rooms', s.rooms, 'text-indigo-700'], 
-          ['Doors', s.doors, 'text-cyan-700'], 
-          ['Windows', s.windows, 'text-amber-700'], 
-          ['Walls', s.walls, 'text-rose-700'], 
-          ['Total area', `${s.totalArea.toLocaleString()} sf`, 'text-violet-700'], 
+          ['Rooms', s.rooms, 'text-indigo-700'],
+          ['Doors', s.doors, 'text-cyan-700'],
+          ['Windows', s.windows, 'text-amber-700'],
+          ['Walls', s.walls, 'text-rose-700'],
+          ['Total area', `${s.totalArea.toLocaleString()} sf`, 'text-violet-700'],
           ['Scale', detection.scale, 'text-emerald-700']
         ].map(([k, v, colorClass]) => (
           <div key={k} className="rounded-lg border border-slate-200 p-3">
@@ -605,7 +548,6 @@ function SummaryPanel({ detection }) {
           </div>
         ))}
       </div>
-
       <h4 className="mt-6 text-xs font-semibold uppercase tracking-wider text-slate-500">Confidence</h4>
       <div className="mt-3 space-y-2">
         {[['Rooms segmentation', 0.96], ['Door classification', 0.94], ['Window classification', 0.93], ['Auto-scale detection', 0.99]].map(([l, v]) => (
@@ -615,7 +557,6 @@ function SummaryPanel({ detection }) {
           </div>
         ))}
       </div>
-
       <h4 className="mt-6 text-xs font-semibold uppercase tracking-wider text-slate-500">Next actions</h4>
       <ul className="mt-3 space-y-2">
         {['Review hallway door swing on Rev C', 'Confirm Master bathroom fixture count', 'Merge drywall + painting exports for GC'].map((a) => (
@@ -625,19 +566,3 @@ function SummaryPanel({ detection }) {
     </div>
   );
 }
-<div className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-2 rounded-full" style={{ width: `${v * 100}%` }} />
-</div>
-          </div>
-        ))}
-      </div>
-
-      <h4 className="mt-6 text-xs font-semibold uppercase tracking-wider text-slate-500">Next actions</h4>
-      <ul className="mt-3 space-y-2">
-        {['Review hallway door swing on Rev C', 'Confirm Master bathroom fixture count', 'Merge drywall + painting exports for GC'].map((a) => (
-          <li key={a} className="flex items-start gap-2 text-sm text-slate-700"><Check className="w-4 h-4 text-indigo-600 mt-0.5" /> {a}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-

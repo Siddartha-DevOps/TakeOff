@@ -12,12 +12,12 @@ export default function Hero() {
 
       <div className="relative max-w-7xl mx-auto px-6 lg:px-8 pt-24 pb-20">
         {/* Eyebrow */}
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
           className="flex justify-center"
-          >
+        >
           <Link to="/features" className="inline-flex items-center gap-2 pl-1.5 pr-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300 transition-colors">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-[10px] font-semibold uppercase tracking-wide">
               <Sparkles className="w-3 h-3" /> New
@@ -28,45 +28,45 @@ export default function Hero() {
         </motion.div>
 
         {/* Headline */}
-        motion.h1 
+        <motion.h1
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
-          className=\"mt-8 text-center text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-slate-900 text-balance\"
-      >
+          className="mt-8 text-center text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-slate-900 text-balance"
+        >
           Takeoff in minutes.<br />
           <span className="gradient-text">Not days.</span>
-          </motion.h1>
+        </motion.h1>
 
-        <motion.p 
+        <motion.p
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.2 }}
-          className=\"mt-6 max-w-2xl mx-auto text-center text-lg md:text-xl text-slate-600 leading-relaxed text-balance\"
+          className="mt-6 max-w-2xl mx-auto text-center text-lg md:text-xl text-slate-600 leading-relaxed text-balance"
         >
           The AI takeoff tool built by estimators. Upload any drawing and TakeOff detects rooms, measures quantities and compares revisions — with 98% accuracy.
-         </motion.p>
+        </motion.p>
 
-         <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.3 }}
-
-        <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center animate-fade-up" style={{ animationDelay: '240ms' }}>
+          className="mt-10 flex flex-col sm:flex-row gap-3 justify-center"
+        >
           <Link to="/demo" className="group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-slate-900 text-white font-medium text-sm shadow-lg shadow-slate-900/20 hover:bg-slate-800">
             Book a demo <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5" />
           </Link>
-           <Link to=\"/app\" className=\"group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-white border border-slate-300 text-slate-900 font-medium text-sm hover:border-slate-400 hover:bg-slate-50 transition-colors\"></div>
+          <Link to="/app" className="group inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-white border border-slate-300 text-slate-900 font-medium text-sm hover:border-slate-400 hover:bg-slate-50 transition-colors">
             <Play className="w-3.5 h-3.5" fill="currentColor" /> Take a tour
           </Link>
         </motion.div>
 
         {/* Product screenshot */}
-        motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 40, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
-          className=\"relative mt-16\"
+          className="relative mt-16"
         >
           <div className="absolute -inset-8 bg-gradient-to-b from-indigo-100/40 via-violet-100/30 to-transparent rounded-[2rem] blur-2xl pointer-events-none" />
           <div className="relative rounded-2xl bg-white border border-slate-200 shadow-2xl shadow-slate-900/10 overflow-hidden">
@@ -127,18 +127,19 @@ export default function Hero() {
         </motion.div>
 
         {/* Stats */}
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.6 }}
           className="mt-16 grid grid-cols-2 lg:grid-cols-4 gap-8"
-          {HERO_STATS.map(s, i) => (
-            <motion.div 
-              key={s.label} 
+        >
+          {HERO_STATS.map((s, i) => (
+            <motion.div
+              key={s.label}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.7 + i * 0.1 }}
-              className=\"text-center\"
+              className="text-center"
             >
               <div className="text-3xl md:text-4xl font-semibold tracking-tight text-slate-900">{s.value}</div>
               <div className="text-xs text-slate-500 uppercase tracking-wider mt-1">{s.label}</div>
@@ -149,4 +150,3 @@ export default function Hero() {
     </section>
   );
 }
-
