@@ -26,10 +26,10 @@ export default function DrawingRenderer({ drawing, onLoad }) {
     const ctx = canvas.getContext('2d');
     const img = new Image();
 
-    const apiUrl = process.env.REACT_APP_BACKEND_URL || '';
+    const apiUrl = import.meta.env.VITE_BACKEND_URL || '';
     img.src = `${apiUrl}/api/uploads/drawings/${drawing.id}/file`;
 
-    img.onload = () => {  // Fix 1: added missing opening brace
+    img.onload = () => {
       canvas.width = img.width;
       canvas.height = img.height;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -74,7 +74,7 @@ export default function DrawingRenderer({ drawing, onLoad }) {
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = process.env.REACT_APP_BACKEND_URL || 'https://mock-takeoff.preview.emergentagent.com';
+    const apiUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
     const fileUrl = `${apiUrl}/api/uploads/drawings/${drawing.id}/file`;
 
     return (
@@ -158,4 +158,4 @@ export default function DrawingRenderer({ drawing, onLoad }) {
       </div>
     </div>
   );
-}  // Fix 2: removed stray colon at end of file
+}

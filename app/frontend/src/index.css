@@ -3,6 +3,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import "tailwindcss";
 
 body {
     margin: 0;
@@ -42,8 +43,8 @@ code, .mono {
 }
 
 @layer base {
-  * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
+  * { border-color: hsl(var(--border)); }
+  body { background-color: hsl(var(--background)); color: hsl(var(--foreground)); }
   h1, h2, h3, h4 { letter-spacing: -0.02em; font-weight: 600; }
   h1 { letter-spacing: -0.03em; }
 }

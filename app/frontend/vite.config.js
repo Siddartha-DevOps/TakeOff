@@ -11,5 +11,9 @@ export default defineConfig({
         changeOrigin: true
       }
     }
+  },
+  define: {
+    // Polyfill process.env for any legacy code
+    'process.env': {}
   }
 })

@@ -68,14 +68,12 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
       if (fileItem.status === 'success') continue;
 
       try {
-        // Update status to uploading
         setFiles((prev) =>
           prev.map((f) =>
             f.id === fileItem.id ? { ...f, status: 'uploading', progress: 0 } : f
           )
         );
 
-        // Simulate progress (in real scenario, use axios onUploadProgress)
         const progressInterval = setInterval(() => {
           setFiles((prev) =>
             prev.map((f) =>
@@ -86,7 +84,6 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
           );
         }, 200);
 
-        // Upload to backend
         const response = await uploadsAPI.uploadDrawing(
           projectId,
           fileItem.file,
@@ -98,7 +95,6 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
 
         clearInterval(progressInterval);
 
-        // Update status to success
         setFiles((prev) =>
           prev.map((f) =>
             f.id === fileItem.id
@@ -238,7 +234,7 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
         <button
           onClick={uploadFiles}
           disabled={uploading}
-          className="w-full py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2\"
+          className="w-full py-2.5 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2"
         >
           {uploading ? (
             <>

@@ -14,8 +14,8 @@ export default function Blog() {
 
   const fetchBlogs = async () => {
     try {
-      const API_URL = process.env.REACT_APP_BACKEND_URL || 'https://mock-takeoff.preview.emergentagent.com';
-      const response = await axios.get(`${API_URL}/api/blogs`);
+      const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      const response = await axios.get(`${API_URL}/api/blogs/`);
       setBlogs(response.data);
     } catch (error) {
       console.error('Failed to fetch blogs:', error);
@@ -37,7 +37,7 @@ export default function Blog() {
       {/* Hero Section */}
       <section className="relative overflow-hidden gradient-soft-bg py-20">
         <div className="absolute inset-0 grid-pattern opacity-50 [mask-image:radial-gradient(ellipse_at_center,black_40%,transparent_70%)]" />
-        
+
         <div className="relative max-w-6xl mx-auto px-6">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -70,7 +70,6 @@ export default function Blog() {
               className="group rounded-2xl border border-slate-200 bg-white overflow-hidden hover:border-slate-300 hover:shadow-lg transition-all"
             >
               <Link to={`/blog/${blog.id}`} className="block">
-                {/* Tags */}
                 <div className="p-6 pb-4">
                   <div className="flex flex-wrap gap-2 mb-3">
                     {blog.tags.slice(0, 2).map((tag) => (
@@ -83,26 +82,20 @@ export default function Blog() {
                     ))}
                   </div>
 
-                  {/* Title */}
                   <h2 className="text-lg font-semibold text-slate-900 group-hover:text-indigo-600 transition-colors leading-tight mb-2">
                     {blog.title}
                   </h2>
 
-                  {/* Excerpt */}
                   <p className="text-sm text-slate-600 line-clamp-3 mb-4">
                     {blog.excerpt}
                   </p>
 
-                  {/* Meta */}
                   <div className="space-y-2 text-xs text-slate-500">
                     <div className="flex items-center gap-2">
                       <User className="w-3.5 h-3.5" />
                       <span className="font-medium text-slate-700">{blog.author_name}</span>
                       <span>·</span>
                       <span>{blog.author_role}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-400">{blog.author_company}</span>
                     </div>
                     <div className="flex items-center gap-4 pt-2 border-t border-slate-100">
                       <div className="flex items-center gap-1.5">
@@ -120,7 +113,6 @@ export default function Blog() {
                     </div>
                   </div>
 
-                  {/* Read More */}
                   <div className="mt-4 flex items-center gap-1 text-sm font-medium text-indigo-600 group-hover:gap-2 transition-all">
                     Read article <ArrowRight className="w-3.5 h-3.5" />
                   </div>

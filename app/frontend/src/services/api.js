@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+// Vite uses import.meta.env, not process.env
+const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -8,13 +9,6 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
   maxRedirects: 5,
-  beforeRedirect: (options, responseDetails) => {
-    // Preserve Authorization header on redirects
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      options.headers.Authorization = `Bearer ${token}`;
-    }
-  },
 });
 
 // Request interceptor to add auth token
@@ -35,9 +29,7 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Handle auth errors
     if (error.response?.status === 401 || error.response?.status === 403) {
-      // Token expired, invalid, or forbidden
       localStorage.removeItem('auth_token');
       localStorage.removeItem('user');
       if (window.location.pathname !== '/login') {
@@ -73,7 +65,7 @@ export const uploadsAPI = {
     formData.append('file', file);
     if (metadata?.sheet_name) formData.append('sheet_name', metadata.sheet_name);
     if (metadata?.scale) formData.append('scale', metadata.scale);
-    
+
     return api.post(`/api/uploads/project/${projectId}/drawings`, formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -109,4 +101,3 @@ export const exportAPI = {
     responseType: 'blob'
   }),
 };
-
