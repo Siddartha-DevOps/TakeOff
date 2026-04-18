@@ -66,5 +66,5 @@ async def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     }
 
 @router.get("/me", response_model=schemas.User)
-async def get_current_user_info(current_user: models.User = Depends(auth.get_current_user))::
+async def get_current_user_info(current_user: models.User = Depends(auth.get_current_user)):
     return current_user

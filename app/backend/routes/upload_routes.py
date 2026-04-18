@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
 # Upload directory
-UPLOAD_DIR = Path("/app/backend/uploads")
+UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tiff", "tif"}
@@ -134,7 +134,7 @@ async def get_drawing(
     
     return drawing
 
-@router.get(\"/drawings/{drawing_id}/file\")
+@router.get("/drawings/{drawing_id}/file")
 async def download_drawing_file(
     drawing_id: int,
     current_user: models.User = Depends(get_current_user),
@@ -151,13 +151,13 @@ async def download_drawing_file(
     if not drawing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=\"Drawing not found\"
+            detail="Drawing not found"
         )
     
     if not os.path.exists(drawing.file_path):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=\"File not found on server\"
+            detail="File not found on server"
         )
     
     return FileResponse(

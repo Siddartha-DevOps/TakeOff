@@ -8,6 +8,13 @@ import CtaBand from '../components/sections/CtaBand';
 const KEY_MAP = { bluebeam: 'blueBeam', ost: 'ost', planswift: 'planSwift' };
 
 export default function Comparison() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <h1 className="text-2xl font-bold">Comparison Coming Soon</h1>
+    </div>
+  );
+}
+
   const { competitor = 'bluebeam' } = useParams();
   const key = KEY_MAP[competitor] || 'blueBeam';
   const comp = COMPETITORS[competitor] || COMPETITORS.bluebeam;
