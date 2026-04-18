@@ -16,9 +16,9 @@ export default function Hero() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className=\"flex justify-center\"
+          className="flex justify-center"
           >
-          <Link to=\"/features\" className=\"inline-flex items-center gap-2 pl-1.5 pr-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300 transition-colors\"></div>
+          <Link to="/features" className="inline-flex items-center gap-2 pl-1.5 pr-3.5 py-1.5 rounded-full bg-white border border-slate-200 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300 transition-colors">
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-[10px] font-semibold uppercase tracking-wide">
               <Sparkles className="w-3 h-3" /> New
             </span>
@@ -33,7 +33,7 @@ export default function Hero() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
           className=\"mt-8 text-center text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-slate-900 text-balance\"
-        >
+      >
           Takeoff in minutes.<br />
           <span className="gradient-text">Not days.</span>
           </motion.h1>

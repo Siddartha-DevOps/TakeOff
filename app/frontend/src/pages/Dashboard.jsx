@@ -232,7 +232,8 @@ cyan: 'bg-cyan-50 text-cyan-600',
 emerald: 'bg-emerald-50 text-emerald-600',
 };
 
-return ( <div className="rounded-2xl border border-slate-200 bg-white p-5"> <div className="flex items-center justify-between"> <span className="text-xs font-medium text-slate-500">
+return ( 
+<div className="rounded-2xl border border-slate-200 bg-white p-5"> <div className="flex items-center justify-between"> <span className="text-xs font-medium text-slate-500">
 {label} </span>
 
 ```
@@ -249,8 +250,6 @@ return ( <div className="rounded-2xl border border-slate-200 bg-white p-5"> <div
     {delta}
   </div>
 </div>
-```
-
 );
 }
 

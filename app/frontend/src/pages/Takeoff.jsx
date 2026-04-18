@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI } from '../services/api';';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 
@@ -162,7 +162,9 @@ async function handleExport(format) {
     } finally {
       setExporting(false);
     }
-  )
+  };
+
+
   function zoomBy(delta) { setZoom((z) => Math.max(0.5, Math.min(3, z + delta))); }
   function resetView() { setZoom(1); setPan({ x: 0, y: 0 }); }
 
@@ -205,36 +207,36 @@ async function handleExport(format) {
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
           <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
           {/* Export dropdown */}
-          <div className=\"relative\">
+          <div className="relative">
             <button 
               onClick={() => setShowExportMenu(!showExportMenu)}
               disabled={exporting}
-              className=\"inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 disabled:opacity-50\"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 disabled:opacity-50"
             >
               {exporting ? (
                 <>
-                  <Loader2 className=\"w-3.5 h-3.5 animate-spin\" /> Exporting...
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting...
                 </>
               ) : (
                 <>
-                  <FileDown className=\"w-3.5 h-3.5\" /> Export <ChevronDown className=\"w-3 h-3\" />
+                  <FileDown className="w-3.5 h-3.5" /> Export <ChevronDown className="w-3 h-3" />
                 </>
               )}
             </button>
             
             {showExportMenu && !exporting && (
-              <div className=\"absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-xl border border-slate-200 py-1 z-50\">
+              <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-xl border border-slate-200 py-1 z-50">
                 <button
                   onClick={() => handleExport('excel')}
-                  className=\"w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2\"
+                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
                 >
-                  <FileDown className=\"w-3.5 h-3.5\" /> Export as Excel
+                  <FileDown className="w-3.5 h-3.5" /> Export as Excel
                 </button>
                 <button
                   onClick={() => handleExport('csv')}
-                  className=\"w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2\"
+                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2"
                 >
-                  <FileDown className=\"w-3.5 h-3.5\" /> Export as CSV
+                  <FileDown className="w-3.5 h-3.5" /> Export as CSV
                 </button>
         </div>
             )}
@@ -623,7 +625,8 @@ function SummaryPanel({ detection }) {
     </div>
   );
 }
-500 to-emerald-500" style={{ width: `${v * 100}%` }} /></div>
+<div className="bg-gradient-to-r from-indigo-500 to-emerald-500 h-2 rounded-full" style={{ width: `${v * 100}%` }} />
+</div>
           </div>
         ))}
       </div>

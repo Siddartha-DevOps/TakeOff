@@ -1,4 +1,4 @@
-"import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Send, Sparkles, Loader2 } from 'lucide-react';
 
