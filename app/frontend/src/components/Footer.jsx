@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Sparkles, Twitter, Linkedin, Youtube } from 'lucide-react';
+import { Sparkles, ExternalLink } from 'lucide-react';
 
 export default function Footer() {
   return (
@@ -18,14 +18,14 @@ export default function Footer() {
               AI-powered preconstruction software built by estimators, for estimators. Takeoff in minutes, not days.
             </p>
             <address className="not-italic mt-6 text-xs text-slate-500 leading-relaxed">
-              5959 Waterford District Drive, Ste 200<br />
-              Miami, Florida 33126<br />
-              <a href="tel:+18778642524" className="hover:text-slate-900">877-TAKEOFF (877-864-2524)</a>
+              DVP Village<br />
+              Madanapalle, India 517319<br />
+              <a href="tel:+18778642524" className="hover:text-slate-900">TAKEOFF (770-XXX-XXX)</a>
             </address>
             <div className="mt-5 flex items-center gap-3">
-              <a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300"><Twitter className="w-4 h-4" /></a>
-              <a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300"><Linkedin className="w-4 h-4" /></a>
-              <a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300"><Youtube className="w-4 h-4" /></a>
+              <a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300 text-xs font-bold">X</a>
+<a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300 text-xs font-bold">in</a>
+<a href="#" className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center text-slate-500 hover:text-slate-900 hover:border-slate-300 text-xs font-bold">▶</a>
             </div>
           </div>
           <div>
