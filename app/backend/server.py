@@ -15,6 +15,18 @@ from routes import auth_routes, project_routes, upload_routes, takeoff_routes, b
 from database import engine, Base
 import models
 
+# ── NEW: Import AI engine ─────────────────────────────────────────
+# Drop best.pt into backend/models/ after Colab training completes
+try:
+    from ai.inference_api import TakeoffAIInference
+    AI_MODEL_PATH = os.environ.get("AI_MODEL_PATH", "models/best.pt")
+    ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
+    print(f"[TakeOff.ai] AI engine loaded: {AI_MODEL_PATH}")
+except Exception as e:
+    ai_engine = None
+    print(f"[TakeOff.ai] AI engine not loaded (mock mode): {e}")
+# ──────────────────────────────────────────────────────────────────
+
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,7 +44,7 @@ app = FastAPI(
     title="TakeOff.ai API",
     description="Backend API for TakeOff.ai SaaS platform",
     version="1.0.0",
-    redirect_slashes=False  # Disable automatic trailing slash redirects
+    redirect_slashes=False
 )
 
 # CORS middleware
@@ -44,43 +56,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Include routers with /api prefix
-app.include_router(auth_routes.router, prefix="/api")
+app.include_router(auth_routes.router,    prefix="/api")
 app.include_router(project_routes.router, prefix="/api")
-app.include_router(upload_routes.router, prefix="/api")
+app.include_router(upload_routes.router,  prefix="/api")
 app.include_router(takeoff_routes.router, prefix="/api")
-app.include_router(blog_routes.router, prefix="/api")  # Public, no auth    
-app.include_router(stripe_routes.router, prefix="/api")
-app.include_router(export_routes.router, prefix="/api")                   
+app.include_router(blog_routes.router,    prefix="/api")
+app.include_router(stripe_routes.router,  prefix="/api")
+app.include_router(export_routes.router,  prefix="/api")
 
-# Stripe webhook endpoint (must be at /api/webhook/stripe)
 from routes.stripe_routes import stripe_webhook
-app.post("/api/webhook/stripe")(stripe_webhook)                                  
+app.post("/api/webhook/stripe")(stripe_webhook)
 
-# Health check endpoint
 @app.get("/api/health")
 async def health_check():
     return {
         "status": "healthy",
         "service": "TakeOff.ai API",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "ai_engine": "loaded" if ai_engine and ai_engine.model else "mock_mode"
     }
 
 @app.get("/api")
 async def root():
-    return {
-        "message": "TakeOff.ai API v1.0",
-        "docs": "/docs",
-        "health": "/api/health"
-    }
+    return {"message": "TakeOff.ai API v1.0", "docs": "/docs", "health": "/api/health"}
 
-# Define Models
 class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
+    model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     client_name: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -88,46 +91,31 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
-# Add your routes to the router instead of directly to app
 @api_router.get("/")
-async def root():
+async def _root():
     return {"message": "Hello World"}
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
     status_dict = input.model_dump()
     status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
     doc = status_obj.model_dump()
     doc['timestamp'] = doc['timestamp'].isoformat()
-    
     _ = await db.status_checks.insert_one(doc)
     return status_obj
 
 @api_router.get("/status", response_model=List[StatusCheck])
 async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
     status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
     for check in status_checks:
         if isinstance(check['timestamp'], str):
             check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
     return status_checks
 
-# Include the router in the main app
 app.include_router(api_router)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-
 logger.info("TakeOff.ai API started successfully")
 
 @app.on_event("shutdown")
