@@ -16,20 +16,20 @@ import os
 import json
 import uuid
 import time
-import boto3
 import numpy as np
-import cv2
 from pathlib import Path
 from typing import Optional
 from loguru import logger
 
-from preprocessing import (
-    preprocess_for_yolo,
-    pixels_to_feet,
-    pixels_to_sqft,
-    TARGET_DPI,
-)
-from scale_detection import run_ocr_for_scale
+# NOTE: Heavy / optional dependencies (boto3, cv2, ultralytics, torch) and the
+# sibling preprocessing/scale_detection modules are imported lazily inside the
+# functions that need them. This keeps `import detection_engine` cheap on web
+# workers (which only need model_is_available()) and lets the module be imported
+# even when the full AI stack is not installed.
+
+# Default DPI for unit conversion (mirrors preprocessing.TARGET_DPI). Defined
+# locally so the module can be imported without pulling in OpenCV/PyMuPDF.
+DEFAULT_DPI = 300
 
 
 # ──────────────────────────────────────────────────────────────
@@ -97,10 +97,15 @@ ROOM_COLORS = {
 # ──────────────────────────────────────────────────────────────
 # Model loading with S3 auto-download
 # ──────────────────────────────────────────────────────────────
-def _ensure_model(model_filename: str) -> Path:
+def _ensure_model(model_filename: str) -> Optional[Path]:
     """
     Ensure model weights are available locally.
     Downloads from S3 if not present and S3_BUCKET is configured.
+
+    Returns the local path to the weights, or None if no trained model is
+    available. Callers are expected to handle the None case gracefully
+    (e.g. fall back to an "untrained" result) rather than crashing — the app
+    must stay responsive before training is complete.
     """
     local_path = MODELS_DIR / model_filename
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,6 +114,8 @@ def _ensure_model(model_filename: str) -> Path:
         return local_path
 
     if S3_BUCKET:
+        import boto3  # lazy: only needed when pulling weights from S3
+
         logger.info(f"Downloading model {model_filename} from S3...")
         s3 = boto3.client("s3")
         s3_key = f"models/{model_filename}"
@@ -119,12 +126,12 @@ def _ensure_model(model_filename: str) -> Path:
         except Exception as e:
             logger.error(f"S3 download failed: {e}")
 
-    # No model found — caller must handle training first
-    raise FileNotFoundError(
-        f"Model not found: {local_path}\n"
-        f"Train first: python training/train.py\n"
-        f"Or set AI_MODELS_BUCKET env var to download from S3."
+    logger.warning(
+        f"Model not found: {local_path}. "
+        f"Train first (python training/train.py) or set AI_MODELS_BUCKET to "
+        f"auto-download from S3. Detection will return an empty 'untrained' result."
     )
+    return None
 
 
 class BlueprintDetector:
@@ -142,17 +149,32 @@ class BlueprintDetector:
         Args:
             model_filename: Name of the YOLO .pt weights file.
             device: 'auto' | 'cpu' | '0' (GPU index) | 'cuda'
+
+        Never raises on missing weights or a missing ultralytics install.
+        Check `self.available` (or just call detect(), which returns an empty
+        "untrained" result) to know whether real inference will run.
         """
+        self.model_filename = model_filename
+        self.model = None
+        self.available = False
+
+        model_path = _ensure_model(model_filename)
+        if model_path is None:
+            return  # untrained — detect() returns an empty result
+
         try:
             from ultralytics import YOLO
         except ImportError:
-            raise ImportError("ultralytics not installed. Run: pip install ultralytics")
+            logger.warning(
+                "ultralytics not installed — detection disabled. "
+                "Run: pip install ultralytics"
+            )
+            return
 
         self._device = self._resolve_device(device)
         logger.info(f"Loading model on device: {self._device}")
-
-        model_path = _ensure_model(model_filename)
         self.model = YOLO(str(model_path))
+        self.available = True
         logger.info(f"Model loaded: {model_filename}")
 
     @staticmethod
@@ -172,7 +194,7 @@ class BlueprintDetector:
         self,
         img: np.ndarray,
         scale_info: Optional[dict] = None,
-        dpi: int = TARGET_DPI,
+        dpi: int = DEFAULT_DPI,
     ) -> dict:
         """
         Run full detection on a preprocessed blueprint image.
@@ -185,9 +207,17 @@ class BlueprintDetector:
         Returns:
             Detection dict matching the schema expected by the frontend
             (same structure as SAMPLE_DETECTION in mockAI.js, but real data).
+            If no trained model is loaded, returns an empty "untrained" result
+            with the same shape instead of raising.
         """
         t_start = time.time()
         scale_ratio = scale_info["ratio"] if scale_info else 96.0
+
+        if self.model is None:
+            return _empty_result(scale_ratio, t_start)
+
+        # Lazy import — keeps the module importable without the full AI stack.
+        from preprocessing import preprocess_for_yolo, pixels_to_feet, pixels_to_sqft
 
         # Preprocess
         processed = preprocess_for_yolo(img)
@@ -454,6 +484,38 @@ def _snap_to_standard_width(inches: int) -> int:
     return min(standards, key=lambda s: abs(s - inches))
 
 
+def _empty_result(scale_ratio: float, t_start: float) -> dict:
+    """
+    Return an empty detection result with the same schema as a real detection,
+    flagged as 'untrained'. Used when no model weights are available so the
+    pipeline completes cleanly (status COMPLETED) instead of crashing or
+    leaving the drawing stuck in PROCESSING.
+    """
+    return {
+        "rooms": [],
+        "doors": [],
+        "windows": [],
+        "mep": [],
+        "summary": {
+            "rooms": 0,
+            "doors": 0,
+            "windows": 0,
+            "mep": 0,
+            "walls": 0,
+            "totalArea": 0,
+        },
+        "quantities": [],
+        "scale_ratio": scale_ratio,
+        "processing_time_ms": int((time.time() - t_start) * 1000),
+        "model_version": "untrained",
+        "model_status": "untrained",
+        "message": (
+            "AI model not trained yet. Run: python training/train.py "
+            "or set AI_MODELS_BUCKET to download trained weights from S3."
+        ),
+    }
+
+
 def model_is_available(model_filename: str = "rooms_doors_windows_v1.pt") -> bool:
     """Check whether a trained model exists locally or on S3."""
     local_path = MODELS_DIR / model_filename
@@ -461,6 +523,8 @@ def model_is_available(model_filename: str = "rooms_doors_windows_v1.pt") -> boo
         return True
     if S3_BUCKET:
         try:
+            import boto3  # lazy: only needed when an S3 bucket is configured
+
             s3 = boto3.client("s3")
             s3.head_object(Bucket=S3_BUCKET, Key=f"models/{model_filename}")
             return True

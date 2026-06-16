@@ -1,5 +1,11 @@
 # TakeOff.ai — AI/ML Requirements
-# Install: pip install -r requirements-ai.txt --break-system-packages
+# Install: pip install -r requirements.txt --break-system-packages
+#
+# These are the heavy AI/ML dependencies (torch, ultralytics, OCR, CLIP).
+# The lightweight API server deps live in backend/requirements.txt.
+# The detection engine degrades gracefully if this stack is absent or no
+# trained weights exist (see detection_engine.BlueprintDetector), so the
+# API can run on backend/requirements.txt alone during development.
 
 # Core deep learning
 torch==2.3.1
