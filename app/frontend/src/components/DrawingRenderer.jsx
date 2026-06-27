@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
+import DetectionOverlay from "./DetectionOverlay";
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
-export default function DrawingRenderer({ drawing, onLoad }) {
+export default function DrawingRenderer({ drawing, onLoad, detection, layers, selectedId, onSelect }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1);
@@ -125,7 +126,18 @@ export default function DrawingRenderer({ drawing, onLoad }) {
             </div>
           }
         >
-          <Page pageNumber={pageNumber} scale={scale} />
+          <div className="relative inline-block">
+            <Page pageNumber={pageNumber} scale={scale} />
+            {detection?.page && (pageNumber === (detection.page.page_no ?? 0) + 1) && (
+              <DetectionOverlay
+                result={detection}
+                scale={scale}
+                layers={layers}
+                selectedId={selectedId}
+                onSelect={onSelect}
+              />
+            )}
+          </div>
         </Document>
       </div>
     );

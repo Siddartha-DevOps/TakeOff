@@ -81,6 +81,15 @@ export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
+  // One-click AUTODETECT — exact Area/Line/Count from the real plan's vector geometry.
+  autodetect: (drawingId, scaleRatio) =>
+    api.post(`/api/takeoff/drawings/${drawingId}/autodetect`, null, {
+      params: scaleRatio ? { scale_ratio: scaleRatio } : {},
+    }),
+  vectorGeometry: (drawingId, scaleRatio) =>
+    api.get(`/api/takeoff/drawings/${drawingId}/vector-geometry`, {
+      params: scaleRatio ? { scale_ratio: scaleRatio } : {},
+    }),
 };
 
 // Payments API

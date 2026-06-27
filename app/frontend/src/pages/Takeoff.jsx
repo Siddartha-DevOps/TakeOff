@@ -78,24 +78,62 @@ export default function Takeoff() {
     runAnalysisForDrawing(newDrawing);
   };
 
+  // Map the backend AUTODETECT response into the shape the side panels +
+  // canvas overlay expect. Area/Line/Count come straight from exact geometry.
+  function mapAutodetect(data, drawing) {
+    const prim = data.primitives || {};
+    const rooms = (data.area || []).map((s) => ({
+      id: s.id,
+      label: s.label || 'Space',
+      bbox: s.bbox || [0, 0, 0, 0],
+      area: s.sqft,
+      confidence: s.confidence ?? 1,
+      geojson: s.geojson,
+      centroid: s.centroid,
+    }));
+    return {
+      rooms,
+      doors: [],
+      windows: [],
+      quantities: data.quantities || [],
+      summary: {
+        rooms: prim.count ?? rooms.length,
+        doors: 0,
+        windows: 0,
+        walls: prim.line ?? 0,
+        totalArea: prim.area ?? 0,
+      },
+      primitives: prim,
+      page: data.page,
+      method: data.method,
+      scale: data.scale_ratio ? `1:${Math.round(data.scale_ratio)}` : '—',
+      sheet: drawing?.sheet_name || drawing?.original_filename || '',
+      processingTimeMs: 0,
+      status: data.status,
+      message: data.message,
+    };
+  }
+
   const runAnalysisForDrawing = async (drawing) => {
+    if (!drawing) return;
     setStatus('processing');
-    const result = await runTakeoffAI({
-      onProgress: setProgress,
-      seed: drawing.id,
-    });
-    setDetection(result);
-    setStatus('ready');
+    setDetection(null);
+    setProgress({ msg: 'Reading vector geometry from the plan...', pct: 35 });
     try {
-      await takeoffAPI.saveResults(drawing.id, {
-        detection_data: JSON.stringify(result),
-        quantities_data: JSON.stringify(result.summary || {}),
-        confidence_scores: JSON.stringify({ avg: 0.95 }),
-        processing_time_ms: result.processingTimeMs || 1500,
-      });
-      console.log('✅ AI results saved to database');
+      const { data } = await takeoffAPI.autodetect(drawing.id);
+      setProgress({ msg: 'Computing Area / Line / Count...', pct: 85 });
+      setDetection(mapAutodetect(data, drawing));
     } catch (error) {
-      console.error('Failed to save AI results:', error);
+      console.error('AUTODETECT failed:', error);
+      setDetection({
+        rooms: [], doors: [], windows: [], quantities: [],
+        summary: { rooms: 0, doors: 0, windows: 0, walls: 0, totalArea: 0 },
+        method: 'none',
+        message: error.response?.data?.detail || 'AUTODETECT failed. See console.',
+        processingTimeMs: 0,
+      });
+    } finally {
+      setStatus('ready');
     }
   };
 
@@ -188,7 +226,14 @@ export default function Takeoff() {
           <div className="w-px h-5 bg-slate-700" />
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
-          <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
+          <button
+            onClick={() => (selectedDrawing ? runAnalysisForDrawing(selectedDrawing) : runAnalysis())}
+            disabled={status === 'processing'}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-xs font-medium text-white border border-indigo-500"
+            title="One-click AUTODETECT — exact Area/Line/Count from the plan"
+          >
+            {status === 'processing' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />} AUTODETECT
+          </button>
           <div className="relative">
             <button
               onClick={() => setShowExportMenu(!showExportMenu)}
@@ -277,7 +322,14 @@ export default function Takeoff() {
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
           {selectedDrawing ? (
             <div className="absolute inset-0">
-              <DrawingRenderer drawing={selectedDrawing} onLoad={(data) => console.log('Drawing loaded:', data)} />
+              <DrawingRenderer
+                drawing={selectedDrawing}
+                detection={detection}
+                layers={layers}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onLoad={(data) => console.log('Drawing loaded:', data)}
+              />
             </div>
           ) : (
             <div className="absolute inset-0 flex items-center justify-center" onMouseDown={onMouseDown}>
@@ -293,10 +345,17 @@ export default function Takeoff() {
             <div className="w-px h-5 bg-slate-200 mx-1" />
             <ToolBtn onClick={resetView}><Maximize2 className="w-4 h-4" /></ToolBtn>
           </div>
-          {status === 'ready' && (
+          {status === 'ready' && detection && (
             <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm text-xs font-medium text-slate-800">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              AI complete · {detection.processingTimeMs}ms · {detection.rooms.length + detection.doors.length + detection.windows.length} detections
+              {detection.method === 'vector'
+                ? `AUTODETECT · ${detection.primitives?.area ?? 0} sf · ${detection.primitives?.line ?? 0} lf · ${detection.primitives?.count ?? 0} spaces · exact`
+                : `${(detection.rooms?.length || 0) + (detection.doors?.length || 0) + (detection.windows?.length || 0)} detections`}
+            </div>
+          )}
+          {status === 'ready' && detection?.message && detection.method !== 'vector' && (
+            <div className="absolute top-16 left-4 max-w-md px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 shadow-sm">
+              {detection.message}
             </div>
           )}
           {selected && <DetectionHoverCard item={selected} onClose={() => setSelectedId(null)} />}
