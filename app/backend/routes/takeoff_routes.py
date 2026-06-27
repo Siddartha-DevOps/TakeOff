@@ -169,6 +169,97 @@ async def get_detection_results(
     return result
 
 
+# ── Vector-PDF geometry (exact measurement, gap #26) ──────────────
+# Common architectural fraction scales -> ratio (real inches per paper inch).
+_FRACTION_SCALE_RATIOS = {
+    (3, 1): 4, (1, 1): 12, (3, 4): 16, (1, 2): 24,
+    (3, 8): 32, (1, 4): 48, (3, 16): 64, (1, 8): 96,
+    (3, 32): 128, (1, 16): 192,
+}
+
+
+def _parse_scale_ratio(scale_text: str | None) -> float | None:
+    """Best-effort parse of a stored scale string (e.g. '1/8\"=1'-0\"') to a ratio.
+
+    Kept local and dependency-free — ``ai.scale_detection`` imports OpenCV at
+    module load, which we must not pull onto a web worker.
+    """
+    if not scale_text:
+        return None
+    import re
+
+    m = re.search(r"(\d+)\s*/\s*(\d+)", scale_text)
+    if m:
+        return float(_FRACTION_SCALE_RATIOS.get((int(m.group(1)), int(m.group(2))), 0)) or None
+    m = re.search(r'1\s*["”]?\s*=\s*(\d+)\s*[\'’]', scale_text)  # 1"=20'
+    if m:
+        return float(m.group(1)) * 12.0
+    return None
+
+
+@router.get("/drawings/{drawing_id}/vector-geometry")
+async def get_vector_geometry(
+    drawing_id: int,
+    scale_ratio: float | None = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Measure a drawing's true vector geometry (exact, DPI-independent).
+
+    Reads native PDF vector linework and returns rooms (as GeoJSON polygons),
+    exact areas/perimeters and wall linear feet. Falls back with ``is_vector:
+    false`` for scanned/raster sheets, where the AI pipeline should be used.
+
+    ``scale_ratio`` (real inches per paper inch, e.g. 96 for 1/8"=1'-0") may be
+    passed explicitly; otherwise it is parsed from the drawing's stored scale,
+    defaulting to 96.
+    """
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    if (drawing.file_type or "").upper() != "PDF":
+        return {
+            "drawing_id": drawing_id,
+            "is_vector": False,
+            "message": "Vector geometry is only available for PDF drawings.",
+        }
+
+    import os
+    if not os.path.exists(drawing.file_path):
+        raise HTTPException(status_code=404, detail="File not found on server")
+
+    ratio = scale_ratio or _parse_scale_ratio(drawing.scale) or 96.0
+
+    from geometry import measure_pdf
+    from geometry.postgis import to_geojson
+
+    try:
+        result = measure_pdf(drawing.file_path, ratio)
+    except Exception as exc:  # corrupt/locked PDF — don't 500 the UI
+        logger.error(f"[vector] drawing_id={drawing_id} failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not read PDF geometry: {exc}")
+
+    if result is None:
+        return {
+            "drawing_id": drawing_id,
+            "is_vector": False,
+            "scale_ratio": ratio,
+            "message": "No vector geometry on this page — use AI detection (raster).",
+        }
+
+    # Replace shapely geometry with JSON-serializable GeoJSON for the response.
+    for room in result["rooms"]:
+        geom = room.pop("geometry", None)
+        room["geojson"] = to_geojson(geom) if geom is not None else None
+
+    result["drawing_id"] = drawing_id
+    return result
+
+
 @router.get("/projects/{project_id}/results")
 async def get_project_results(
     project_id: int,
