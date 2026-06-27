@@ -143,6 +143,15 @@ class VectorPage:
             "is_vector": self.is_vector,
             "scale_ratio": scale_ratio,
             "page_no": self.page_no,
+            # Page dimensions in PDF points. The frontend multiplies geometry by
+            # the PDF render scale (1.0 = 72 DPI = 1 pt per CSS px) to overlay
+            # detections exactly on the rendered page — both PyMuPDF and pdf.js
+            # use a top-left origin in points, so coordinates line up directly.
+            "page": {
+                "width_pt": round(self.width_pt, 2),
+                "height_pt": round(self.height_pt, 2),
+                "page_no": self.page_no,
+            },
             "rooms": rooms,
             "summary": {
                 "rooms": len(rooms),

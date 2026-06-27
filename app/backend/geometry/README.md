@@ -31,6 +31,44 @@ as exact coordinates — so we read and measure them directly instead.
 Returns rooms as GeoJSON polygons with exact areas + wall linear feet, or
 `{"is_vector": false}` for raster sheets.
 
+### One-click AUTODETECT (Togal parity)
+
+`POST /api/takeoff/drawings/{id}/autodetect?scale_ratio=96`
+
+The "Togal Button". Measures the real plan and returns the three takeoff
+primitives explicitly:
+
+```json
+{
+  "primitives": { "area": 512.0, "line": 192.0, "count": 4 },
+  "page": { "width_pt": 1200, "height_pt": 800, "page_no": 0 },
+  "area": [ { "id": "vr_0", "label": "Space", "sqft": 128.0, "geojson": {…} } ],
+  "quantities": [ … ], "method": "vector", "status": "ok"
+}
+```
+
+- **Area** = sqft, **Line** = linear ft, **Count** = each — Togal's three AI
+  primitives (`geometry/quantities.py`). Result is persisted to `TakeoffResult`,
+  so the Quantities panel and Excel export pick it up.
+- `page` + per-space `geojson` (PDF points) let the frontend overlay detections
+  **on the actual drawing** — the React `DetectionOverlay` multiplies point
+  coordinates by the pdf.js render scale (both use a top-left, points origin).
+  This replaces the old mock-on-a-fake-SVG rendering.
+
+### Weights (raster fallback)
+
+The vector path needs **no model weights** — it's the highest-accuracy path and
+works today. Scanned/raster sheets have no vector geometry, so they fall back to
+the YOLOv8-seg detector (`ai/detection_engine.py`), which *does* need weights.
+Until weights are present, AUTODETECT returns `status: "needs_weights"` rather
+than fabricating numbers. To obtain weights:
+
+- **Train:** `python training/train.py` on public floor-plan datasets
+  (CubiCasa5K / RPLAN / Structured3D), then drop `rooms_doors_windows_v1.pt`
+  into `ai/models/`.
+- **Or auto-download:** set `AI_MODELS_BUCKET` to an S3 bucket holding
+  `models/rooms_doors_windows_v1.pt` (see `_ensure_model`).
+
 ## #27 — Geometry as first-class data (PostGIS)
 
 `../geo_models.py` defines the geometry-first model (CLAUDE.md guardrails #4/#5):

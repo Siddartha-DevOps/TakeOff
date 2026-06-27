@@ -32,6 +32,7 @@ from .vector_pdf import (
     is_vector_pdf_page,
     measure_pdf,
 )
+from .quantities import autodetect_from_measure, vector_quantities
 
 __all__ = [
     "POINTS_PER_INCH",
@@ -44,4 +45,6 @@ __all__ = [
     "extract_page_geometry",
     "is_vector_pdf_page",
     "measure_pdf",
+    "autodetect_from_measure",
+    "vector_quantities",
 ]
