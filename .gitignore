@@ -11,6 +11,10 @@ build/
 .env
 app/frontend/.env
 app/backend/.env
+app/frontend/.env.local
+
+# User-uploaded drawings (local-disk fallback storage — see storage.py)
+app/backend/routes/uploads/
 
 # Python
 __pycache__/

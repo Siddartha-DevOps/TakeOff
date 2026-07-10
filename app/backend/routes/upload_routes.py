@@ -42,7 +42,7 @@ def _file_exists(file_path: str) -> bool:
     return os.path.exists(file_path)
 
 
-def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
+def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_number: int = 0):
     """
     Background task: build the Deep Zoom tile pyramid (tiling.py) so
     DrawingRenderer can view this sheet without OOM-ing on a full-resolution
@@ -54,7 +54,10 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
     file lives — they're a regenerable cache derived from it, not the
     source of truth object storage (memory/TOGAL_PARITY_REAUDIT.md #12)
     is meant to protect; resolve_local_path() below only affects reading
-    the source.
+    the source. page_number picks the right page for a plan-set sheet
+    (memory/TOGAL_PARITY_REAUDIT.md #13) that shares file_path with its
+    siblings — tiles are still one full pyramid per Drawing (per page),
+    keyed by drawing_id, so no collision between sheets from the same upload.
     """
     from tiling import generate_tile_pyramid, tiling_available
 
@@ -63,7 +66,7 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
     try:
         output_dir = _tiles_dir(project_id, drawing_id)
         with storage.resolve_local_path(file_path) as local_path:
-            meta = generate_tile_pyramid(local_path, str(output_dir))
+            meta = generate_tile_pyramid(local_path, str(output_dir), page_number=page_number)
         logger.info(f"[Tiling] Generated {meta['max_level']+1} levels for drawing_id={drawing_id}")
     except Exception as tile_err:
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
@@ -75,7 +78,80 @@ def is_allowed_file(filename: str) -> bool:
     return get_file_extension(filename) in ALLOWED_EXTENSIONS
 
 
-@router.post("/project/{project_id}/drawings", response_model=schemas.Drawing)
+def ingest_plan_set(
+    db: Session,
+    background_tasks: BackgroundTasks,
+    project_id: int,
+    file_path: str,
+    filename: str,
+    original_filename: str,
+    file_size: int,
+    file_ext: str,
+    sheet_name: Optional[str],
+    scale: Optional[str],
+) -> list:
+    """
+    Splits a multi-page PDF upload into one Drawing row per page — closes
+    memory/TOGAL_PARITY_REAUDIT.md #13 ("today only page 0 is processed").
+    All rows share file_path (the one uploaded file; page_number picks the
+    right page out of it via ai/preprocessing.py's existing convention —
+    nothing gets re-encoded or duplicated) and a common upload_batch_id.
+    Non-PDF uploads and single-page PDFs still go through this
+    (get_page_count() returns 1 for images) and create exactly the one
+    Drawing row exactly as before this feature existed.
+
+    Sheets start out named "Page N" and get their real sheet_number/
+    discipline/title from ai/title_block_ocr.py as part of the background
+    AI-analysis task (_run_ai_analysis in takeoff_routes.py, which already
+    rasterizes each page) — not here, so the upload response stays fast
+    per CLAUDE.md's "Vercel routes must return fast; long work is a job"
+    rule, even for a 50-sheet plan set.
+    """
+    total_pages = 1
+    if file_ext == "pdf":
+        try:
+            from ai.preprocessing import get_page_count
+            with storage.resolve_local_path(file_path) as local_path:
+                total_pages = max(1, get_page_count(local_path))
+        except Exception as e:
+            logger.warning(f"[PlanSet] get_page_count failed for {file_path}: {e}")
+            total_pages = 1
+
+    batch_id = str(uuid.uuid4())
+    single_sheet_named = total_pages == 1 and bool(sheet_name)
+
+    drawings = []
+    for page_index in range(total_pages):
+        db_drawing = models.Drawing(
+            project_id=project_id,
+            filename=filename,
+            original_filename=original_filename,
+            file_path=file_path,
+            file_size=file_size,
+            file_type=file_ext.upper(),
+            sheet_name=sheet_name if single_sheet_named else f"Page {page_index + 1}",
+            scale=scale,
+            page_number=page_index,
+            total_pages=total_pages,
+            upload_batch_id=batch_id,
+            processing_status=models.ProcessingStatus.PROCESSING,
+        )
+        db.add(db_drawing)
+        drawings.append(db_drawing)
+
+    db.commit()
+    for d in drawings:
+        db.refresh(d)
+
+    from routes.takeoff_routes import _run_ai_analysis
+    for d in drawings:
+        background_tasks.add_task(_run_ai_analysis, d.id, d.file_path, db, d.page_number)
+        background_tasks.add_task(_generate_tiles, d.id, project_id, d.file_path, d.page_number)
+
+    return drawings
+
+
+@router.post("/project/{project_id}/drawings", response_model=List[schemas.Drawing])
 async def upload_drawing(
     project_id: int,
     background_tasks: BackgroundTasks,          # ← NEW
@@ -85,6 +161,13 @@ async def upload_drawing(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """
+    Returns a list, not a single Drawing: a multi-page PDF splits into one
+    Drawing per page (memory/TOGAL_PARITY_REAUDIT.md #13's plan-set
+    ingestion, via ingest_plan_set() below) — a single image or one-page
+    PDF still returns a one-element list, so callers have one shape to
+    handle either way.
+    """
     project = db.query(models.Project).filter(
         models.Project.id == project_id,
         models.Project.organization_id == current_user.organization_id
@@ -112,32 +195,11 @@ async def upload_drawing(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    db_drawing = models.Drawing(
-        project_id=project_id,
-        filename=unique_filename,
-        original_filename=file.filename,
-        file_path=str(full_path),
-        file_size=file_size,
-        file_type=file_ext.upper(),
-        sheet_name=sheet_name,
-        scale=scale,
-        processing_status=models.ProcessingStatus.PROCESSING  # ← start as PROCESSING
+    return ingest_plan_set(
+        db, background_tasks, project_id,
+        file_path=str(full_path), filename=unique_filename, original_filename=file.filename,
+        file_size=file_size, file_ext=file_ext, sheet_name=sheet_name, scale=scale,
     )
-    db.add(db_drawing)
-    db.commit()
-    db.refresh(db_drawing)
-
-    # ── NEW: Auto-trigger AI analysis in background ───────────────
-    # Imports inline to avoid circular imports
-    from routes.takeoff_routes import _run_ai_analysis
-    background_tasks.add_task(_run_ai_analysis, db_drawing.id, str(full_path), db)
-    # ─────────────────────────────────────────────────────────────
-
-    # Tiled pyramid rendering (memory/TOGAL_PARITY_REAUDIT.md #11) — also
-    # kicked off in the background so the upload response stays fast.
-    background_tasks.add_task(_generate_tiles, db_drawing.id, project_id, str(full_path))
-
-    return db_drawing
 
 
 # ── Object storage (S3/R2) presigned upload — memory/TOGAL_PARITY_REAUDIT.md
@@ -188,7 +250,7 @@ class ConfirmUploadRequest(BaseModel):
     scale: Optional[str] = None
 
 
-@router.post("/project/{project_id}/drawings/confirm", response_model=schemas.Drawing)
+@router.post("/project/{project_id}/drawings/confirm", response_model=List[schemas.Drawing])
 async def confirm_drawing_upload(
     project_id: int,
     payload: ConfirmUploadRequest,
@@ -198,10 +260,10 @@ async def confirm_drawing_upload(
 ):
     """
     Called after the browser has PUT/POSTed the file directly to the
-    presigned URL from /presign above — creates the Drawing record and
-    kicks off the same AI-analysis + tiling background tasks
-    upload_drawing() does, just reading the source from object storage
-    (storage.resolve_local_path()) instead of local disk.
+    presigned URL from /presign above — creates the Drawing record(s) (a
+    list — see ingest_plan_set()) and kicks off the same AI-analysis +
+    tiling background tasks upload_drawing() does, just reading the source
+    from object storage (storage.resolve_local_path()) instead of local disk.
     """
     project = db.query(models.Project).filter(
         models.Project.id == project_id,
@@ -227,26 +289,12 @@ async def confirm_drawing_upload(
         raise HTTPException(status_code=404, detail="Object not found in storage — did the upload complete?")
 
     file_ext = get_file_extension(payload.original_filename)
-    db_drawing = models.Drawing(
-        project_id=project_id,
-        filename=payload.key.rsplit("/", 1)[-1],
-        original_filename=payload.original_filename,
-        file_path=storage.to_uri(payload.key),
-        file_size=head.get("ContentLength", 0),
-        file_type=file_ext.upper(),
-        sheet_name=payload.sheet_name,
-        scale=payload.scale,
-        processing_status=models.ProcessingStatus.PROCESSING,
+    return ingest_plan_set(
+        db, background_tasks, project_id,
+        file_path=storage.to_uri(payload.key), filename=payload.key.rsplit("/", 1)[-1],
+        original_filename=payload.original_filename, file_size=head.get("ContentLength", 0),
+        file_ext=file_ext, sheet_name=payload.sheet_name, scale=payload.scale,
     )
-    db.add(db_drawing)
-    db.commit()
-    db.refresh(db_drawing)
-
-    from routes.takeoff_routes import _run_ai_analysis
-    background_tasks.add_task(_run_ai_analysis, db_drawing.id, db_drawing.file_path, db)
-    background_tasks.add_task(_generate_tiles, db_drawing.id, project_id, db_drawing.file_path)
-
-    return db_drawing
 
 
 @router.get("/project/{project_id}/drawings", response_model=List[schemas.Drawing])
@@ -364,7 +412,7 @@ async def trigger_tile_generation(
     drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
     if not _file_exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
-    background_tasks.add_task(_generate_tiles, drawing.id, drawing.project_id, drawing.file_path)
+    background_tasks.add_task(_generate_tiles, drawing.id, drawing.project_id, drawing.file_path, drawing.page_number)
     return {"status": "generating", "drawing_id": drawing_id}
 
 

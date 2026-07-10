@@ -97,6 +97,11 @@ class Drawing(DrawingBase):
     scale_ratio: Optional[float] = None
     scale_source: Optional[str] = None
     scale_calibrated_at: Optional[datetime] = None
+    page_number: int = 0
+    total_pages: Optional[int] = None
+    sheet_number: Optional[str] = None
+    discipline: Optional[str] = None
+    upload_batch_id: Optional[str] = None
 
     class Config:
         from_attributes = True

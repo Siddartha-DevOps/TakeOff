@@ -7,6 +7,8 @@ from database import get_db
 from detection_geometry import persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 import logging
 
@@ -44,7 +46,7 @@ async def analyze_drawing(
     db.commit()
 
     # Run AI in background — response returns immediately
-    background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db)
+    background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db, drawing.page_number)
 
     return {
         "status": "processing",
@@ -53,7 +55,7 @@ async def analyze_drawing(
     }
 
 
-async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
+async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_number: int = 0):
     """Background task: run YOLOv8 + spatial reasoning, save to DB."""
     from dataclasses import asdict
 
@@ -63,25 +65,50 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
         from ai.spatial_reasoning import enrich_takeoff_result
         import storage
 
-        logger.info(f"[AI] Starting analysis: drawing_id={drawing_id}")
+        logger.info(f"[AI] Starting analysis: drawing_id={drawing_id} page={page_number}")
 
         # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
         # #12) — resolve_local_path() downloads it to a temp file for the
         # duration of inference/OCR, transparently, and is a no-op for the
         # (still-supported) local-disk case.
         with storage.resolve_local_path(file_path) as local_path:
-            # Step 1: YOLOv8 inference
-            analysis = ai_engine.analyze(local_path, drawing_id)
+            # Rasterize the specific page this Drawing represents. A
+            # multi-page plan-set upload (memory/TOGAL_PARITY_REAUDIT.md
+            # #13) splits into one Drawing per page sharing one file_path —
+            # page_number is what picks the right page out of it. This also
+            # fixes a pre-existing bug: both YOLO inference and OCR-based
+            # scale detection expect a raster image, but were previously
+            # handed the raw file path directly, which for a PDF meant
+            # cv2.imread() silently returned None (OCR just no-op'd; a real
+            # YOLO model would have errored) — rasterizing once here, up
+            # front, makes both actually work for PDF uploads, not just images.
+            raster_path, raster_img = local_path, None
+            try:
+                import cv2
+                from ai.preprocessing import load_drawing
+                raster_img = load_drawing(local_path, page_number=page_number)
+                fd, raster_path = tempfile.mkstemp(suffix=".png")
+                os.close(fd)
+                cv2.imwrite(raster_path, raster_img)
+            except ImportError:
+                pass  # heavy stack unavailable — fall back to the raw path, same as before this change
 
-            # Step 2: Spatial reasoning layer (room graph, quantities, scale)
-            raw_detection = {
-                "rooms":   analysis.rooms,
-                "walls":   analysis.walls,
-                "doors":   analysis.doors,
-                "windows": analysis.windows,
-                "summary": analysis.summary,
-            }
-            enriched = enrich_takeoff_result(json.dumps(raw_detection), local_path)
+            try:
+                # Step 1: YOLOv8 inference
+                analysis = ai_engine.analyze(raster_path, drawing_id)
+
+                # Step 2: Spatial reasoning layer (room graph, quantities, scale)
+                raw_detection = {
+                    "rooms":   analysis.rooms,
+                    "walls":   analysis.walls,
+                    "doors":   analysis.doors,
+                    "windows": analysis.windows,
+                    "summary": analysis.summary,
+                }
+                enriched = enrich_takeoff_result(json.dumps(raw_detection), raster_path)
+            finally:
+                if raster_path != local_path and os.path.exists(raster_path):
+                    os.remove(raster_path)
 
         # Step 3: Save to database
         db_result = models.TakeoffResult(
@@ -101,6 +128,23 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
         if drawing:
             drawing.processing_status = models.ProcessingStatus.COMPLETED
             drawing.processed_at = datetime.now(timezone.utc)
+
+            # Plan-set title-block naming (memory/TOGAL_PARITY_REAUDIT.md
+            # #13) — best-effort; only overwrites sheet_name if it's still
+            # the numbered placeholder ingest_plan_set() gave it, never a
+            # name the uploader (or a prior OCR pass) already set.
+            if raster_img is not None:
+                try:
+                    from ai.title_block_ocr import identify_sheet
+                    identity = identify_sheet(raster_img, page_index=page_number)
+                    if identity["sheet_number"]:
+                        drawing.sheet_number = identity["sheet_number"]
+                    if identity["discipline"]:
+                        drawing.discipline = identity["discipline"]
+                    if drawing.sheet_name in (None, f"Page {page_number + 1}"):
+                        drawing.sheet_name = identity["sheet_title"]
+                except Exception as ocr_err:
+                    logger.warning(f"[AI] Title-block OCR failed for drawing_id={drawing_id}: {ocr_err}")
 
         db.commit()
         db.refresh(db_result)

@@ -95,16 +95,23 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
 
         clearInterval(progressInterval);
 
+        // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): the
+        // response is always an array — one file can now become several
+        // Drawings if it's a multi-page PDF (one per sheet), or just the
+        // one the upload flow always returned before this feature existed.
+        const createdDrawings = response.data;
+        const primaryDrawing = createdDrawings[0];
+
         setFiles((prev) =>
           prev.map((f) =>
             f.id === fileItem.id
-              ? { ...f, status: 'success', progress: 100, drawing: response.data }
+              ? { ...f, status: 'success', progress: 100, drawing: primaryDrawing, sheetCount: createdDrawings.length }
               : f
           )
         );
 
         if (onUploadComplete) {
-          onUploadComplete(response.data);
+          onUploadComplete(createdDrawings);
         }
       } catch (error) {
         console.error('Upload failed:', error);
@@ -211,7 +218,9 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
                   )}
 
                   {fileItem.status === 'success' && (
-                    <p className="mt-1 text-xs text-emerald-600">Upload complete</p>
+                    <p className="mt-1 text-xs text-emerald-600">
+                      Upload complete{fileItem.sheetCount > 1 ? ` — split into ${fileItem.sheetCount} sheets` : ''}
+                    </p>
                   )}
                 </div>
 

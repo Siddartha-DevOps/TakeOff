@@ -58,6 +58,17 @@ export default function DrawingRenderer({ drawing, onLoad, calibrating = false, 
     calibratingRef.current = calibrating;
   }, [calibrating]);
 
+  // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a sheet split
+  // from a multi-page PDF has its own page_number (0-indexed) even though
+  // it shares file_path with its siblings — react-pdf's pageNumber is
+  // 1-indexed, so this is what opens the untiled fallback viewer directly
+  // on the right page instead of always page 1. The tiled (OpenSeadragon)
+  // path doesn't need this: each sheet's tile pyramid is already built
+  // from just its own page (tiling.py), not the whole source file.
+  useEffect(() => {
+    setPageNumber((drawing?.page_number ?? 0) + 1);
+  }, [drawing?.id]);
+
   useEffect(() => {
     if (drawing && drawing.file_type !== 'PDF' && !tileMeta) {
       loadImage();

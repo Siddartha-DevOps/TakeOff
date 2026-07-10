@@ -104,6 +104,19 @@ class Drawing(Base):
     sheet_name = Column(String(255))  # e.g., "A-101 Level 12"
     scale = Column(String(50))  # human-readable label, e.g. 1/8" = 1'-0"
 
+    # Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13) — a multi-page
+    # PDF upload becomes one Drawing row per page, all sharing the same
+    # file_path (the original multi-page file; ai/preprocessing.py's
+    # page_number param picks the right page out of it) so nothing gets
+    # re-encoded or duplicated on disk/object storage. sheet_number/
+    # discipline are best-effort ai/title_block_ocr.py output — null if OCR
+    # was unavailable or the title block wasn't parseable, never fabricated.
+    page_number = Column(Integer, nullable=False, default=0)  # 0-indexed, matches preprocessing.py's convention
+    total_pages = Column(Integer, nullable=True)  # page count of the source file this row came from
+    sheet_number = Column(String(50), nullable=True)  # OCR-extracted, e.g. "A-101"
+    discipline = Column(String(10), nullable=True)  # OCR-derived from sheet_number's leading letter(s), e.g. "A"
+    upload_batch_id = Column(String(64), nullable=True, index=True)  # groups sheets split from the same upload
+
     # Scale calibration — see routes/scale_routes.py. scale_ratio is paper-inches
     # per real-foot (×12), expressed in the same 300-DPI pixel space
     # ai/preprocessing.py rasterizes drawings into, so it plugs directly into

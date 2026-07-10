@@ -9,6 +9,16 @@ import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
 import { boundsOf, rectsIntersect } from '../annotations/geometry';
 
+// AIA Uniform Drawing System discipline colors, matching
+// ai/title_block_ocr.py's DISCIPLINE_CODES — just enough to give the
+// Drawings sidebar a quick visual scan across a multi-sheet plan set.
+const DISCIPLINE_COLORS = {
+  A: '#818cf8', AD: '#a5b4fc', AS: '#a5b4fc',
+  S: '#94a3b8', C: '#84cc16', L: '#22c55e',
+  M: '#f59e0b', E: '#eab308', P: '#38bdf8', FP: '#f87171',
+  T: '#a855f7', G: '#64748b', I: '#ec4899', Q: '#14b8a6',
+};
+
 const ANNOTATION_TYPES = [
   { value: 'area', label: 'Area (sf)' },
   { value: 'line', label: 'Line (lf)' },
@@ -103,14 +113,19 @@ export default function Takeoff() {
     }
   }
 
-  const handleUploadComplete = (newDrawing) => {
-    setDrawings((prev) => [newDrawing, ...prev]);
+  // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a multi-page
+  // PDF upload returns one Drawing per sheet — all of them join the
+  // sidebar list, but only the first is selected/analyzed by default,
+  // same as a single-file upload always has been.
+  const handleUploadComplete = (newDrawings) => {
+    setDrawings((prev) => [...newDrawings, ...prev]);
     setShowUpload(false);
-    setSelectedDrawing(newDrawing);
+    const primary = newDrawings[0];
+    setSelectedDrawing(primary);
     setSuggestionDismissed(false);
-    fetchScaleInfo(newDrawing.id);
-    fetchRevisions(newDrawing.id);
-    runAnalysisForDrawing(newDrawing);
+    fetchScaleInfo(primary.id);
+    fetchRevisions(primary.id);
+    runAnalysisForDrawing(primary);
   };
 
   async function fetchRevisions(drawingId) {
@@ -536,8 +551,17 @@ export default function Takeoff() {
                     onClick={() => selectDrawing(drawing)}
                     className={`w-full text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
                   >
-                    <div className="truncate">{drawing.sheet_name || drawing.original_filename}</div>
-                    <div className="text-[10px] text-slate-500">{drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB</div>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {drawing.discipline && (
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
+                      )}
+                      {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
+                      <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500">
+                      {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
+                      {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
+                    </div>
                   </button>
                 ))}
               </div>
