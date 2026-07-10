@@ -122,6 +122,15 @@ export const searchAPI = {
   }),
 };
 
+// Drawing Compare — revision overlay/diff, OpenCV-backed (routes/compare_routes.py)
+export const compareAPI = {
+  listRevisions: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/revisions`),
+  compare: (drawingId, compareToDrawingId, manualPoints) => api.post(`/api/takeoff/drawings/${drawingId}/compare`, {
+    compare_to_drawing_id: compareToDrawingId,
+    ...(manualPoints ? { manual_points_a: manualPoints.a, manual_points_b: manualPoints.b } : {}),
+  }),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {

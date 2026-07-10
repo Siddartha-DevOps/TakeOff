@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -59,6 +59,12 @@ export default function Takeoff() {
   const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
   const [editingCondition, setEditingCondition] = useState(null); // Condition object being edited, or null
 
+  const [revisions, setRevisions] = useState([]);
+  const [compareTarget, setCompareTarget] = useState(null); // revision entry being compared against selectedDrawing
+  const [compareResult, setCompareResult] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState(null);
+
   useEffect(() => {
     fetchProject();
     // eslint-disable-next-line
@@ -103,8 +109,41 @@ export default function Takeoff() {
     setSelectedDrawing(newDrawing);
     setSuggestionDismissed(false);
     fetchScaleInfo(newDrawing.id);
+    fetchRevisions(newDrawing.id);
     runAnalysisForDrawing(newDrawing);
   };
+
+  async function fetchRevisions(drawingId) {
+    try {
+      const res = await compareAPI.listRevisions(drawingId);
+      setRevisions(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch revisions:', error);
+      setRevisions([]);
+    }
+  }
+
+  async function runCompare(revision) {
+    if (!selectedDrawing || revision.id === selectedDrawing.id) return;
+    setCompareTarget(revision);
+    setCompareResult(null);
+    setCompareError(null);
+    setCompareLoading(true);
+    try {
+      const res = await compareAPI.compare(selectedDrawing.id, revision.id);
+      setCompareResult(res.data);
+    } catch (error) {
+      setCompareError(error.response?.data?.detail || 'Comparison failed');
+    } finally {
+      setCompareLoading(false);
+    }
+  }
+
+  function closeCompare() {
+    setCompareTarget(null);
+    setCompareResult(null);
+    setCompareError(null);
+  }
 
   const runAnalysisForDrawing = async (drawing) => {
     setStatus('processing');
@@ -134,6 +173,7 @@ export default function Takeoff() {
     setPendingCalPoints(null);
     setSuggestionDismissed(false);
     fetchScaleInfo(drawing.id);
+    fetchRevisions(drawing.id);
     runAnalysisForDrawing(drawing);
   };
 
@@ -568,15 +608,27 @@ export default function Takeoff() {
               </div>
             )}
           </div>
-          <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Revisions</div>
-          <div className="space-y-1">
-            {[['Rev C', 'Current', true], ['Rev B', '3 days ago', false], ['Rev A', 'Mar 14', false]].map(([r, t, cur]) => (
-              <button key={r} className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-xs ${cur ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/60'}`}>
-                <span>{r}</span>
-                <span className="text-[10px] mono">{t}</span>
-              </button>
-            ))}
-          </div>
+          {revisions.length > 1 && (
+            <>
+              <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Revisions</div>
+              <div className="space-y-1">
+                {[...revisions].reverse().map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => !r.is_current && runCompare(r)}
+                    title={r.is_current ? undefined : `Compare against ${r.revision_label}`}
+                    className={`group w-full flex items-center justify-between px-2 py-1.5 rounded text-xs ${r.is_current ? 'bg-slate-800 text-slate-200' : 'text-slate-500 hover:bg-slate-800/60'}`}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {r.revision_label}
+                      {!r.is_current && <GitCompare className="w-3 h-3 opacity-0 group-hover:opacity-100" />}
+                    </span>
+                    <span className="text-[10px] mono">{r.is_current ? 'Current' : new Date(r.uploaded_at).toLocaleDateString()}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </aside>
 
         <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
@@ -707,6 +759,16 @@ export default function Takeoff() {
           condition={editingCondition}
           onSave={(data) => { updateCondition(editingCondition.id, data); setEditingCondition(null); }}
           onCancel={() => setEditingCondition(null)}
+        />
+      )}
+      {compareTarget && (
+        <CompareModal
+          current={selectedDrawing}
+          target={compareTarget}
+          loading={compareLoading}
+          error={compareError}
+          result={compareResult}
+          onClose={closeCompare}
         />
       )}
     </div>
@@ -1103,6 +1165,75 @@ function ConditionEditModal({ condition, onSave, onCancel }) {
       <div className="w-72 rounded-xl bg-white border border-slate-200 shadow-2xl p-4" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-sm font-semibold text-slate-900 mb-3">Edit condition</h3>
         <ConditionForm initial={condition} onSubmit={onSave} onCancel={onCancel} submitLabel="Save" />
+      </div>
+    </div>
+  );
+}
+
+function CompareModal({ current, target, loading, error, result, onClose }) {
+  const stats = result?.quantification;
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40" onClick={onClose}>
+      <div className="w-[640px] max-w-[90vw] max-h-[85vh] overflow-auto rounded-xl bg-white border border-slate-200 shadow-2xl p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+            <GitCompare className="w-4 h-4 text-indigo-600" />
+            {current?.sheet_name ? `${current.sheet_name} — ` : ''}{target?.revision_label} vs Current
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+        </div>
+
+        {loading && (
+          <div className="mt-8 flex flex-col items-center justify-center gap-2 text-slate-500 text-xs py-10">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            Aligning sheets and computing diff…
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="mt-4 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-700">
+            {error}
+            <div className="mt-1.5 text-rose-500">
+              Manual point-pair alignment is supported by the API but not yet wired into this UI —
+              ask an engineer to run it via <span className="mono">POST /api/takeoff/drawings/{'{id}'}/compare</span> with
+              manual_points_a/manual_points_b if auto-align keeps failing.
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && result && (
+          <div className="mt-4 space-y-4">
+            <img src={result.diff_image} alt="Drawing diff" className="w-full rounded-lg border border-slate-200" />
+            <div className="flex items-center gap-4 text-[10px] text-slate-500">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-[#dc3c3c]" /> Removed</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-[#3c6edc]" /> Added</span>
+              <span className="ml-auto mono">
+                {result.alignment_method === 'auto' ? `Auto-aligned · ${result.alignment_confidence} matched features` : `Manually aligned · ${result.alignment_confidence} point pairs`}
+              </span>
+            </div>
+            {stats && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-rose-500 font-semibold">Removed</div>
+                  <div className="mt-1 text-sm font-semibold text-rose-700">{stats.removed_regions} region{stats.removed_regions === 1 ? '' : 's'}</div>
+                  <div className="text-[11px] text-rose-500 mono">
+                    {stats.removed_px.toLocaleString()} px{stats.removed_sqft != null ? ` · ${stats.removed_sqft.toLocaleString()} sf` : ''}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-indigo-500 font-semibold">Added</div>
+                  <div className="mt-1 text-sm font-semibold text-indigo-700">{stats.added_regions} region{stats.added_regions === 1 ? '' : 's'}</div>
+                  <div className="text-[11px] text-indigo-500 mono">
+                    {stats.added_px.toLocaleString()} px{stats.added_sqft != null ? ` · ${stats.added_sqft.toLocaleString()} sf` : ''}
+                  </div>
+                </div>
+              </div>
+            )}
+            {stats && stats.removed_sqft == null && (
+              <div className="text-[10px] text-slate-400">Set a scale on this drawing to see changed area in sf, not just pixels.</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
