@@ -36,6 +36,17 @@ export function rectFromBbox([x1, y1, x2, y2]) {
   ];
 }
 
+/** Axis-aligned bounding box [x1,y1,x2,y2] of any geometry — used for box-select hit-testing. */
+export function boundsOf(points) {
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+export function rectsIntersect([ax1, ay1, ax2, ay2], [bx1, by1, bx2, by2]) {
+  return ax1 <= bx2 && ax2 >= bx1 && ay1 <= by2 && ay2 >= by1;
+}
+
 /**
  * The single source of truth for `measuredValue`. Called on every geometry
  * mutation and on ingest (AI output, deserialize) so AI and manual shapes are

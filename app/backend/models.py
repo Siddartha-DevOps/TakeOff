@@ -55,6 +55,31 @@ class Project(Base):
     owner = relationship("User", back_populates="projects")
     organization = relationship("Organization", back_populates="projects")
     drawings = relationship("Drawing", back_populates="project", cascade="all, delete-orphan")
+    conditions = relationship("Condition", back_populates="project", cascade="all, delete-orphan")
+
+class Condition(Base):
+    """
+    A named, measured item that AI and manual detections attach to —
+    Togal calls this a "condition" (CLAUDE.md §5 calls it out too).
+    Project-scoped rather than per-sheet: the same "Interior Partition
+    Drywall" condition accumulates quantity across every sheet in a takeoff.
+    """
+    __tablename__ = "conditions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String(255), nullable=False)          # e.g. "Interior Partition Drywall"
+    trade = Column(String(100), nullable=False)          # e.g. "Drywall"
+    space_type = Column(String(100), nullable=True)      # e.g. "Bedroom" — for room/space-type conditions
+    annotation_type = Column(String(20), nullable=False)  # 'count' | 'line' | 'area' — matches the frontend Annotation model
+    unit = Column(String(20), nullable=False)            # 'ea' | 'lf' | 'sf'
+    color = Column(String(20), default="#6366f1")
+    waste_percent = Column(Float, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    project = relationship("Project", back_populates="conditions")
 
 class Drawing(Base):
     __tablename__ = "drawings"

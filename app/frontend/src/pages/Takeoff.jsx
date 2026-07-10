@@ -1,12 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2 } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
+import { boundsOf, rectsIntersect } from '../annotations/geometry';
+
+const ANNOTATION_TYPES = [
+  { value: 'area', label: 'Area (sf)' },
+  { value: 'line', label: 'Line (lf)' },
+  { value: 'count', label: 'Count (ea)' },
+];
 
 const LAYER_CONFIG = [
   { key: 'rooms', label: 'Rooms', color: '#a78bfa' },
@@ -45,6 +52,12 @@ export default function Takeoff() {
   const [calibratingBusy, setCalibratingBusy] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
 
+  // Conditions + box-select assignment. See routes/condition_routes.py.
+  const [conditions, setConditions] = useState([]);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
+
   useEffect(() => {
     fetchProject();
     // eslint-disable-next-line
@@ -53,6 +66,7 @@ export default function Takeoff() {
   useEffect(() => {
     if (project) {
       fetchDrawings();
+      fetchConditions();
       runAnalysis();
     }
     // eslint-disable-next-line
@@ -168,6 +182,52 @@ export default function Takeoff() {
     }
   }
 
+  async function fetchConditions() {
+    if (!id) return;
+    try {
+      const res = await conditionsAPI.list(id);
+      setConditions(res.data || []);
+    } catch (error) {
+      console.error('Failed to fetch conditions:', error);
+    }
+  }
+
+  function handleBoxSelect(ids) {
+    setSelectedIds(ids);
+    setContextMenu(null);
+  }
+
+  function handleContextMenuRequest(x, y) {
+    if (selectedIds.length === 0) return;
+    setContextMenu({ x, y });
+  }
+
+  function assignSelectionToCondition(conditionId) {
+    annotationStore.assignCondition(selectedIds, conditionId);
+    setContextMenu(null);
+    setSelectedIds([]);
+  }
+
+  async function createConditionAndAssign(data) {
+    const res = await conditionsAPI.create(id, data);
+    setConditions((prev) => [...prev, res.data]);
+    assignSelectionToCondition(res.data.id);
+  }
+
+  async function createCondition(data) {
+    const res = await conditionsAPI.create(id, data);
+    setConditions((prev) => [...prev, res.data]);
+  }
+
+  async function deleteCondition(conditionId) {
+    try {
+      await conditionsAPI.delete(conditionId);
+      setConditions((prev) => prev.filter((c) => c.id !== conditionId));
+    } catch (error) {
+      console.error('Failed to delete condition:', error);
+    }
+  }
+
   async function runAnalysis() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
     const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
@@ -228,6 +288,29 @@ export default function Takeoff() {
     if (!detection || !selectedId) return null;
     return [...detection.rooms, ...detection.doors, ...detection.windows].find((x) => x.id === selectedId);
   }, [detection, selectedId]);
+
+  const annotationsById = useMemo(() => {
+    const map = new Map();
+    annotationStore.annotations.forEach((a) => map.set(a.id, a));
+    return map;
+  }, [annotationStore.annotations]);
+
+  const conditionsById = useMemo(() => {
+    const map = new Map();
+    conditions.forEach((c) => map.set(c.id, c));
+    return map;
+  }, [conditions]);
+
+  const conditionTotals = useMemo(() => {
+    const totals = new Map(conditions.map((c) => [c.id, 0]));
+    annotationStore.annotations.forEach((a) => {
+      const conditionId = a.meta?.conditionId;
+      if (conditionId != null && totals.has(conditionId)) {
+        totals.set(conditionId, totals.get(conditionId) + a.measuredValue);
+      }
+    });
+    return totals;
+  }, [annotationStore.annotations, conditions]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900">
@@ -341,6 +424,29 @@ export default function Takeoff() {
               );
             })}
           </div>
+          <div className="mt-6 mb-2 flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5"><Tag className="w-3 h-3" /> Conditions</div>
+            <ConditionCreateButton onCreate={createCondition} />
+          </div>
+          <div className="space-y-1">
+            {conditions.length === 0 && (
+              <div className="text-[11px] text-slate-500 px-2 py-1">Box-select shapes, right-click, assign.</div>
+            )}
+            {conditions.map((c) => (
+              <div key={c.id} className="group w-full flex items-center justify-between px-2 py-1.5 rounded text-xs text-slate-300 hover:bg-slate-800">
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: c.color }} />
+                  <span className="truncate">{c.name}</span>
+                </span>
+                <span className="flex items-center gap-1.5 flex-shrink-0">
+                  <span className="mono text-[11px] text-slate-400">{(conditionTotals.get(c.id) ?? 0).toLocaleString()} {c.unit}</span>
+                  <button onClick={() => deleteCondition(c.id)} className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Revisions</div>
           <div className="space-y-1">
             {[['Rev C', 'Current', true], ['Rev B', '3 days ago', false], ['Rev A', 'Mar 14', false]].map(([r, t, cur]) => (
@@ -364,13 +470,30 @@ export default function Takeoff() {
               />
             </div>
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center" onMouseDown={onMouseDown}>
+            <div className="absolute inset-0 flex items-center justify-center" onMouseDown={selectMode ? undefined : onMouseDown}>
               <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: dragRef.current ? 'none' : 'transform 180ms ease' }}>
-                <CanvasFull detection={detection} layers={layers} selectedId={selectedId} onSelect={setSelectedId} />
+                <CanvasFull
+                  detection={detection}
+                  layers={layers}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  selectMode={selectMode}
+                  selectedIds={selectedIds}
+                  annotationsById={annotationsById}
+                  conditionsById={conditionsById}
+                  onBoxSelect={handleBoxSelect}
+                  onContextMenuRequest={handleContextMenuRequest}
+                />
               </div>
             </div>
           )}
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 p-1 rounded-xl bg-white border border-slate-200 shadow-lg">
+            {!selectedDrawing && (
+              <>
+                <ToolBtn active={selectMode} onClick={() => { setSelectMode((v) => !v); setSelectedIds([]); }}><MousePointer2 className="w-4 h-4" /></ToolBtn>
+                <div className="w-px h-5 bg-slate-200 mx-1" />
+              </>
+            )}
             <ToolBtn onClick={() => zoomBy(-0.2)}><ZoomOut className="w-4 h-4" /></ToolBtn>
             <div className="mono text-xs px-2 text-slate-700 w-14 text-center">{Math.round(zoom * 100)}%</div>
             <ToolBtn onClick={() => zoomBy(0.2)}><ZoomIn className="w-4 h-4" /></ToolBtn>
@@ -405,6 +528,22 @@ export default function Takeoff() {
               onConfirm={submitCalibration}
             />
           )}
+          {selectMode && selectedIds.length > 0 && !contextMenu && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
+              <MousePointer2 className="w-3.5 h-3.5 text-indigo-400" />
+              {selectedIds.length} selected · right-click to assign a condition
+            </div>
+          )}
+          {contextMenu && (
+            <ConditionAssignMenu
+              position={contextMenu}
+              conditions={conditions}
+              selectedCount={selectedIds.length}
+              onAssign={assignSelectionToCondition}
+              onCreateAndAssign={createConditionAndAssign}
+              onClose={() => setContextMenu(null)}
+            />
+          )}
         </main>
 
         <aside className="bg-white border-l border-slate-200 flex flex-col min-h-0">
@@ -428,8 +567,15 @@ export default function Takeoff() {
   );
 }
 
-function ToolBtn({ children, onClick }) {
-  return <button onClick={onClick} className="w-8 h-8 rounded-md hover:bg-slate-100 flex items-center justify-center text-slate-700">{children}</button>;
+function ToolBtn({ children, onClick, active = false }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-8 h-8 rounded-md flex items-center justify-center ${active ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'hover:bg-slate-100 text-slate-700'}`}
+    >
+      {children}
+    </button>
+  );
 }
 
 function ProcessingOverlay({ progress }) {
@@ -452,9 +598,78 @@ function ProcessingOverlay({ progress }) {
   );
 }
 
-function CanvasFull({ detection, layers, selectedId, onSelect }) {
+function conditionDotFor(id, annotationsById, conditionsById) {
+  const conditionId = annotationsById.get(id)?.meta?.conditionId;
+  if (conditionId == null) return null;
+  return conditionsById.get(conditionId) || null;
+}
+
+function CanvasFull({
+  detection, layers, selectedId, onSelect,
+  selectMode = false, selectedIds = [], annotationsById = new Map(), conditionsById = new Map(),
+  onBoxSelect, onContextMenuRequest,
+}) {
+  const svgRef = useRef(null);
+  const dragStartRef = useRef(null);
+  const [marquee, setMarquee] = useState(null); // [x1,y1,x2,y2] in SVG user space
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+
+  function toSvgPoint(clientX, clientY) {
+    const svg = svgRef.current;
+    const ctm = svg?.getScreenCTM();
+    if (!svg || !ctm) return [0, 0];
+    const pt = svg.createSVGPoint();
+    pt.x = clientX; pt.y = clientY;
+    const local = pt.matrixTransform(ctm.inverse());
+    return [local.x, local.y];
+  }
+
+  function handleMouseDown(e) {
+    if (!selectMode) return;
+    e.stopPropagation(); // don't also trigger the parent's pan-drag
+    dragStartRef.current = toSvgPoint(e.clientX, e.clientY);
+    setMarquee([...dragStartRef.current, ...dragStartRef.current]);
+  }
+
+  function handleMouseMove(e) {
+    if (!selectMode || !dragStartRef.current) return;
+    const [x2, y2] = toSvgPoint(e.clientX, e.clientY);
+    setMarquee([...dragStartRef.current, x2, y2]);
+  }
+
+  function handleMouseUp() {
+    if (!selectMode || !dragStartRef.current || !marquee) {
+      dragStartRef.current = null;
+      return;
+    }
+    const [x1, y1, x2, y2] = marquee;
+    const box = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+    const layerVisible = { rooms: layers.rooms, doors: layers.doors, windows: layers.windows, mep: true };
+    const hits = [];
+    annotationsById.forEach((a, id) => {
+      if (layerVisible[a.layerId] === false) return;
+      if (rectsIntersect(box, boundsOf(a.geometry))) hits.push(id);
+    });
+    dragStartRef.current = null;
+    setMarquee(null);
+    onBoxSelect?.(hits);
+  }
+
+  function handleContextMenu(e) {
+    e.preventDefault();
+    if (selectedIds.length > 0) onContextMenuRequest?.(e.clientX, e.clientY);
+  }
+
   return (
-    <svg width="800" height="680" viewBox="0 0 800 680" className="bg-white rounded-lg shadow-2xl shadow-slate-900/20 border border-slate-200">
+    <svg
+      ref={svgRef}
+      width="800" height="680" viewBox="0 0 800 680"
+      className={`bg-white rounded-lg shadow-2xl shadow-slate-900/20 border border-slate-200 ${selectMode ? 'cursor-crosshair' : ''}`}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onContextMenu={handleContextMenu}
+    >
       <defs>
         <pattern id="grid2" width="40" height="40" patternUnits="userSpaceOnUse">
           <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#eef2f7" strokeWidth="0.5" />
@@ -479,37 +694,57 @@ function CanvasFull({ detection, layers, selectedId, onSelect }) {
       </g>
       {detection && layers.rooms && detection.rooms.map((r) => {
         const [x1, y1, x2, y2] = r.bbox;
-        const sel = selectedId === r.id;
+        const sel = selectedId === r.id || selectedIdSet.has(r.id);
+        const dot = conditionDotFor(r.id, annotationsById, conditionsById);
         return (
           <g key={r.id}>
             <rect
               className="detection-box"
               x={x1 + 4} y={y1 + 4} width={x2 - x1 - 8} height={y2 - y1 - 8}
               fill={getRoomColor(r.label)} fillOpacity={sel ? 0.5 : 0.22}
-              stroke={getRoomColor(r.label)} strokeWidth={sel ? 3 : 1.5}
-              style={{ cursor: 'pointer' }}
-              onClick={(e) => { e.stopPropagation(); onSelect(r.id); }}
+              stroke={sel ? '#4f46e5' : getRoomColor(r.label)} strokeWidth={sel ? 3 : 1.5}
+              strokeDasharray={selectedIdSet.has(r.id) ? '6 3' : undefined}
+              style={{ cursor: selectMode ? 'crosshair' : 'pointer' }}
+              onClick={(e) => { if (selectMode) return; e.stopPropagation(); onSelect(r.id); }}
             />
             <g transform={`translate(${(x1 + x2) / 2},${(y1 + y2) / 2})`} style={{ pointerEvents: 'none' }}>
               <text textAnchor="middle" fontSize="12" fontWeight="600" fill="#1e293b">{r.label}</text>
               <text y="14" textAnchor="middle" fontSize="9" fill="#64748b" fontFamily="JetBrains Mono, monospace">{r.area} sf · {Math.round(r.confidence * 100)}%</text>
             </g>
+            {dot && <circle cx={x1 + 12} cy={y1 + 12} r="5" fill={dot.color} stroke="#fff" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />}
           </g>
         );
       })}
-      {detection && layers.doors && detection.doors.map((d) => (
-        <g key={d.id} transform={`translate(${d.x},${d.y}) rotate(${d.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(d.id); }}>
-          <rect x="-4" y="-14" width="8" height="28" fill="#fff" />
-          <path d={`M 0 -14 A ${d.width} ${d.width} 0 0 1 ${d.width} 14`} stroke={selectedId === d.id ? '#059669' : '#10b981'} strokeWidth={selectedId === d.id ? 3 : 1.5} fill="none" />
-          <circle cx="0" cy="-14" r="3" fill="#10b981" />
-        </g>
-      ))}
-      {detection && layers.windows && detection.windows.map((w) => (
-        <g key={w.id} transform={`translate(${w.x},${w.y}) rotate(${w.rotation || 0})`} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); onSelect(w.id); }}>
-          <rect x="0" y="-4" width={w.width} height="8" fill={selectedId === w.id ? '#2563eb' : '#3b82f6'} stroke="#1d4ed8" strokeWidth="1" />
-          <line x1="0" y1="0" x2={w.width} y2="0" stroke="#fff" strokeWidth="1" />
-        </g>
-      ))}
+      {detection && layers.doors && detection.doors.map((d) => {
+        const dot = conditionDotFor(d.id, annotationsById, conditionsById);
+        const sel = selectedIdSet.has(d.id);
+        return (
+          <g key={d.id} transform={`translate(${d.x},${d.y}) rotate(${d.rotation || 0})`} style={{ cursor: selectMode ? 'crosshair' : 'pointer' }} onClick={(e) => { if (selectMode) return; e.stopPropagation(); onSelect(d.id); }}>
+            <rect x="-4" y="-14" width="8" height="28" fill="#fff" />
+            <path d={`M 0 -14 A ${d.width} ${d.width} 0 0 1 ${d.width} 14`} stroke={sel ? '#4f46e5' : (selectedId === d.id ? '#059669' : '#10b981')} strokeWidth={sel || selectedId === d.id ? 3 : 1.5} fill="none" />
+            <circle cx="0" cy="-14" r="3" fill="#10b981" />
+            {dot && <circle cx="10" cy="-14" r="4" fill={dot.color} stroke="#fff" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />}
+          </g>
+        );
+      })}
+      {detection && layers.windows && detection.windows.map((w) => {
+        const dot = conditionDotFor(w.id, annotationsById, conditionsById);
+        const sel = selectedIdSet.has(w.id);
+        return (
+          <g key={w.id} transform={`translate(${w.x},${w.y}) rotate(${w.rotation || 0})`} style={{ cursor: selectMode ? 'crosshair' : 'pointer' }} onClick={(e) => { if (selectMode) return; e.stopPropagation(); onSelect(w.id); }}>
+            <rect x="0" y="-4" width={w.width} height="8" fill={sel ? '#4f46e5' : (selectedId === w.id ? '#2563eb' : '#3b82f6')} stroke="#1d4ed8" strokeWidth="1" />
+            <line x1="0" y1="0" x2={w.width} y2="0" stroke="#fff" strokeWidth="1" />
+            {dot && <circle cx={w.width + 6} cy="0" r="4" fill={dot.color} stroke="#fff" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />}
+          </g>
+        );
+      })}
+      {marquee && (
+        <rect
+          x={Math.min(marquee[0], marquee[2])} y={Math.min(marquee[1], marquee[3])}
+          width={Math.abs(marquee[2] - marquee[0])} height={Math.abs(marquee[3] - marquee[1])}
+          fill="rgba(79,70,229,0.12)" stroke="#4f46e5" strokeDasharray="4 3"
+        />
+      )}
     </svg>
   );
 }
@@ -599,6 +834,105 @@ function ScaleCalibrationModal({ busy, onCancel, onConfirm }) {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+const CONDITION_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#ef4444', '#84cc16'];
+
+function ConditionForm({ initialType = 'area', onSubmit, onCancel, submitLabel = 'Create' }) {
+  const [name, setName] = useState('');
+  const [trade, setTrade] = useState('');
+  const [annotationType, setAnnotationType] = useState(initialType);
+  const [unit, setUnit] = useState(initialType === 'area' ? 'sf' : initialType === 'line' ? 'lf' : 'ea');
+  const [color, setColor] = useState(CONDITION_COLORS[Math.floor(Math.random() * CONDITION_COLORS.length)]);
+
+  function handleTypeChange(t) {
+    setAnnotationType(t);
+    setUnit(t === 'area' ? 'sf' : t === 'line' ? 'lf' : 'ea');
+  }
+
+  function submit(e) {
+    e.preventDefault();
+    if (!name.trim() || !trade.trim()) return;
+    onSubmit({ name: name.trim(), trade: trade.trim(), annotation_type: annotationType, unit, color });
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-2">
+      <input
+        value={name} onChange={(e) => setName(e.target.value)} placeholder="Condition name (e.g. Interior Drywall)" autoFocus
+        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+      />
+      <input
+        value={trade} onChange={(e) => setTrade(e.target.value)} placeholder="Trade (e.g. Drywall)"
+        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-xs outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+      />
+      <div className="flex items-center gap-1.5">
+        <select value={annotationType} onChange={(e) => handleTypeChange(e.target.value)} className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-xs outline-none">
+          {ANNOTATION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+        <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-8 h-8 rounded border border-slate-300" />
+      </div>
+      <div className="flex gap-1.5 pt-1">
+        <button type="button" onClick={onCancel} className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Cancel</button>
+        <button type="submit" className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">{submitLabel}</button>
+      </div>
+    </form>
+  );
+}
+
+function ConditionCreateButton({ onCreate }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="text-slate-500 hover:text-slate-200"><Plus className="w-3.5 h-3.5" /></button>
+    );
+  }
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40" onClick={() => setOpen(false)}>
+      <div className="w-72 rounded-xl bg-white border border-slate-200 shadow-2xl p-4" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">New condition</h3>
+        <ConditionForm onSubmit={(data) => { onCreate(data); setOpen(false); }} onCancel={() => setOpen(false)} />
+      </div>
+    </div>
+  );
+}
+
+function ConditionAssignMenu({ position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose }) {
+  const [creating, setCreating] = useState(false);
+  const menuStyle = { left: Math.min(position.x, window.innerWidth - 260), top: Math.min(position.y, window.innerHeight - 320) };
+
+  return (
+    <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
+      <div className="fixed w-64 rounded-xl bg-white border border-slate-200 shadow-2xl py-2" style={menuStyle} onClick={(e) => e.stopPropagation()}>
+        {!creating ? (
+          <>
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
+              <Tag className="w-3 h-3" /> Assign {selectedCount} shape{selectedCount > 1 ? 's' : ''} to
+            </div>
+            <div className="max-h-48 overflow-auto">
+              {conditions.length === 0 && <div className="px-3 py-2 text-xs text-slate-500">No conditions yet</div>}
+              {conditions.map((c) => (
+                <button key={c.id} onClick={() => onAssign(c.id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                  <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: c.color }} />
+                  <span className="truncate">{c.name}</span>
+                  <span className="ml-auto text-[10px] text-slate-400">{c.unit}</span>
+                </button>
+              ))}
+            </div>
+            <div className="border-t border-slate-100 mt-1 pt-1">
+              <button onClick={() => setCreating(true)} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-slate-50">
+                <Plus className="w-3.5 h-3.5" /> New condition
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="px-3 py-2">
+            <ConditionForm submitLabel="Create & assign" onSubmit={onCreateAndAssign} onCancel={() => setCreating(false)} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

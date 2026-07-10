@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Literal, Optional, List
 from datetime import datetime
 from models import ProcessingStatus
 
@@ -101,6 +101,37 @@ class Drawing(DrawingBase):
     class Config:
         from_attributes = True
         use_enum_values = True
+
+# Condition Schemas
+class ConditionBase(BaseModel):
+    name: str
+    trade: str
+    space_type: Optional[str] = None
+    annotation_type: Literal["count", "line", "area"]
+    unit: str
+    color: str = "#6366f1"
+    waste_percent: float = 0
+
+class ConditionCreate(ConditionBase):
+    pass
+
+class ConditionUpdate(BaseModel):
+    name: Optional[str] = None
+    trade: Optional[str] = None
+    space_type: Optional[str] = None
+    annotation_type: Optional[Literal["count", "line", "area"]] = None
+    unit: Optional[str] = None
+    color: Optional[str] = None
+    waste_percent: Optional[float] = None
+
+class Condition(ConditionBase):
+    id: int
+    project_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
 
 # Takeoff Result Schemas
 class TakeoffResultCreate(BaseModel):

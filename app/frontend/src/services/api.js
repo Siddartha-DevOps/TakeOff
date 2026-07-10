@@ -90,6 +90,14 @@ export const scaleAPI = {
   acceptSuggestion: (drawingId) => api.post(`/api/uploads/drawings/${drawingId}/scale/accept-suggestion`),
 };
 
+// Conditions API
+export const conditionsAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/conditions`),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/conditions`, data),
+  update: (conditionId, data) => api.put(`/api/conditions/${conditionId}`, data),
+  delete: (conditionId) => api.delete(`/api/conditions/${conditionId}`),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {
