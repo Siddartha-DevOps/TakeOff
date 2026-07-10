@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
 from sqlalchemy.orm import relationship
+from geoalchemy2 import Geometry
 from datetime import datetime, timezone
 import enum
 from database import Base
@@ -113,6 +114,60 @@ class Drawing(Base):
     # Relationships
     project = relationship("Project", back_populates="drawings")
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
+    detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
+
+class Detection(Base):
+    """
+    Geometry is first-class (CLAUDE.md §2/§5): a detected shape — AI or
+    manual — stored as real PostGIS geometry, not a JSON blob. This is the
+    server-side counterpart to the frontend's unified Annotation model
+    (frontend/src/annotations/types.js); annotation_id is the join key
+    between the two, since annotations aren't the system of record here —
+    TakeoffResult.detection_data still is, this is the geometry-first mirror
+    of it.
+
+    geom is plan-space (source-raster pixel coordinates — the same space
+    ai/preprocessing.py rasterizes drawings into), not geographic, hence
+    srid=0 rather than a real-world SRID like 4326.
+    """
+    __tablename__ = "detections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
+    annotation_id = Column(String(64), nullable=False)  # matches frontend Annotation.id
+    annotation_type = Column(String(20), nullable=False)  # 'count' | 'line' | 'area'
+    class_label = Column(String(100), nullable=False)  # e.g. room label, door/window type
+    confidence = Column(Float, nullable=True)
+    source = Column(String(20), nullable=False, default="ai")  # 'ai' | 'manual'
+    condition_id = Column(Integer, ForeignKey("conditions.id"), nullable=True)
+    geom = Column(Geometry(geometry_type="GEOMETRY", srid=0), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    project = relationship("Project")
+    drawing = relationship("Drawing", back_populates="detections")
+    condition = relationship("Condition")
+    measurements = relationship("Measurement", back_populates="detection", cascade="all, delete-orphan")
+
+class Measurement(Base):
+    """
+    The derived quantity for a Detection — value/unit/geom, per CLAUDE.md §5.
+    Split from Detection so re-measuring (e.g. after a scale recalibration)
+    can produce a new Measurement without mutating the original detected shape.
+    """
+    __tablename__ = "measurements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    detection_id = Column(Integer, ForeignKey("detections.id"), nullable=False)
+    value = Column(Float, nullable=False)
+    unit = Column(String(20), nullable=False)  # 'sf' | 'lf' | 'ea'
+    geom = Column(Geometry(geometry_type="GEOMETRY", srid=0), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    detection = relationship("Detection", back_populates="measurements")
 
 class TakeoffResult(Base):
     __tablename__ = "takeoff_results"

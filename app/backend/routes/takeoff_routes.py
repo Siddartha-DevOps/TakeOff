@@ -4,6 +4,7 @@ import schemas
 import models
 from auth import get_current_user
 from database import get_db
+from detection_geometry import persist_detection_geometries
 import json
 from datetime import datetime, timezone
 import logging
@@ -100,6 +101,18 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
                     f"{analysis.processing_time_ms}ms | "
                     f"conf={analysis.confidence_avg:.2f}")
 
+        # Geometry is first-class (CLAUDE.md §2/§5) — mirror the same
+        # detections into the PostGIS-backed Detection/Measurement tables,
+        # not just the JSON blob above. Best-effort: a failure here shouldn't
+        # take down the primary TakeoffResult save.
+        try:
+            created = persist_detection_geometries(
+                db, drawing.project_id, drawing_id, enriched["detection"], source="ai"
+            )
+            logger.info(f"[AI] Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
+        except Exception as geo_err:
+            logger.warning(f"[AI] Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
         drawing = db.query(models.Drawing).filter(
@@ -139,6 +152,19 @@ async def save_detection_results(
     drawing.processed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(db_result)
+
+    # Geometry is first-class (CLAUDE.md §2/§5) — this is the endpoint the
+    # frontend actually calls today (Takeoff.jsx's takeoffAPI.saveResults),
+    # so it's the live write path for the PostGIS Detection/Measurement
+    # tables, not just the JSON blob above. Best-effort: a malformed/partial
+    # detection_data payload shouldn't break saving the primary result.
+    try:
+        detection = json.loads(result_data.detection_data)
+        created = persist_detection_geometries(db, drawing.project_id, drawing_id, detection, source="ai")
+        logger.info(f"Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
+    except Exception as geo_err:
+        logger.warning(f"Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+
     return db_result
 
 
@@ -167,6 +193,44 @@ async def get_detection_results(
             "processing_status": drawing.processing_status.value
         }
     return result
+
+
+@router.get("/drawings/{drawing_id}/detections")
+async def list_drawing_detections(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    The PostGIS-backed counterpart to GET /drawings/{id}/results: real
+    geometry (as GeoJSON) instead of the JSON-blob detection_data field.
+    """
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    from sqlalchemy import func
+    rows = db.query(
+        models.Detection,
+        func.ST_AsGeoJSON(models.Detection.geom).label("geojson"),
+    ).filter(models.Detection.drawing_id == drawing_id).all()
+
+    return [
+        {
+            "id": det.id,
+            "annotation_id": det.annotation_id,
+            "annotation_type": det.annotation_type,
+            "class_label": det.class_label,
+            "confidence": det.confidence,
+            "source": det.source,
+            "condition_id": det.condition_id,
+            "geometry": json.loads(geojson),
+        }
+        for det, geojson in rows
+    ]
 
 
 @router.get("/projects/{project_id}/results")

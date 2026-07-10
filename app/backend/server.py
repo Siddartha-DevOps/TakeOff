@@ -11,8 +11,8 @@ import uuid
 from datetime import datetime, timezone
 from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes
 
-# Import database and models
-from database import engine, Base
+# Import models so every relationship("ClassName") string reference across
+# the ORM mapper registry resolves before the app starts handling requests.
 import models
 
 # ── NEW: Import AI engine ─────────────────────────────────────────
@@ -31,8 +31,12 @@ except Exception as e:
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Schema is Alembic-owned now (run `alembic upgrade head` before starting
+# the server — see backend/alembic/). Base.metadata.create_all() used to run
+# here, which is exactly the "no migrations applied" gap this fixes: it
+# silently diverges from what's actually tracked/versioned, and can't apply
+# things a migration can (e.g. `CREATE EXTENSION postgis`, dropping enum
+# types on rollback). Schema changes now only happen through `alembic upgrade`.
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
