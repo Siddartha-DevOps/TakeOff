@@ -83,6 +83,13 @@ export const takeoffAPI = {
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
 };
 
+// Scale calibration API
+export const scaleAPI = {
+  get: (drawingId) => api.get(`/api/uploads/drawings/${drawingId}/scale`),
+  calibrate: (drawingId, payload) => api.post(`/api/uploads/drawings/${drawingId}/scale/calibrate`, payload),
+  acceptSuggestion: (drawingId) => api.post(`/api/uploads/drawings/${drawingId}/scale/accept-suggestion`),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {

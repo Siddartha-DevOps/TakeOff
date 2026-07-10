@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -37,6 +37,13 @@ export default function Takeoff() {
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
+
+  // Scale calibration — persisted per Sheet (Drawing). See routes/scale_routes.py.
+  const [scaleInfo, setScaleInfo] = useState(null);
+  const [calibrating, setCalibrating] = useState(false);
+  const [pendingCalPoints, setPendingCalPoints] = useState(null); // {point1, point2} awaiting a distance
+  const [calibratingBusy, setCalibratingBusy] = useState(false);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
 
   useEffect(() => {
     fetchProject();
@@ -79,6 +86,8 @@ export default function Takeoff() {
     setDrawings((prev) => [newDrawing, ...prev]);
     setShowUpload(false);
     setSelectedDrawing(newDrawing);
+    setSuggestionDismissed(false);
+    fetchScaleInfo(newDrawing.id);
     runAnalysisForDrawing(newDrawing);
   };
 
@@ -106,8 +115,58 @@ export default function Takeoff() {
 
   const selectDrawing = (drawing) => {
     setSelectedDrawing(drawing);
+    setCalibrating(false);
+    setPendingCalPoints(null);
+    setSuggestionDismissed(false);
+    fetchScaleInfo(drawing.id);
     runAnalysisForDrawing(drawing);
   };
+
+  async function fetchScaleInfo(drawingId) {
+    try {
+      const res = await scaleAPI.get(drawingId);
+      setScaleInfo(res.data);
+    } catch (error) {
+      console.error('Failed to fetch scale info:', error);
+      setScaleInfo(null);
+    }
+  }
+
+  function handleCalibrationPoints(points) {
+    setPendingCalPoints(points);
+    setCalibrating(false);
+  }
+
+  async function submitCalibration(realWorldDistance, unit) {
+    if (!selectedDrawing || !pendingCalPoints) return;
+    setCalibratingBusy(true);
+    try {
+      const res = await scaleAPI.calibrate(selectedDrawing.id, {
+        point1: pendingCalPoints.point1,
+        point2: pendingCalPoints.point2,
+        render_scale: 1, // DrawingRenderer already resolves clicks to native plan-space pixels
+        real_world_distance: realWorldDistance,
+        unit,
+      });
+      setScaleInfo(res.data);
+      setPendingCalPoints(null);
+    } catch (error) {
+      console.error('Calibration failed:', error);
+      alert(error.response?.data?.detail || 'Failed to calibrate scale. Please try again.');
+    } finally {
+      setCalibratingBusy(false);
+    }
+  }
+
+  async function acceptScaleSuggestion() {
+    if (!selectedDrawing) return;
+    try {
+      const res = await scaleAPI.acceptSuggestion(selectedDrawing.id);
+      setScaleInfo(res.data);
+    } catch (error) {
+      console.error('Failed to accept scale suggestion:', error);
+    }
+  }
 
   async function runAnalysis() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
@@ -181,9 +240,23 @@ export default function Takeoff() {
           <div className="text-sm font-semibold text-white truncate">{project?.name || 'Loading...'}</div>
           <div className="text-[10px] mono text-slate-400 truncate">
             {drawings.length > 0 ? `${drawings.length} drawing${drawings.length > 1 ? 's' : ''} · ` : ''}
-            Scale 1/8" = 1'-0"
+            {selectedDrawing
+              ? (scaleInfo?.scale_label ? `Scale ${scaleInfo.scale_label}` : 'Scale not calibrated')
+              : 'Scale 1/8" = 1\'-0"'}
           </div>
         </div>
+        {selectedDrawing && (
+          <button
+            onClick={() => { setCalibrating(true); setPendingCalPoints(null); }}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+              scaleInfo?.scale_source
+                ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
+                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30'
+            }`}
+          >
+            <Ruler className="w-3.5 h-3.5" /> {scaleInfo?.scale_source ? 'Recalibrate' : 'Calibrate Scale'}
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {['AR', 'PK', 'JL'].map((x, i) => (
@@ -283,7 +356,12 @@ export default function Takeoff() {
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
           {selectedDrawing ? (
             <div className="absolute inset-0">
-              <DrawingRenderer drawing={selectedDrawing} onLoad={(data) => console.log('Drawing loaded:', data)} />
+              <DrawingRenderer
+                drawing={selectedDrawing}
+                onLoad={(data) => console.log('Drawing loaded:', data)}
+                calibrating={calibrating}
+                onCalibrationPoints={handleCalibrationPoints}
+              />
             </div>
           ) : (
             <div className="absolute inset-0 flex items-center justify-center" onMouseDown={onMouseDown}>
@@ -306,6 +384,27 @@ export default function Takeoff() {
             </div>
           )}
           {selected && <DetectionHoverCard item={selected} onClose={() => setSelectedId(null)} />}
+          {calibrating && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
+              <Ruler className="w-3.5 h-3.5 text-amber-400" />
+              Click two points a known distance apart (e.g. a door width)
+              <button onClick={() => setCalibrating(false)} className="ml-2 text-slate-400 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+            </div>
+          )}
+          {selectedDrawing && scaleInfo?.suggestion && !suggestionDismissed && !calibrating && !pendingCalPoints && (
+            <ScaleSuggestionBanner
+              suggestion={scaleInfo.suggestion}
+              onAccept={acceptScaleSuggestion}
+              onDismiss={() => setSuggestionDismissed(true)}
+            />
+          )}
+          {pendingCalPoints && (
+            <ScaleCalibrationModal
+              busy={calibratingBusy}
+              onCancel={() => setPendingCalPoints(null)}
+              onConfirm={submitCalibration}
+            />
+          )}
         </main>
 
         <aside className="bg-white border-l border-slate-200 flex flex-col min-h-0">
@@ -436,6 +535,70 @@ function DetectionHoverCard({ item, onClose }) {
         <button className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">Accept</button>
         <button className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Edit</button>
       </div>
+    </div>
+  );
+}
+
+function ScaleSuggestionBanner({ suggestion, onAccept, onDismiss }) {
+  return (
+    <div className="absolute top-4 right-4 w-72 rounded-xl bg-white border border-slate-200 shadow-xl p-4 z-10">
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+          <Ruler className="w-3 h-3" /> Scale detected (OCR)
+        </div>
+        <button onClick={onDismiss} className="text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
+      </div>
+      <div className="mt-1.5 text-base font-semibold text-slate-900">{suggestion.label}</div>
+      <div className="mt-0.5 text-xs text-slate-500">{Math.round(suggestion.confidence * 100)}% confidence · matched "{suggestion.raw_text || suggestion.label}"</div>
+      <div className="mt-3 flex gap-1.5">
+        <button onClick={onAccept} className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">Use this scale</button>
+        <button onClick={onDismiss} className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+function ScaleCalibrationModal({ busy, onCancel, onConfirm }) {
+  const [distance, setDistance] = useState('');
+  const [unit, setUnit] = useState('ft');
+
+  function submit(e) {
+    e.preventDefault();
+    const value = parseFloat(distance);
+    if (!value || value <= 0) return;
+    onConfirm(value, unit);
+  }
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/40">
+      <form onSubmit={submit} className="w-80 rounded-xl bg-white border border-slate-200 shadow-2xl p-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-900">Set real-world distance</h3>
+          <button type="button" onClick={onCancel} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="mt-1 text-xs text-slate-500">How far apart are the two points you clicked?</p>
+        <div className="mt-4 flex items-center gap-2">
+          <input
+            type="number" step="any" min="0" autoFocus
+            value={distance} onChange={(e) => setDistance(e.target.value)}
+            placeholder="e.g. 3"
+            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          />
+          <select
+            value={unit} onChange={(e) => setUnit(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm outline-none focus:border-slate-500"
+          >
+            <option value="ft">ft</option>
+            <option value="in">in</option>
+          </select>
+        </div>
+        <div className="mt-4 flex gap-1.5">
+          <button type="button" onClick={onCancel} className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Cancel</button>
+          <button type="submit" disabled={busy} className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-1.5">
+            {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Save scale
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

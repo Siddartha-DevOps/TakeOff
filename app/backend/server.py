@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 import uuid
 from datetime import datetime, timezone
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes
 
 # Import database and models
 from database import engine, Base
@@ -65,6 +65,7 @@ app.include_router(takeoff_routes.router, prefix="/api")
 app.include_router(blog_routes.router,    prefix="/api")
 app.include_router(stripe_routes.router,  prefix="/api")
 app.include_router(export_routes.router,  prefix="/api")
+app.include_router(scale_routes.router,   prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 app.post("/api/webhook/stripe")(stripe_webhook)

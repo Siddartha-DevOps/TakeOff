@@ -94,7 +94,10 @@ class Drawing(DrawingBase):
     processing_status: ProcessingStatus
     uploaded_at: datetime
     processed_at: Optional[datetime]
-    
+    scale_ratio: Optional[float] = None
+    scale_source: Optional[str] = None
+    scale_calibrated_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
         use_enum_values = True

@@ -67,7 +67,20 @@ class Drawing(Base):
     file_size = Column(Integer)  # in bytes
     file_type = Column(String(50))  # PDF, TIFF, PNG, JPG
     sheet_name = Column(String(255))  # e.g., "A-101 Level 12"
-    scale = Column(String(50))  # e.g., "1/8" = 1'-0"
+    scale = Column(String(50))  # human-readable label, e.g. 1/8" = 1'-0"
+
+    # Scale calibration — see routes/scale_routes.py. scale_ratio is paper-inches
+    # per real-foot (×12), expressed in the same 300-DPI pixel space
+    # ai/preprocessing.py rasterizes drawings into, so it plugs directly into
+    # ai/preprocessing.pixels_to_feet()/pixels_to_sqft() unchanged.
+    scale_ratio = Column(Float, nullable=True)
+    scale_source = Column(String(20), nullable=True)  # 'manual' | 'ocr' | 'default'
+    scale_calibrated_at = Column(DateTime(timezone=True), nullable=True)
+    # Cached OCR suggestion so GET /scale doesn't re-run OCR on every request.
+    ocr_scale_ratio = Column(Float, nullable=True)
+    ocr_scale_text = Column(String(255), nullable=True)  # raw matched OCR text, e.g. '1/8" = 1\'-0"'
+    ocr_scale_confidence = Column(Float, nullable=True)
+
     processing_status = Column(SQLEnum(ProcessingStatus), default=ProcessingStatus.PENDING)
     uploaded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at = Column(DateTime(timezone=True), nullable=True)
