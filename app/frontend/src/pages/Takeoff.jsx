@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2 } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -671,7 +671,7 @@ export default function Takeoff() {
           </div>
           <div className="flex-1 overflow-auto">
             {tab === 'quantities' && <QuantitiesPanel detection={detection} />}
-            {tab === 'chat' && <ChatPanel detection={detection} />}
+            {tab === 'chat' && <ChatPanel detection={detection} drawing={selectedDrawing} />}
             {tab === 'summary' && <SummaryPanel detection={detection} />}
           </div>
         </aside>
@@ -1158,9 +1158,9 @@ function QuantitiesPanel({ detection }) {
   );
 }
 
-function ChatPanel({ detection }) {
+function ChatPanel({ detection, drawing }) {
   const [messages, setMessages] = useState([
-    { role: 'assistant', text: "Hi! I've parsed this sheet. Ask me anything about rooms, doors, windows, quantities or scope.", time: 'now' },
+    { role: 'assistant', text: "Hi! I've parsed this sheet. Ask me anything about rooms, doors, windows, quantities or scope — or ask me to draft a Scope of Work, RFP, or RFI.", time: 'now', synthetic: true },
   ]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -1169,16 +1169,39 @@ function ChatPanel({ detection }) {
   async function send(prompt) {
     const q = (prompt ?? input).trim();
     if (!q || sending) return;
+    // Claude's API requires the conversation to start with a user-role
+    // message — the synthetic UI greeting above isn't a real turn, exclude it.
+    const history = messages.filter((m) => !m.synthetic).map((m) => ({ role: m.role, content: m.text }));
     setMessages((m) => [...m, { role: 'user', text: q, time: 'now' }]);
     setInput(''); setSending(true);
-    const res = await askTakeoffChat(q);
-    setMessages((m) => [...m, { role: 'assistant', text: res.answer, time: 'now', citations: res.citations }]);
-    setSending(false);
+    try {
+      if (drawing) {
+        // Real TakeOff.CHAT — RAG over this sheet's detections, conditions,
+        // human corrections, and OCR (routes/ai_routes.py).
+        const res = await chatAPI.send(drawing.id, q, history);
+        setMessages((m) => [...m, { role: 'assistant', text: res.data.answer, time: 'now', citations: res.data.citations }]);
+      } else {
+        // No real Sheet selected (demo canvas) — nothing to ground a real
+        // chat in yet, same scoping as scale calibration/corrections.
+        const res = await askTakeoffChat(q);
+        setMessages((m) => [...m, { role: 'assistant', text: res.answer, time: 'now', citations: res.citations }]);
+      }
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      const text = error.response?.status === 503
+        ? "TakeOff.CHAT isn't configured yet — the server is missing its Claude API key."
+        : (detail || "Something went wrong answering that. Please try again.");
+      setMessages((m) => [...m, { role: 'assistant', text, time: 'now' }]);
+    } finally {
+      setSending(false);
+    }
   }
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
-  const suggestions = ['How many rooms?', 'Total paintable area?', 'Generate a scope of work', 'Any door irregularities?'];
+  const suggestions = drawing
+    ? ['How many rooms?', 'Total paintable area?', 'Draft a Scope of Work', 'Draft an RFP', 'Draft an RFI']
+    : ['How many rooms?', 'Total paintable area?', 'Generate a scope of work', 'Any door irregularities?'];
 
   return (
     <div className="h-full flex flex-col">

@@ -104,6 +104,14 @@ export const correctionsAPI = {
   create: (projectId, data) => api.post(`/api/projects/${projectId}/corrections`, data),
 };
 
+// TakeOff.CHAT — RAG over detections/conditions/corrections/OCR (routes/ai_routes.py)
+export const chatAPI = {
+  send: (drawingId, message, conversationHistory = []) => api.post(`/api/takeoff/drawings/${drawingId}/chat`, {
+    message,
+    conversation_history: conversationHistory,
+  }),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {
