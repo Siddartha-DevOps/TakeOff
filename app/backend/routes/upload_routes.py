@@ -15,16 +15,43 @@ import models
 from auth import get_current_user
 from database import get_db
 import aiofiles
+import logging
 import os
 from pathlib import Path
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tiff", "tif"}
+
+
+def _tiles_dir(project_id: int, drawing_id: int) -> Path:
+    return UPLOAD_DIR / str(project_id) / "tiles" / str(drawing_id)
+
+
+def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
+    """
+    Background task: build the Deep Zoom tile pyramid (tiling.py) so
+    DrawingRenderer can view this sheet without OOM-ing on a full-resolution
+    canvas. Best-effort — a failure here shouldn't affect the upload or AI
+    analysis, and is a clean 503 to the tile-status endpoint until it
+    succeeds (or forever, if PIL isn't installed — see tiling.py).
+    """
+    from tiling import generate_tile_pyramid, tiling_available
+
+    if not tiling_available():
+        return
+    try:
+        output_dir = _tiles_dir(project_id, drawing_id)
+        meta = generate_tile_pyramid(file_path, str(output_dir))
+        logger.info(f"[Tiling] Generated {meta['max_level']+1} levels for drawing_id={drawing_id}")
+    except Exception as tile_err:
+        logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
 
 def get_file_extension(filename: str) -> str:
     return filename.rsplit(".", 1)[1].lower() if "." in filename else ""
@@ -91,6 +118,10 @@ async def upload_drawing(
     background_tasks.add_task(_run_ai_analysis, db_drawing.id, str(full_path), db)
     # ─────────────────────────────────────────────────────────────
 
+    # Tiled pyramid rendering (memory/TOGAL_PARITY_REAUDIT.md #11) — also
+    # kicked off in the background so the upload response stays fast.
+    background_tasks.add_task(_generate_tiles, db_drawing.id, project_id, str(full_path))
+
     return db_drawing
 
 
@@ -148,3 +179,75 @@ async def download_drawing_file(
         media_type=media_type,
         filename=drawing.original_filename
     )
+
+
+def _get_drawing_for_tiles(drawing_id: int, current_user: models.User, db: Session) -> models.Drawing:
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return drawing
+
+
+@router.get("/drawings/{drawing_id}/tiles/status")
+async def get_tile_status(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Tile pyramid metadata for OpenSeadragon's custom tileSource (width,
+    height, tile_size, overlap, max_level) — {"ready": false} until
+    generation finishes, so DrawingRenderer knows whether to fall back to
+    direct (non-tiled) rendering.
+    """
+    from tiling import tiling_available, read_tile_meta
+
+    drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
+    if not tiling_available():
+        return {"ready": False, "reason": "Tiling isn't available on the server (Pillow isn't installed)."}
+
+    meta = read_tile_meta(str(_tiles_dir(drawing.project_id, drawing_id)))
+    if meta is None:
+        return {"ready": False}
+    return {"ready": True, **meta}
+
+
+@router.post("/drawings/{drawing_id}/tiles/generate")
+async def trigger_tile_generation(
+    drawing_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manual (re)generate — e.g. a retry after the auto-triggered build failed."""
+    drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
+    if not os.path.exists(drawing.file_path):
+        raise HTTPException(status_code=404, detail="File not found on server")
+    background_tasks.add_task(_generate_tiles, drawing.id, drawing.project_id, drawing.file_path)
+    return {"status": "generating", "drawing_id": drawing_id}
+
+
+@router.get("/drawings/{drawing_id}/tiles/{level}/{tile_filename}")
+async def get_tile(
+    drawing_id: int,
+    level: int,
+    tile_filename: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Serves one {col}_{row}.jpg tile — OpenSeadragon's getTileUrl target."""
+    drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
+    # tile_filename is user-controlled (path param) — constrain it to the
+    # exact "{int}_{int}.jpg" shape tiling.py produces before touching disk,
+    # so it can't be used to escape the tiles directory.
+    import re
+    if not re.fullmatch(r"\d+_\d+\.jpg", tile_filename):
+        raise HTTPException(status_code=400, detail="Invalid tile filename")
+
+    path = _tiles_dir(drawing.project_id, drawing_id) / str(level) / tile_filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Tile not found")
+    return FileResponse(path=str(path), media_type="image/jpeg")

@@ -74,6 +74,10 @@ export const uploadsAPI = {
   },
   listDrawings: (projectId) => api.get(`/api/uploads/project/${projectId}/drawings`),
   getDrawing: (drawingId) => api.get(`/api/uploads/drawings/${drawingId}`),
+  // Tiled pyramid rendering (routes/upload_routes.py + tiling.py) — DrawingRenderer
+  // polls this while a sheet is still generating, then hands the meta to OpenSeadragon.
+  getTileStatus: (drawingId) => api.get(`/api/uploads/drawings/${drawingId}/tiles/status`),
+  regenerateTiles: (drawingId) => api.post(`/api/uploads/drawings/${drawingId}/tiles/generate`),
 };
 
 // Takeoff/AI API

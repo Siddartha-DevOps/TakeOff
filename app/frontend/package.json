@@ -17,6 +17,7 @@
     "axios": "^1.15.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.8.0",
+    "openseadragon": "^6.0.2",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-pdf": "^10.4.1",
