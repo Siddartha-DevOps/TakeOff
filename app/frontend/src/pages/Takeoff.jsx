@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -52,6 +52,7 @@ export default function Takeoff() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showAdvancedExport, setShowAdvancedExport] = useState(false);
+  const [showHandoff, setShowHandoff] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -545,6 +546,10 @@ export default function Takeoff() {
                 <button onClick={() => { setShowExportMenu(false); setShowAdvancedExport(true); }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                   <FileDown className="w-3.5 h-3.5" /> Advanced export (PDF, grouping…)
                 </button>
+                <div className="my-1 border-t border-slate-100" />
+                <button onClick={() => { setShowExportMenu(false); setShowHandoff(true); }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                  <ArrowRightLeft className="w-3.5 h-3.5" /> Estimating handoff (UPC/WBS)
+                </button>
               </div>
             )}
           </div>
@@ -556,6 +561,13 @@ export default function Takeoff() {
           drawings={drawings}
           projectName={project?.name}
           onClose={() => setShowAdvancedExport(false)}
+        />
+      )}
+      {showHandoff && (
+        <HandoffModal
+          projectId={id}
+          projectName={project?.name}
+          onClose={() => setShowHandoff(false)}
         />
       )}
 
@@ -1534,6 +1546,286 @@ function ExportModal({ projectId, drawings, projectName, onClose }) {
             </button>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+const HANDOFF_TARGET_SYSTEMS = [
+  { value: 'generic', label: 'Generic (UPC + WBS)' },
+  { value: 'ediphi', label: 'Ediphi' },
+  { value: 'destini', label: 'DESTINI Estimator' },
+  { value: 'procore', label: 'Procore (Cost Code)' },
+];
+
+// Estimating-handoff integration — quantities -> UPC/WBS map + audit trail
+// (routes/handoff_routes.py, handoff_engine.py). Not an estimating engine:
+// this maps the AI's trade/item quantities to the cost codes a partner tool
+// imports, and logs every mapping edit + every export for accountability.
+function HandoffModal({ projectId, projectName, onClose }) {
+  const [tab, setTab] = useState('mapping'); // 'mapping' | 'audit'
+  const [rows, setRows] = useState(null);
+  const [edits, setEdits] = useState({}); // rowKey -> { wbs_code, upc_code, description }
+  const [targetSystem, setTargetSystem] = useState('generic');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [savingKey, setSavingKey] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [auditEvents, setAuditEvents] = useState(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const rowKey = (r) => `${r.trade} ${r.item}`;
+
+  async function loadMappings() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await handoffAPI.getMappings(projectId);
+      setRows(res.data.rows);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to load quantities/mappings');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadAuditTrail() {
+    setAuditLoading(true);
+    try {
+      const res = await handoffAPI.getAuditTrail(projectId);
+      setAuditEvents(res.data.events);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to load audit trail');
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  useEffect(() => { loadMappings(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { if (tab === 'audit' && auditEvents === null) loadAuditTrail(); /* eslint-disable-next-line */ }, [tab]);
+
+  function fieldFor(r) {
+    const key = rowKey(r);
+    if (edits[key]) return edits[key];
+    return {
+      wbs_code: r.wbs_code || r.suggested?.wbs_code || '',
+      upc_code: r.upc_code || r.suggested?.upc_code || '',
+      description: r.description || r.suggested?.description || '',
+    };
+  }
+
+  function updateField(r, field, value) {
+    const key = rowKey(r);
+    setEdits((prev) => ({ ...prev, [key]: { ...fieldFor(r), [field]: value } }));
+  }
+
+  async function saveMapping(r) {
+    const key = rowKey(r);
+    const f = fieldFor(r);
+    setSavingKey(key);
+    try {
+      await handoffAPI.upsertMapping(projectId, {
+        trade: r.trade, item: r.item,
+        wbs_code: f.wbs_code || null, upc_code: f.upc_code || null, description: f.description || null,
+        target_system: targetSystem,
+      });
+      setEdits((prev) => { const next = { ...prev }; delete next[key]; return next; });
+      await loadMappings();
+      if (auditEvents !== null) loadAuditTrail();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to save mapping');
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  async function clearMapping(r) {
+    if (!r.mapping_id) return;
+    setSavingKey(rowKey(r));
+    try {
+      await handoffAPI.deleteMapping(r.mapping_id);
+      await loadMappings();
+      if (auditEvents !== null) loadAuditTrail();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to clear mapping');
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  const mappedCount = (rows || []).filter((r) => r.mapped).length;
+
+  async function doExport() {
+    setExporting(true);
+    try {
+      const res = await handoffAPI.exportHandoff(projectId, targetSystem);
+      const blob = new Blob([res.data], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `handoff_${targetSystem}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      if (auditEvents !== null) loadAuditTrail();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50" onClick={onClose}>
+      <div className="w-[920px] max-w-[95vw] max-h-[88vh] overflow-hidden flex flex-col rounded-xl bg-white border border-slate-200 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5"><ArrowRightLeft className="w-4 h-4" /> Estimating handoff — {projectName || 'Project'}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex items-center gap-1 px-5 pt-3 border-b border-slate-200">
+          {[['mapping', 'UPC/WBS mapping'], ['audit', 'Audit trail']].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-t-md flex items-center gap-1.5 ${tab === key ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              {key === 'audit' && <History className="w-3.5 h-3.5" />} {label}
+            </button>
+          ))}
+        </div>
+
+        {error && <div className="px-5 pt-3 text-xs text-rose-600">{error}</div>}
+
+        {tab === 'mapping' && (
+          <>
+            <div className="flex-1 overflow-auto px-5 py-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+                  {rows ? `${mappedCount}/${rows.length} items mapped` : 'Loading…'}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Target</span>
+                  <select value={targetSystem} onChange={(e) => setTargetSystem(e.target.value)} className="rounded-lg border border-slate-300 px-2 py-1 text-xs">
+                    {HANDOFF_TARGET_SYSTEMS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Item</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Trade</th>
+                      <th className="text-right px-2 py-1.5 font-medium text-slate-500">Qty</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">WBS code</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">UPC code</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Description</th>
+                      <th className="w-20"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(rows || []).map((r) => {
+                      const key = rowKey(r);
+                      const f = fieldFor(r);
+                      const dirty = !!edits[key];
+                      return (
+                        <tr key={key} className="border-t border-slate-100">
+                          <td className="px-2 py-1 truncate max-w-[140px]" title={r.item}>{r.item}</td>
+                          <td className="px-2 py-1 text-slate-500">{r.trade}</td>
+                          <td className="px-2 py-1 text-right mono">{r.quantity} {r.unit}</td>
+                          <td className="px-2 py-1">
+                            <input value={f.wbs_code} onChange={(e) => updateField(r, 'wbs_code', e.target.value)}
+                              placeholder="e.g. 09-210" className="w-24 rounded border border-slate-200 px-1.5 py-0.5" />
+                          </td>
+                          <td className="px-2 py-1">
+                            <input value={f.upc_code} onChange={(e) => updateField(r, 'upc_code', e.target.value)}
+                              placeholder="e.g. 09.21.16" className="w-28 rounded border border-slate-200 px-1.5 py-0.5" />
+                          </td>
+                          <td className="px-2 py-1">
+                            <input value={f.description} onChange={(e) => updateField(r, 'description', e.target.value)}
+                              placeholder={r.suggested?.description || ''} className="w-full min-w-[140px] rounded border border-slate-200 px-1.5 py-0.5" />
+                          </td>
+                          <td className="px-2 py-1">
+                            <div className="flex items-center gap-1">
+                              {r.mapped ? <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> : null}
+                              <button
+                                onClick={() => saveMapping(r)}
+                                disabled={savingKey === key || (!dirty && r.mapped)}
+                                title="Save mapping"
+                                className="px-1.5 py-0.5 rounded bg-slate-900 text-white disabled:opacity-30"
+                              >
+                                {savingKey === key ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Save'}
+                              </button>
+                              {r.mapping_id && (
+                                <button onClick={() => clearMapping(r)} disabled={savingKey === key} title="Clear mapping" className="p-1 text-slate-400 hover:text-rose-600">
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {rows && rows.length === 0 && (
+                      <tr><td colSpan={7} className="px-2 py-6 text-center text-slate-400">No quantities yet — run AI takeoff on a drawing first.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between px-5 py-4 border-t border-slate-200">
+              <div className="text-[11px] text-slate-500">
+                {rows && mappedCount < rows.length ? `${rows.length - mappedCount} unmapped item(s) export as "UNMAPPED", not dropped.` : 'All items mapped.'}
+              </div>
+              <button
+                onClick={doExport}
+                disabled={!rows || !rows.length || exporting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50"
+              >
+                {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
+                Export {HANDOFF_TARGET_SYSTEMS.find((s) => s.value === targetSystem)?.label}
+              </button>
+            </div>
+          </>
+        )}
+
+        {tab === 'audit' && (
+          <div className="flex-1 overflow-auto px-5 py-4">
+            {auditLoading && <div className="text-xs text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading audit trail…</div>}
+            {!auditLoading && auditEvents && auditEvents.length === 0 && (
+              <div className="text-xs text-slate-400">No mapping changes or exports yet.</div>
+            )}
+            <div className="space-y-2">
+              {(auditEvents || []).map((e) => (
+                <div key={e.id} className="border border-slate-200 rounded-lg px-3 py-2">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="font-medium text-slate-800">{e.action.replace(/_/g, ' ')}</span>
+                    <span className="text-slate-400">{e.user_email} · {new Date(e.created_at).toLocaleString()}{e.target_system ? ` · ${e.target_system}` : ''}</span>
+                  </div>
+                  {e.action === 'handoff_exported' && e.after && (
+                    <div className="mt-1 text-[11px] text-slate-500 mono">{e.after}</div>
+                  )}
+                  {e.action !== 'handoff_exported' && (
+                    <div className="mt-1 grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <div className="text-slate-400 mb-0.5">Before</div>
+                        <div className="text-slate-600 mono break-all">{e.before || '—'}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-400 mb-0.5">After</div>
+                        <div className="text-slate-600 mono break-all">{e.after || '—'}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

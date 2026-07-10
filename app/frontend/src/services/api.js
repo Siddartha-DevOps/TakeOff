@@ -204,3 +204,17 @@ export const exportAPI = {
     responseType: 'blob'
   }),
 };
+
+// Estimating handoff — quantities -> UPC/WBS map + audit trail, Procore/
+// DESTINI/Ediphi-style (routes/handoff_routes.py)
+export const handoffAPI = {
+  getMappings: (projectId) => api.get(`/api/handoff/projects/${projectId}/mappings`),
+  upsertMapping: (projectId, mapping) => api.put(`/api/handoff/projects/${projectId}/mappings`, mapping),
+  bulkUpsertMappings: (projectId, mappings) => api.put(`/api/handoff/projects/${projectId}/mappings/bulk`, { mappings }),
+  deleteMapping: (mappingId) => api.delete(`/api/handoff/mappings/${mappingId}`),
+  getAuditTrail: (projectId) => api.get(`/api/handoff/projects/${projectId}/audit-trail`),
+  exportHandoff: (projectId, targetSystem) => api.get(`/api/handoff/projects/${projectId}/export`, {
+    params: { target_system: targetSystem },
+    responseType: 'blob',
+  }),
+};

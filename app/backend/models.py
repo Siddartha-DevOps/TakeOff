@@ -360,3 +360,90 @@ class ModelVersion(Base):
 
     promoted_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class HandoffTargetSystem(enum.Enum):
+    """
+    Which partner's import layout a CostCodeMapping/handoff export targets.
+    memory/TOGAL_PARITY_REAUDIT.md #15 names Procore/DESTINI/Ediphi as the
+    integrations to match the *style* of — none publish a public API (Togal
+    itself has none either, per the same doc), so this is a structured
+    file handoff, not a live push. GENERIC is a plain UPC/WBS CSV for any
+    other partner or manual review.
+    """
+    PROCORE = "procore"
+    DESTINI = "destini"
+    EDIPHI = "ediphi"
+    GENERIC = "generic"
+
+
+class CostCodeMapping(Base):
+    """
+    Maps one (trade, item) pair from TakeoffResult.quantities_data to a
+    partner-estimating cost code — closes memory/TOGAL_PARITY_REAUDIT.md #15:
+    "quantities → UPC/WBS map". Keyed by (project_id, trade, item) rather
+    than a per-row/per-drawing id: quantities_data has no stable row identity
+    across AI re-runs (see export_engine.py), but an estimator maps "Drywall
+    / Gypsum board" to a cost code once and expects it to apply everywhere
+    that trade/item shows up, across every drawing in the project — exactly
+    how Ediphi's real UPC mapping behaves (confirmed via ediphi.com's
+    Togal.AI integration announcement: quantities "map automatically to
+    Unit Price Catalog (UPC) line items, complete with work breakdown
+    structure").
+
+    wbs_code is the coarse grouping (Procore's Cost Code is literally
+    "Division-Code", e.g. "09-210", and must match the project's Work
+    Breakdown Structure); upc_code is the finer-grained catalog line item
+    within it (Ediphi's Unit Price Catalog). Both are free text here — this
+    app has no cost database of its own (CLAUDE.md / TOGAL_PARITY_REAUDIT.md
+    are explicit that estimating engines are out of scope), so codes are
+    either typed by the estimator or pre-filled from CSI_SEED_CATALOG's
+    public-standard MasterFormat defaults (handoff_engine.py) and then
+    edited/overridden — never silently invented per-project.
+    """
+    __tablename__ = "cost_code_mappings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    trade = Column(String(100), nullable=False)
+    item = Column(String(200), nullable=False)
+    wbs_code = Column(String(50), nullable=True)
+    upc_code = Column(String(50), nullable=True)
+    description = Column(String(300), nullable=True)
+    target_system = Column(SQLEnum(HandoffTargetSystem), default=HandoffTargetSystem.GENERIC, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+
+    __table_args__ = (
+        Index("ux_cost_code_mappings_project_trade_item", "project_id", "trade", "item", unique=True),
+    )
+
+
+class HandoffAuditEvent(Base):
+    """
+    The audit trail memory/TOGAL_PARITY_REAUDIT.md #15 requires — Ediphi's
+    own pitch for this integration class is "a complete audit trail [that]
+    shows original values, updates, and the user and timestamp for each
+    change." Logs every mapping create/update/delete (before/after JSON
+    snapshots, mirroring CorrectionEvent's shape) *and* every handoff file
+    actually generated, so "who exported what, mapped how, and when" is
+    always reconstructable — not just the current mapping state.
+    """
+    __tablename__ = "handoff_audit_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    mapping_id = Column(Integer, ForeignKey("cost_code_mappings.id"), nullable=True)
+    action = Column(String(30), nullable=False)  # 'mapping_created' | 'mapping_updated' | 'mapping_deleted' | 'handoff_exported'
+    target_system = Column(SQLEnum(HandoffTargetSystem), nullable=True)
+    before = Column(Text, nullable=True)  # JSON snapshot
+    after = Column(Text, nullable=True)   # JSON snapshot
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+    user = relationship("User")
