@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -77,6 +77,17 @@ export default function Takeoff() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState(null);
 
+  // Real-time collaboration — presence, live cursors, pinned comments
+  // (memory/TOGAL_PARITY_REAUDIT.md #16; realtime.py, routes/realtime_routes.py).
+  const [presenceUsers, setPresenceUsers] = useState({}); // user_id -> {name,color,drawing_id,x,y}
+  const [comments, setComments] = useState([]);
+  const [commentMode, setCommentMode] = useState(false);
+  const [pendingCommentPoint, setPendingCommentPoint] = useState(null); // plan [x,y] awaiting body text
+  const [activeCommentId, setActiveCommentId] = useState(null); // pin popover currently open
+  const wsRef = useRef(null);
+  const lastCursorSentRef = useRef(0);
+  const selfUserId = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}').id; } catch { return null; } })();
+
   useEffect(() => {
     fetchProject();
     // eslint-disable-next-line
@@ -114,6 +125,110 @@ export default function Takeoff() {
       setDrawings([]);
     }
   }
+
+  // Real-time collaboration socket — one connection per project ("room"),
+  // independent of which drawing is currently open (presence/cursors carry
+  // their own drawing_id so remote cursors are filtered client-side).
+  useEffect(() => {
+    if (!id) return undefined;
+    const ws = new WebSocket(collabAPI.wsUrl(id));
+    wsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      switch (msg.type) {
+        case 'presence_sync': {
+          const next = {};
+          for (const u of msg.users) if (u.user_id !== selfUserId) next[u.user_id] = u;
+          setPresenceUsers(next);
+          break;
+        }
+        case 'user_joined':
+          if (msg.user.user_id !== selfUserId) {
+            setPresenceUsers((prev) => ({ ...prev, [msg.user.user_id]: msg.user }));
+          }
+          break;
+        case 'user_left':
+          setPresenceUsers((prev) => { const next = { ...prev }; delete next[msg.user_id]; return next; });
+          break;
+        case 'cursor':
+          setPresenceUsers((prev) => ({ ...prev, [msg.user_id]: { ...prev[msg.user_id], ...msg } }));
+          break;
+        case 'comment_created':
+          setComments((prev) => (prev.some((c) => c.id === msg.comment.id) ? prev : [...prev, msg.comment]));
+          break;
+        case 'comment_resolved':
+          setComments((prev) => prev.map((c) => (c.id === msg.comment.id ? msg.comment : c)));
+          break;
+        case 'comment_deleted':
+          setComments((prev) => prev.filter((c) => c.id !== msg.comment_id));
+          break;
+        default:
+          break;
+      }
+    };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+    // eslint-disable-next-line
+  }, [id]);
+
+  // Comments are per-drawing (pin coordinates only make sense on one sheet)
+  // — reload the list whenever the open drawing changes.
+  useEffect(() => {
+    if (!selectedDrawing) { setComments([]); return; }
+    collabAPI.listComments(id, { drawing_id: selectedDrawing.id })
+      .then((res) => setComments(res.data.comments))
+      .catch(() => setComments([]));
+  }, [id, selectedDrawing?.id]);
+
+  function handleCollabPointerMove(point) {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || !selectedDrawing) return;
+    const now = Date.now();
+    if (now - lastCursorSentRef.current < 80) return; // ~12/s — plenty smooth, avoids flooding the socket
+    lastCursorSentRef.current = now;
+    wsRef.current.send(JSON.stringify({ type: 'cursor', drawing_id: selectedDrawing.id, x: point[0], y: point[1] }));
+  }
+
+  async function submitComment(body) {
+    if (!pendingCommentPoint || !selectedDrawing || !body.trim()) return;
+    try {
+      const res = await collabAPI.createComment(id, {
+        drawing_id: selectedDrawing.id, x: pendingCommentPoint[0], y: pendingCommentPoint[1], body: body.trim(),
+      });
+      setComments((prev) => [...prev, res.data]);
+      setPendingCommentPoint(null);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to post comment');
+    }
+  }
+
+  async function toggleResolveComment(comment) {
+    try {
+      const res = await collabAPI.resolveComment(comment.id, !comment.resolved);
+      setComments((prev) => prev.map((c) => (c.id === comment.id ? res.data : c)));
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to update comment');
+    }
+  }
+
+  async function removeComment(comment) {
+    try {
+      await collabAPI.deleteComment(comment.id);
+      setComments((prev) => prev.filter((c) => c.id !== comment.id));
+      setActiveCommentId(null);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to delete comment');
+    }
+  }
+
+  const drawingCursors = Object.entries(presenceUsers)
+    .filter(([, u]) => u.drawing_id === selectedDrawing?.id && u.x != null && u.y != null)
+    .map(([uid, u]) => ({ user_id: Number(uid), name: u.name, color: u.color, x: u.x, y: u.y }));
+  const drawingPins = comments.map((c) => ({ id: c.id, x: c.x, y: c.y, resolved: c.resolved }));
 
   // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a multi-page
   // PDF upload returns one Drawing per sheet — all of them join the
@@ -511,10 +626,31 @@ export default function Takeoff() {
             <Ruler className="w-3.5 h-3.5" /> {scaleInfo?.scale_source ? 'Recalibrate' : 'Calibrate Scale'}
           </button>
         )}
+        {selectedDrawing && (
+          <button
+            onClick={() => { setCommentMode((v) => !v); setPendingCommentPoint(null); }}
+            title="Comment mode — click the drawing to pin a note"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+              commentMode
+                ? 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-500'
+                : 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" /> Comment
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
-            {['AR', 'PK', 'JL'].map((x, i) => (
-              <div key={x} className="w-7 h-7 rounded-full border-2 border-slate-900 flex items-center justify-center text-[10px] font-semibold text-white" style={{ background: ['#6366f1', '#8b5cf6', '#06b6d4'][i] }}>{x}</div>
+            {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
+            {Object.values(presenceUsers).map((u) => (
+              <div
+                key={u.user_id}
+                title={u.name}
+                className="w-7 h-7 rounded-full border-2 border-slate-900 flex items-center justify-center text-[10px] font-semibold text-white"
+                style={{ background: u.color }}
+              >
+                {(u.name || '?').slice(0, 2).toUpperCase()}
+              </div>
             ))}
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
@@ -702,7 +838,25 @@ export default function Takeoff() {
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}
+                commentMode={commentMode}
+                onCommentClick={(point) => { setPendingCommentPoint(point); setActiveCommentId(null); }}
+                onPointerMove={handleCollabPointerMove}
+                remoteCursors={drawingCursors}
+                commentPins={drawingPins}
+                onPinClick={(commentId) => { setActiveCommentId(commentId); setPendingCommentPoint(null); }}
               />
+              {(pendingCommentPoint || activeCommentId) && (
+                <CommentPopover
+                  point={pendingCommentPoint}
+                  comment={activeCommentId ? comments.find((c) => c.id === activeCommentId) : null}
+                  replies={activeCommentId ? comments.filter((c) => c.parent_id === activeCommentId) : []}
+                  currentUserId={selfUserId}
+                  onSubmitNew={submitComment}
+                  onToggleResolve={toggleResolveComment}
+                  onDelete={removeComment}
+                  onClose={() => { setPendingCommentPoint(null); setActiveCommentId(null); }}
+                />
+              )}
             </div>
           ) : (
             <div className="absolute inset-0 flex items-center justify-center" onMouseDown={selectMode ? undefined : onMouseDown}>
@@ -1827,6 +1981,79 @@ function HandoffModal({ projectId, projectName, onClose }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Pinned-comment create/view panel — memory/TOGAL_PARITY_REAUDIT.md #16.
+// Fixed-corner placement rather than anchored exactly at the pin: the pin's
+// on-screen position is computed inside DrawingRenderer (it alone knows
+// which of the three render paths — OSD/PDF/raster — is active and their
+// current zoom/pan), so exactly reproducing that here would mean
+// duplicating that conversion logic for a purely cosmetic anchoring win.
+// The pin itself (rendered by DrawingRenderer) already marks the spot on
+// the drawing; this panel just needs to be visible and out of the way.
+function CommentPopover({ point, comment, replies, currentUserId, onSubmitNew, onToggleResolve, onDelete, onClose }) {
+  const [text, setText] = useState('');
+  const isNew = !!point;
+
+  return (
+    <div className="absolute bottom-20 right-4 z-40 w-72 rounded-xl bg-white border border-slate-200 shadow-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200 bg-slate-50">
+        <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+          <MessageSquare className="w-3.5 h-3.5" /> {isNew ? 'New comment' : 'Comment'}
+        </span>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-3.5 h-3.5" /></button>
+      </div>
+
+      {isNew ? (
+        <div className="p-3 space-y-2">
+          <textarea
+            autoFocus
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Leave a note pinned to this spot…"
+            rows={3}
+            className="w-full text-xs rounded-lg border border-slate-300 px-2 py-1.5 resize-none"
+          />
+          <button
+            onClick={() => onSubmitNew(text)}
+            disabled={!text.trim()}
+            className="w-full px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-40"
+          >
+            Post
+          </button>
+        </div>
+      ) : comment ? (
+        <div className="p-3 space-y-2">
+          <div className={`text-xs rounded-lg p-2 ${comment.resolved ? 'bg-slate-50 text-slate-400' : 'bg-indigo-50 text-slate-700'}`}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-medium">{comment.author_email}</span>
+              <span className="text-[10px] text-slate-400">{new Date(comment.created_at).toLocaleString()}</span>
+            </div>
+            <p className={comment.resolved ? 'line-through' : ''}>{comment.body}</p>
+          </div>
+          {replies.map((r) => (
+            <div key={r.id} className="text-xs bg-slate-50 rounded-lg p-2 ml-3">
+              <div className="font-medium text-slate-600">{r.author_email}</div>
+              <p className="text-slate-600">{r.body}</p>
+            </div>
+          ))}
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => onToggleResolve(comment)}
+              className="flex-1 px-2 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium flex items-center justify-center gap-1"
+            >
+              <Check className="w-3 h-3" /> {comment.resolved ? 'Reopen' : 'Resolve'}
+            </button>
+            {comment.author_id === currentUserId && (
+              <button onClick={() => onDelete(comment)} className="px-2 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600" title="Delete comment">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

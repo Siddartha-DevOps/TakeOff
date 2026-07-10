@@ -218,3 +218,18 @@ export const handoffAPI = {
     responseType: 'blob',
   }),
 };
+
+// Real-time collaboration — presence/cursors (WebSocket, see useCollabSocket
+// in pages/Takeoff.jsx) + durable pinned comments (REST, routes/realtime_routes.py)
+export const collabAPI = {
+  wsUrl: (projectId) => {
+    const httpBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    const wsBase = httpBase.replace(/^http/, 'ws');
+    const token = localStorage.getItem('auth_token');
+    return `${wsBase}/api/ws/projects/${projectId}?token=${encodeURIComponent(token || '')}`;
+  },
+  listComments: (projectId, params) => api.get(`/api/collab/projects/${projectId}/comments`, { params }),
+  createComment: (projectId, comment) => api.post(`/api/collab/projects/${projectId}/comments`, comment),
+  resolveComment: (commentId, resolved = true) => api.patch(`/api/collab/comments/${commentId}/resolve`, { resolved }),
+  deleteComment: (commentId) => api.delete(`/api/collab/comments/${commentId}`),
+};

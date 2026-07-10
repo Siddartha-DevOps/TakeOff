@@ -447,3 +447,46 @@ class HandoffAuditEvent(Base):
 
     project = relationship("Project")
     user = relationship("User")
+
+
+class Comment(Base):
+    """
+    Real-time collaboration — memory/TOGAL_PARITY_REAUDIT.md #16: "No
+    real-time collaboration (hardcoded avatars). Build: Liveblocks/Yjs
+    presence, cursors, comments." Liveblocks itself is a paid external SaaS
+    (needs an account + API key this sandbox has neither of, and CLAUDE.md's
+    stack list names it alongside self-hostable Yjs as an either/or); Yjs is
+    a CRDT for shared *documents*, which this app doesn't have (annotations
+    are still discrete DB rows, not a shared text/structure to merge) — so
+    "presence, cursors, comments" is built directly: a FastAPI WebSocket
+    (realtime.py/routes/realtime_routes.py) fanned out through Redis pub/sub
+    (the "Cache/presence: Upstash Redis" line in CLAUDE.md §3) for
+    ephemeral presence/cursor broadcast, plus this table for the one part of
+    "comments" that must survive a page reload or a second reviewer showing
+    up later: a pinned, threaded, resolvable comment.
+
+    Position is plan-space pixel coordinates (DrawingRenderer.jsx's
+    toPlanSpacePoint convention — native image pixels / PDF points-at-
+    scale-1, the same space Detection/Measurement geometry and scale
+    calibration already use) rather than PostGIS geometry: a comment pin
+    has no spatial query need (no ST_Intersects against it), so a real
+    geometry column would be unused machinery, unlike Detection.geom.
+    """
+    __tablename__ = "comments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("comments.id"), nullable=True)
+    x = Column(Float, nullable=False)
+    y = Column(Float, nullable=False)
+    body = Column(Text, nullable=False)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    resolved = Column(Boolean, default=False, nullable=False)
+    resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    author = relationship("User", foreign_keys=[author_id])
