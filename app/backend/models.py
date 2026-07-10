@@ -270,6 +270,14 @@ class CorrectionEvent(Base):
     action = Column(String(20), nullable=False)  # 'accept' | 'reject' | 'relabel' | 'edit'
     before = Column(Text, nullable=True)  # JSON snapshot
     after = Column(Text, nullable=True)   # JSON snapshot
+    # Which AI model produced the annotation being corrected — stamped from
+    # the frontend Annotation's meta.aiModelVersion (see
+    # annotations/fromDetection.js's detectionMeta). Lets eval_harness.py
+    # scope a promotion-gate evaluation to one candidate model's corrections
+    # instead of an undifferentiated all-time mix. Null for manual
+    # annotations (no AI model produced them) or older events predating
+    # this column.
+    model_version = Column(String(50), nullable=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -310,6 +318,45 @@ class UserSubscription(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     user = relationship("User")
+
+
+class ModelVersionStage(enum.Enum):
+    CANDIDATE = "candidate"  # registered, not yet evaluated or not yet passing the gate
+    ACTIVE = "active"        # currently promoted — at most one per model `name`
+    ARCHIVED = "archived"    # was active, superseded by a later promotion
+    REJECTED = "rejected"    # explicitly failed a promotion attempt
+
+
+class ModelVersion(Base):
+    """
+    Model registry + promotion gate — the entity CLAUDE.md §5 names but never
+    specs fields for, closing memory/TOGAL_PARITY_REAUDIT.md #14/§5: "Gate
+    model promotion on... mIoU rooms, mAP symbols, measurement-error %,
+    tracked per release." See eval_harness.py for how those three metrics
+    actually get computed (from CorrectionEvent ground truth, since no
+    labeled "golden plan set" exists in this repo) and gate_promotion() for
+    the pass/fail logic /eval/model-versions/{id}/promote calls before
+    flipping stage to ACTIVE.
+    """
+    __tablename__ = "model_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)  # e.g. "yolov8m-seg" — groups versions of the same model line
+    version_string = Column(String(50), nullable=False, unique=True)  # matches TakeoffResult.ai_model_version / CorrectionEvent.model_version
+    stage = Column(SQLEnum(ModelVersionStage), default=ModelVersionStage.CANDIDATE, nullable=False)
+    notes = Column(Text, nullable=True)
+
+    # Last eval_harness.py run's output — an audit record, not itself
+    # trusted for gating: /promote always re-runs the harness fresh rather
+    # than trusting a possibly-stale stored value.
+    miou = Column(Float, nullable=True)
+    map_score = Column(Float, nullable=True)  # simplified precision proxy — see eval_harness.py's honest caveat on true mAP
+    measurement_error_pct = Column(Float, nullable=True)
+    eval_sample_size = Column(Integer, nullable=True)
+    evaluated_at = Column(DateTime(timezone=True), nullable=True)
+
+    promoted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

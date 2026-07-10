@@ -148,6 +148,7 @@ class CorrectionEventCreate(BaseModel):
     action: Literal["accept", "reject", "relabel", "edit"]
     before: Optional[Dict[str, Any]] = None
     after: Optional[Dict[str, Any]] = None
+    model_version: Optional[str] = None
 
 class CorrectionEvent(BaseModel):
     id: int
@@ -158,8 +159,33 @@ class CorrectionEvent(BaseModel):
     action: str
     before: Optional[Dict[str, Any]]
     after: Optional[Dict[str, Any]]
+    model_version: Optional[str] = None
     user_id: int
     created_at: datetime
+
+# ModelVersion schemas — model registry + promotion gate (eval_harness.py)
+class ModelVersionCreate(BaseModel):
+    name: str
+    version_string: str
+    notes: Optional[str] = None
+
+class ModelVersion(BaseModel):
+    id: int
+    name: str
+    version_string: str
+    stage: str
+    notes: Optional[str] = None
+    miou: Optional[float] = None
+    map_score: Optional[float] = None
+    measurement_error_pct: Optional[float] = None
+    eval_sample_size: Optional[int] = None
+    evaluated_at: Optional[datetime] = None
+    promoted_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        use_enum_values = True
 
 # Takeoff Result Schemas
 class TakeoffResultCreate(BaseModel):

@@ -46,6 +46,7 @@ def _to_response(event: models.CorrectionEvent) -> schemas.CorrectionEvent:
         action=event.action,
         before=json.loads(event.before) if event.before else None,
         after=json.loads(event.after) if event.after else None,
+        model_version=event.model_version,
         user_id=event.user_id,
         created_at=event.created_at,
     )
@@ -76,6 +77,7 @@ async def create_correction(
         action=payload.action,
         before=json.dumps(payload.before) if payload.before is not None else None,
         after=json.dumps(payload.after) if payload.after is not None else None,
+        model_version=payload.model_version,
         user_id=current_user.id,
     )
     db.add(event)

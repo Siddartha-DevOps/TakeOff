@@ -297,11 +297,20 @@ export default function Takeoff() {
   // training-data flywheel (CLAUDE.md §2/§5). drawing_id is only sent when a
   // real Sheet is selected — demo-canvas corrections still log (annotation_id
   // + project scope is enough signal), just without a Drawing FK.
+  // geometry included so eval_harness.py's mIoU can compare an AI shape's
+  // geometry against its corrected geometry — source/type included so the
+  // harness can tell an area edit worth an IoU check apart from a count/line
+  // one. Previously only {label, confidence, measuredValue} — no accept/
+  // reject/relabel action changes geometry today (that's the still-gated
+  // Milestone 1 editable-overlay work), so this doesn't yet produce a live
+  // mIoU signal, but every future 'edit' correction will carry what it needs to.
   function snapshotAnnotation(annotation) {
     return {
       label: annotation?.meta?.label,
       confidence: annotation?.meta?.confidence,
       measuredValue: annotation?.measuredValue,
+      geometry: annotation?.geometry,
+      source: annotation?.source,
     };
   }
 
@@ -314,6 +323,10 @@ export default function Takeoff() {
         action,
         before,
         after,
+        // eval_harness.py scopes a promotion-gate run to one candidate
+        // model's corrections via this — undefined for manual annotations,
+        // which never had an AI model version to begin with.
+        model_version: annotation?.meta?.aiModelVersion,
       });
     } catch (error) {
       console.error('Failed to record correction:', error);
