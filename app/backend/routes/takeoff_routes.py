@@ -314,7 +314,19 @@ async def autodetect_drawing(
             result["drawing_id"] = drawing_id
             result["status"] = "ok"
 
-            _persist_autodetect(db, drawing, result, ratio)
+            # Count symbols (doors/windows/fixtures) from the same vector data.
+            symbol_counts = {}
+            try:
+                from geometry import match_symbols
+                symbols = match_symbols(drawing.file_path, page_no=measure.get("page_no", 0))
+                symbol_counts = symbols.get("symbol_counts", {})
+                result["symbol_counts"] = symbol_counts
+                result["symbol_groups"] = symbols.get("groups", [])
+            except Exception as exc:  # counting is additive; never fail AUTODETECT
+                logger.error(f"[autodetect] symbol match failed for {drawing_id}: {exc}")
+                result["symbol_counts"] = {}
+
+            _persist_autodetect(db, drawing, result, ratio, symbol_counts)
             return result
 
     # Raster / non-vector fallback.
@@ -350,7 +362,9 @@ def _ai_weights_available() -> bool:
         return False
 
 
-def _persist_autodetect(db: Session, drawing, result: dict, ratio: float) -> None:
+def _persist_autodetect(
+    db: Session, drawing, result: dict, ratio: float, symbol_counts: dict | None = None
+) -> None:
     """Save an AUTODETECT result so Quantities/export/getResults can read it."""
     detection_data = {
         "rooms": result.get("area", []),
@@ -366,6 +380,7 @@ def _persist_autodetect(db: Session, drawing, result: dict, ratio: float) -> Non
             drawing_id=drawing.id,
             detection_data=json.dumps(detection_data),
             quantities_data=json.dumps(result.get("quantities", [])),
+            symbol_counts=json.dumps(symbol_counts or {}),
             confidence_scores=json.dumps({"avg": 1.0, "source": "vector"}),
             processing_time_ms=0,
             ai_model_version="vector-geometry-v1",
@@ -376,6 +391,75 @@ def _persist_autodetect(db: Session, drawing, result: dict, ratio: float) -> Non
         db.commit()
     except Exception as exc:  # persistence is best-effort; never fail the request
         logger.error(f"[autodetect] persist failed for drawing {drawing.id}: {exc}")
+        db.rollback()
+
+
+@router.post("/drawings/{drawing_id}/detect_symbols")
+async def detect_symbols(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Count symbols (doors/windows/fixtures) — Togal's Count primitive.
+
+    Vector PDFs are counted geometrically (exact, no weights) via
+    ``geometry.match_symbols``. Scanned/raster sheets use the YOLOv8-seg symbol
+    model (``ai.detect_symbols``), which returns ``status: needs_weights`` until
+    ``models/symbol_counts/yolov8-seg.pt`` exists. Counts are saved to
+    ``TakeoffResult.symbol_counts``.
+    """
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    import os
+    if not os.path.exists(drawing.file_path):
+        raise HTTPException(status_code=404, detail="File not found on server")
+
+    is_pdf = (drawing.file_type or "").upper() == "PDF"
+
+    # Vector path first — exact, no weights.
+    if is_pdf:
+        try:
+            from geometry import match_symbols
+            result = match_symbols(drawing.file_path)
+            if result.get("total_symbols", 0) > 0 or result.get("groups"):
+                result["drawing_id"] = drawing_id
+                result["status"] = "ok"
+                _persist_symbol_counts(db, drawing_id, result.get("symbol_counts", {}))
+                return result
+        except Exception as exc:
+            logger.error(f"[detect_symbols] vector match failed for {drawing_id}: {exc}")
+
+    # Raster fallback — YOLOv8-seg symbol model (needs weights).
+    from ai.detect_symbols import detect_symbols_raster
+    result = detect_symbols_raster(drawing.file_path)
+    result["drawing_id"] = drawing_id
+    if result.get("status") == "ok":
+        _persist_symbol_counts(db, drawing_id, result.get("symbol_counts", {}))
+    return result
+
+
+def _persist_symbol_counts(db: Session, drawing_id: int, symbol_counts: dict) -> None:
+    """Best-effort: attach symbol counts to the drawing's latest TakeoffResult."""
+    try:
+        latest = db.query(models.TakeoffResult).filter(
+            models.TakeoffResult.drawing_id == drawing_id
+        ).order_by(models.TakeoffResult.created_at.desc()).first()
+        if latest:
+            latest.symbol_counts = json.dumps(symbol_counts)
+        else:
+            db.add(models.TakeoffResult(
+                drawing_id=drawing_id,
+                symbol_counts=json.dumps(symbol_counts),
+                ai_model_version="symbol-counts-v1",
+            ))
+        db.commit()
+    except Exception as exc:
+        logger.error(f"[detect_symbols] persist failed for {drawing_id}: {exc}")
         db.rollback()
 
 

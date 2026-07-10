@@ -33,6 +33,7 @@ from .vector_pdf import (
     measure_pdf,
 )
 from .quantities import autodetect_from_measure, vector_quantities
+from .vector_symbol_match import match_symbols, symbols_to_persistence
 
 __all__ = [
     "POINTS_PER_INCH",
@@ -47,4 +48,6 @@ __all__ = [
     "measure_pdf",
     "autodetect_from_measure",
     "vector_quantities",
+    "match_symbols",
+    "symbols_to_persistence",
 ]

@@ -55,6 +55,29 @@ primitives explicitly:
   coordinates by the pdf.js render scale (both use a top-left, points origin).
   This replaces the old mock-on-a-fake-SVG rendering.
 
+### Symbol counts (A1) — doors / windows / fixtures
+
+`POST /api/takeoff/drawings/{id}/detect_symbols`
+
+Togal's **Count** primitive for object types (not just spaces). Two paths:
+
+- **Vector PDFs** (`geometry/vector_symbol_match.py`) — **no weights**. Parses
+  each drawing path into a symbol candidate, computes a scale/rotation-invariant
+  geometric signature (line/curve/rect fractions, aspect, complexity), clusters
+  identical repeats by cosine similarity (KD-tree when SciPy is present), and
+  classifies each cluster (door = leaf line + swing arc; window = thin rect;
+  fixture = closed oval). Returns `symbol_counts` per type + per-instance
+  geometry (GeoJSON) for overlay and persistence.
+- **Raster/scanned** (`ai/detect_symbols.py`) — YOLOv8-seg over the rasterized
+  page (18 classes). Returns `status: "needs_weights"` until
+  `ai/models/symbol_counts/yolov8-seg.pt` exists (train with
+  `training/train_yolov8_seg.py`).
+
+Counts are also folded into `/autodetect`, saved to
+`TakeoffResult.symbol_counts` (migration `0002`), and each instance is a
+first-class `Detection` (`symbols_to_persistence`) linked to a `Sheet` — so
+counts are editable through the CorrectionEvent loop.
+
 ### Weights (raster fallback)
 
 The vector path needs **no model weights** — it's the highest-accuracy path and

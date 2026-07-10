@@ -83,6 +83,7 @@ class TakeoffResult(Base):
     drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
     detection_data = Column(Text)  # JSON string with rooms, doors, windows, walls
     quantities_data = Column(Text)  # JSON string with trade quantities
+    symbol_counts = Column(Text)  # JSON string: per-type symbol counts (doors/windows/fixtures)
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
     ai_model_version = Column(String(50), default="mock_v1")
