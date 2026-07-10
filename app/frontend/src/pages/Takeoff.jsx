@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon } from 'lucide-react';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -288,6 +288,23 @@ export default function Takeoff() {
     const before = { label: annotation.meta?.label };
     annotationStore.updateAnnotationMeta(item.id, { label: newLabel, reviewed: true });
     recordCorrection(annotation, 'relabel', before, { label: newLabel });
+  }
+
+  // AI Search result -> annotation. GeoJSON polygon rings repeat the first
+  // point to close (spec-guaranteed); rectFromBbox()'s convention doesn't,
+  // so drop it. Only called for results on the currently selected drawing —
+  // SearchPanel gates "Add" on that since the annotation store is scoped to
+  // whichever sheet's detection is currently loaded.
+  function addSearchResultAsAnnotation(result, type) {
+    const geometry = result.geometry.slice(0, -1);
+    annotationStore.addAnnotation({
+      id: `search_${result.detection_id}_${Date.now()}`,
+      type,
+      geometry,
+      layerId: 'search',
+      source: 'manual',
+      meta: { label: result.label_hint, similarity: result.similarity, fromSearch: true },
+    });
   }
 
   async function runAnalysis() {
@@ -663,6 +680,7 @@ export default function Takeoff() {
           <div className="flex border-b border-slate-200">
             {[
               { key: 'quantities', label: 'Quantities' },
+              { key: 'search', label: 'Search' },
               { key: 'chat', label: 'Chat' },
               { key: 'summary', label: 'Summary' },
             ].map((t) => (
@@ -671,6 +689,14 @@ export default function Takeoff() {
           </div>
           <div className="flex-1 overflow-auto">
             {tab === 'quantities' && <QuantitiesPanel detection={detection} />}
+            {tab === 'search' && (
+              <SearchPanel
+                projectId={id}
+                drawings={drawings}
+                selectedDrawing={selectedDrawing}
+                onAddAnnotation={addSearchResultAsAnnotation}
+              />
+            )}
             {tab === 'chat' && <ChatPanel detection={detection} drawing={selectedDrawing} />}
             {tab === 'summary' && <SummaryPanel detection={detection} />}
           </div>
@@ -1153,6 +1179,94 @@ function QuantitiesPanel({ detection }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const drawingNameById = useMemo(() => {
+    const map = new Map();
+    drawings.forEach((d) => map.set(d.id, d.sheet_name || d.original_filename));
+    return map;
+  }, [drawings]);
+
+  async function runSearch(e) {
+    e?.preventDefault();
+    const q = query.trim();
+    if (!q || loading) return;
+    setLoading(true); setError(null); setResults(null);
+    try {
+      const res = await searchAPI.text(projectId, q);
+      setResults(res.data.results);
+    } catch (err) {
+      setError(err.response?.status === 503
+        ? "AI Search isn't available yet — the server is missing its CLIP model dependencies."
+        : (err.response?.data?.detail || 'Search failed. Please try again.'));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="p-4 border-b border-slate-200">
+        <form onSubmit={runSearch} className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 focus-within:border-slate-500 focus-within:ring-2 focus-within:ring-slate-200">
+          <SearchIcon className="w-4 h-4 text-slate-400" />
+          <input
+            value={query} onChange={(e) => setQuery(e.target.value)}
+            placeholder='Find "outlets", "bedrooms"...'
+            className="flex-1 text-sm outline-none bg-transparent"
+          />
+          <button type="submit" disabled={!query.trim() || loading} className="w-7 h-7 rounded-md bg-slate-900 text-white flex items-center justify-center disabled:opacity-40">
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SearchIcon className="w-3.5 h-3.5" />}
+          </button>
+        </form>
+        <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+      </div>
+      <div className="flex-1 overflow-auto p-4 space-y-2">
+        {error && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-3">{error}</div>}
+        {results && results.length === 0 && <div className="text-sm text-slate-500">No matches found.</div>}
+        {results && results.map((r) => {
+          const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
+          return (
+            <div key={`${r.drawing_id}-${r.detection_id}`} className="rounded-lg border border-slate-200 p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium text-slate-900">{r.label_hint || 'Match'}</div>
+                <div className="text-[11px] mono text-emerald-600 font-semibold">{Math.round(r.similarity * 100)}%</div>
+              </div>
+              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`}</div>
+              <div className="mt-2 flex gap-1.5">
+                <button
+                  disabled={!onCurrentDrawing}
+                  onClick={() => onAddAnnotation(r, 'count')}
+                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
+                  className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  Add as Count
+                </button>
+                <button
+                  disabled={!onCurrentDrawing}
+                  onClick={() => onAddAnnotation(r, 'area')}
+                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
+                  className="flex-1 py-1 text-[11px] font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  Add as Area
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {!results && !error && (
+          <p className="text-xs text-slate-500">
+            Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project's sheets.
+          </p>
+        )}
       </div>
     </div>
   );

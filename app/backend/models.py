@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
+from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
+from pgvector.sqlalchemy import Vector
 from datetime import datetime, timezone
 import enum
 from database import Base
@@ -176,6 +177,52 @@ class Measurement(Base):
 
     # Relationships
     detection = relationship("Detection", back_populates="measurements")
+
+class DrawingEmbedding(Base):
+    """
+    AI Search (image/text/pattern) index — closes the "CLIP endpoint
+    returns [], TODO pgvector" gap in memory/TOGAL_PARITY_REAUDIT.md #7.
+    One row per indexed patch: today that's one per AI detection (built on
+    ingest — see clip_embeddings.index_drawing_embeddings(), called from
+    the same places detection_geometry.persist_detection_geometries() is),
+    embedded in CLIP's shared image/text space so both "find more like this
+    region" and "find all outlets" work against the same index via
+    pgvector cosine similarity.
+
+    embed_image_patch()/embed_text() (clip_embeddings.py) require torch +
+    CLIP, which — like every other heavy ML dependency in this backend
+    (ai/detection_engine.py, ai/scale_detection.py) — live in the separate
+    app/requirements.txt GPU stack, not backend/requirements.txt, per
+    CLAUDE.md §2's "heavy ML runs on a separate GPU service" guardrail.
+    Ingest and search both degrade to a clear message, never a crash, when
+    that stack isn't installed.
+    """
+    __tablename__ = "drawing_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
+    annotation_id = Column(String(64), nullable=True)  # matching Detection.annotation_id, when this patch came from one
+    label_hint = Column(String(100), nullable=True)     # e.g. detected class, for a readable result list
+    geom = Column(Geometry(geometry_type="GEOMETRY", srid=0), nullable=False)  # patch bbox, plan-space pixels
+    embedding = Column(Vector(512), nullable=False)     # CLIP ViT-B/32 image/text embedding dim
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        # HNSW, cosine distance — matches the <=> operator AI Search's
+        # queries use (routes/ai_routes.py). Declared here (unlike
+        # idx_*_geom, which geoalchemy2 manages automatically) so Alembic
+        # autogenerate/check knows about it instead of flagging it as drift.
+        Index(
+            "idx_drawing_embeddings_vector", "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    # Relationships
+    project = relationship("Project")
+    drawing = relationship("Drawing")
 
 class TakeoffResult(Base):
     __tablename__ = "takeoff_results"

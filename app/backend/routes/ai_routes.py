@@ -15,7 +15,9 @@ which don't collide with anything.
 """
 
 import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 # These imports assume the backend dir is in PYTHONPATH
@@ -26,84 +28,127 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import models
 from auth import get_current_user
 from database import get_db
+from clip_embeddings import clip_available, embed_image_patch, embed_text, search_embeddings
 
 router = APIRouter(prefix="/takeoff", tags=["AI Search & Chat"])
 
+CLIP_UNAVAILABLE_DETAIL = (
+    "AI Search isn't available yet — CLIP model dependencies aren't installed "
+    "on the server (app/requirements.txt's torch + CLIP, kept out of the base "
+    "API image per CLAUDE.md's separate-GPU-service guardrail)."
+)
 
-# ──────────────────────────────────────────────────────────────
-# AI Image Search endpoint
-# ──────────────────────────────────────────────────────────────
-@router.post("/projects/{project_id}/search/image")
-async def ai_image_search(
-    project_id: int,
-    query_bbox: dict,               # {drawing_id, x1, y1, x2, y2} — user drew a box
-    top_k: int = 10,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    AI Image Search: find similar visual regions across all project drawings.
 
-    Args:
-        query_bbox: The region the user drew (source drawing + pixel coords).
-        top_k:      Number of matches to return.
-    """
+def _require_project(project_id: int, current_user: models.User, db: Session) -> models.Project:
     project = db.query(models.Project).filter(
         models.Project.id == project_id,
         models.Project.organization_id == current_user.organization_id,
     ).first()
-
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+def _search_results_to_response(rows) -> list:
+    return [
+        {
+            "detection_id": row.annotation_id,
+            "drawing_id": row.drawing_id,
+            "label_hint": row.label_hint,
+            "similarity": round(1 - distance, 4),  # cosine_distance -> similarity, easier for a UI to show as "94% match"
+            "geometry": json.loads(geojson)["coordinates"][0],  # ring -> same shape as frontend Annotation.geometry
+        }
+        for row, distance, geojson in rows
+    ]
+
+
+# ──────────────────────────────────────────────────────────────
+# AI Image / Pattern Search — draw a region, find visually similar
+# patches across the project (auto-count/auto-locate a symbol or condition).
+# ──────────────────────────────────────────────────────────────
+class ImageSearchQuery(BaseModel):
+    drawing_id: int
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    top_k: int = 10
+
+
+@router.post("/projects/{project_id}/search/image")
+async def ai_image_search(
+    project_id: int,
+    query: ImageSearchQuery,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Embed the region the user drew and find its nearest neighbors in the
+    project's CLIP index (pgvector cosine search). This is also "pattern
+    search" — draw one instance of a recurring symbol/condition and this
+    returns every visually similar patch across every sheet in the project,
+    ready to convert into count/area annotations (see Takeoff.jsx).
+    """
+    _require_project(project_id, current_user, db)
 
     source_drawing = db.query(models.Drawing).filter(
-        models.Drawing.id == query_bbox.get("drawing_id"),
+        models.Drawing.id == query.drawing_id,
         models.Drawing.project_id == project_id,
     ).first()
-
     if not source_drawing:
         raise HTTPException(status_code=404, detail="Source drawing not found")
 
-    try:
-        import clip
-        import torch
-        import numpy as np
-        from PIL import Image as PILImage
-        from preprocessing import load_drawing
+    if not clip_available():
+        raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
 
-        # Extract query patch
-        img = load_drawing(source_drawing.file_path, page_number=0)
-        x1, y1 = int(query_bbox["x1"]), int(query_bbox["y1"])
-        x2, y2 = int(query_bbox["x2"]), int(query_bbox["y2"])
-        patch = img[y1:y2, x1:x2]
+    ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
+    sys.path.insert(0, ai_dir)
+    from preprocessing import load_drawing
 
-        # Encode with CLIP
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
+    img = load_drawing(source_drawing.file_path, page_number=0)
+    x1, y1, x2, y2 = int(query.x1), int(query.y1), int(query.x2), int(query.y2)
+    patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
+    if patch.size == 0:
+        raise HTTPException(status_code=400, detail="Query region is empty")
 
-        pil_patch = PILImage.fromarray(patch[:, :, ::-1])  # BGR→RGB
-        tensor = clip_preprocess(pil_patch).unsqueeze(0).to(device)
+    query_embedding = embed_image_patch(patch)
+    rows = search_embeddings(db, project_id, query_embedding, top_k=query.top_k)
 
-        with torch.no_grad():
-            query_emb = clip_model.encode_image(tensor)
-            query_emb = query_emb / query_emb.norm(dim=-1, keepdim=True)
+    return {"query": query.model_dump(), "results": _search_results_to_response(rows)}
 
-        # TODO: Query pgvector index for similar patches
-        # This is where you'd do:
-        # SELECT * FROM drawing_embeddings
-        # ORDER BY embedding <=> $1 LIMIT $2
-        # For now return empty — implement after adding pgvector
-        return {
-            "query_bbox": query_bbox,
-            "results": [],
-            "message": "Image search index not yet built. Run index_drawing_for_search task.",
-        }
 
-    except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="CLIP not installed. Run: pip install git+https://github.com/openai/CLIP.git",
-        )
+# ──────────────────────────────────────────────────────────────
+# AI Text Search — "find all outlets", "find all bedrooms"
+# ──────────────────────────────────────────────────────────────
+class TextSearchQuery(BaseModel):
+    query: str
+    top_k: int = 10
+
+
+@router.post("/projects/{project_id}/search/text")
+async def ai_text_search(
+    project_id: int,
+    body: TextSearchQuery,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    CLIP's text and image encoders share one embedding space, so a plain-
+    English query searches the exact same DrawingEmbedding index the image/
+    pattern search above does — no separate text index needed.
+    """
+    _require_project(project_id, current_user, db)
+
+    if not clip_available():
+        raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
+
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    query_embedding = embed_text(body.query.strip())
+    rows = search_embeddings(db, project_id, query_embedding, top_k=body.top_k)
+
+    return {"query": body.query, "results": _search_results_to_response(rows)}
 
 
 # ──────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import models
 from auth import get_current_user
 from database import get_db
 from detection_geometry import persist_detection_geometries
+from clip_embeddings import index_drawing_embeddings
 import json
 from datetime import datetime, timezone
 import logging
@@ -113,6 +114,18 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
         except Exception as geo_err:
             logger.warning(f"[AI] Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
 
+        # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — build CLIP
+        # patch embeddings on ingest. No-ops (returns 0) if CLIP isn't
+        # installed; best-effort like the geometry persistence above.
+        try:
+            indexed = index_drawing_embeddings(
+                db, drawing.project_id, drawing_id, file_path, enriched["detection"]
+            )
+            if indexed:
+                logger.info(f"[AI] Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
+        except Exception as embed_err:
+            logger.warning(f"[AI] Embedding index failed for drawing_id={drawing_id}: {embed_err}")
+
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
         drawing = db.query(models.Drawing).filter(
@@ -160,10 +173,25 @@ async def save_detection_results(
     # detection_data payload shouldn't break saving the primary result.
     try:
         detection = json.loads(result_data.detection_data)
-        created = persist_detection_geometries(db, drawing.project_id, drawing_id, detection, source="ai")
-        logger.info(f"Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
-    except Exception as geo_err:
-        logger.warning(f"Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+    except json.JSONDecodeError as parse_err:
+        logger.warning(f"Malformed detection_data for drawing_id={drawing_id}: {parse_err}")
+        detection = None
+
+    if detection is not None:
+        try:
+            created = persist_detection_geometries(db, drawing.project_id, drawing_id, detection, source="ai")
+            logger.info(f"Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
+        except Exception as geo_err:
+            logger.warning(f"Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+
+        # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — same
+        # best-effort rule as geometry persistence above.
+        try:
+            indexed = index_drawing_embeddings(db, drawing.project_id, drawing_id, drawing.file_path, detection)
+            if indexed:
+                logger.info(f"Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
+        except Exception as embed_err:
+            logger.warning(f"Embedding index failed for drawing_id={drawing_id}: {embed_err}")
 
     return db_result
 

@@ -112,6 +112,16 @@ export const chatAPI = {
   }),
 };
 
+// AI Search — image/text/pattern, pgvector-backed (routes/ai_routes.py, clip_embeddings.py)
+export const searchAPI = {
+  text: (projectId, query, topK = 10) => api.post(`/api/takeoff/projects/${projectId}/search/text`, { query, top_k: topK }),
+  image: (projectId, drawingId, bbox, topK = 10) => api.post(`/api/takeoff/projects/${projectId}/search/image`, {
+    drawing_id: drawingId,
+    x1: bbox[0], y1: bbox[1], x2: bbox[2], y2: bbox[3],
+    top_k: topK,
+  }),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {
