@@ -6,6 +6,7 @@ import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
+import { useAnnotationStore } from '../annotations/useAnnotationStore';
 
 const LAYER_CONFIG = [
   { key: 'rooms', label: 'Rooms', color: '#a78bfa' },
@@ -33,6 +34,9 @@ export default function Takeoff() {
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // Unified annotation store (Milestone 0): AI detections are migrated into
+  // this same model manual edits will use later. No rendering wired to it yet.
+  const annotationStore = useAnnotationStore();
 
   useEffect(() => {
     fetchProject();
@@ -85,6 +89,7 @@ export default function Takeoff() {
       seed: drawing.id,
     });
     setDetection(result);
+    annotationStore.loadFromDetection(result);
     setStatus('ready');
     try {
       await takeoffAPI.saveResults(drawing.id, {
@@ -108,6 +113,7 @@ export default function Takeoff() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
     const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
     setDetection(res);
+    annotationStore.loadFromDetection(res);
     setStatus('ready');
   }
 
