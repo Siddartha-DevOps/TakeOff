@@ -107,13 +107,19 @@ async def compare_drawings(
         raise HTTPException(status_code=400, detail="Drawings must be in the same project")
 
     import cv2
+    import storage
 
     ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
     sys.path.insert(0, ai_dir)
     from preprocessing import load_drawing
 
-    img_a = load_drawing(drawing_a.file_path, page_number=0)
-    img_b = load_drawing(drawing_b.file_path, page_number=0)
+    # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
+    # #12) — resolve_local_path() is a no-op for the still-supported
+    # local-disk case, transparent download-to-temp otherwise.
+    with storage.resolve_local_path(drawing_a.file_path) as path_a, \
+         storage.resolve_local_path(drawing_b.file_path) as path_b:
+        img_a = load_drawing(path_a, page_number=0)
+        img_b = load_drawing(path_b, page_number=0)
 
     if payload.manual_points_a and payload.manual_points_b:
         try:

@@ -7,11 +7,13 @@ Change from original: adds background_tasks parameter and calls
 POST /takeoff/drawings/{id}/analyze after saving the drawing record.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import schemas
 import models
+import storage
 from auth import get_current_user
 from database import get_db
 import aiofiles
@@ -34,6 +36,12 @@ def _tiles_dir(project_id: int, drawing_id: int) -> Path:
     return UPLOAD_DIR / str(project_id) / "tiles" / str(drawing_id)
 
 
+def _file_exists(file_path: str) -> bool:
+    if storage.is_storage_uri(file_path):
+        return storage.object_head(storage.key_from_uri(file_path)) is not None
+    return os.path.exists(file_path)
+
+
 def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
     """
     Background task: build the Deep Zoom tile pyramid (tiling.py) so
@@ -41,6 +49,12 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
     canvas. Best-effort — a failure here shouldn't affect the upload or AI
     analysis, and is a clean 503 to the tile-status endpoint until it
     succeeds (or forever, if PIL isn't installed — see tiling.py).
+
+    Tiles themselves stay on local disk regardless of where the source
+    file lives — they're a regenerable cache derived from it, not the
+    source of truth object storage (memory/TOGAL_PARITY_REAUDIT.md #12)
+    is meant to protect; resolve_local_path() below only affects reading
+    the source.
     """
     from tiling import generate_tile_pyramid, tiling_available
 
@@ -48,7 +62,8 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str):
         return
     try:
         output_dir = _tiles_dir(project_id, drawing_id)
-        meta = generate_tile_pyramid(file_path, str(output_dir))
+        with storage.resolve_local_path(file_path) as local_path:
+            meta = generate_tile_pyramid(local_path, str(output_dir))
         logger.info(f"[Tiling] Generated {meta['max_level']+1} levels for drawing_id={drawing_id}")
     except Exception as tile_err:
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
@@ -125,6 +140,115 @@ async def upload_drawing(
     return db_drawing
 
 
+# ── Object storage (S3/R2) presigned upload — memory/TOGAL_PARITY_REAUDIT.md
+# #12. This is the CLAUDE.md §2/§3-guardrail-correct path: the browser
+# uploads the file bytes straight to object storage using a short-lived
+# presigned URL, never proxying them through this API server the way
+# upload_drawing() above does. That legacy endpoint stays exactly as-is
+# (unremoved, unchanged) as the local-disk fallback for any environment
+# without S3_BUCKET configured — see storage.py's graceful-degradation note.
+class PresignUploadRequest(BaseModel):
+    filename: str
+    content_type: str = "application/octet-stream"
+
+
+@router.post("/project/{project_id}/drawings/presign")
+async def presign_drawing_upload(
+    project_id: int,
+    payload: PresignUploadRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.organization_id == current_user.organization_id
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not is_allowed_file(payload.filename):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    if not storage.storage_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Object storage isn't configured (S3_BUCKET unset) — use POST /uploads/project/{id}/drawings instead."
+        )
+
+    key = storage.make_key(project_id, payload.filename)
+    presigned = storage.generate_presigned_upload(key, payload.content_type)
+    return {"key": key, "upload_url": presigned["url"], "fields": presigned["fields"]}
+
+
+class ConfirmUploadRequest(BaseModel):
+    key: str
+    original_filename: str
+    sheet_name: Optional[str] = None
+    scale: Optional[str] = None
+
+
+@router.post("/project/{project_id}/drawings/confirm", response_model=schemas.Drawing)
+async def confirm_drawing_upload(
+    project_id: int,
+    payload: ConfirmUploadRequest,
+    background_tasks: BackgroundTasks,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Called after the browser has PUT/POSTed the file directly to the
+    presigned URL from /presign above — creates the Drawing record and
+    kicks off the same AI-analysis + tiling background tasks
+    upload_drawing() does, just reading the source from object storage
+    (storage.resolve_local_path()) instead of local disk.
+    """
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.organization_id == current_user.organization_id
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not is_allowed_file(payload.original_filename):
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    if not storage.storage_available():
+        raise HTTPException(status_code=503, detail="Object storage isn't configured (S3_BUCKET unset).")
+    # make_key() always scopes keys to drawings/{project_id}/... — reject
+    # anything else so a caller can't point this at another project's/
+    # tenant's object or an arbitrary key.
+    if not payload.key.startswith(f"drawings/{project_id}/"):
+        raise HTTPException(status_code=400, detail="Key does not belong to this project")
+
+    head = storage.object_head(payload.key)
+    if head is None:
+        raise HTTPException(status_code=404, detail="Object not found in storage — did the upload complete?")
+
+    file_ext = get_file_extension(payload.original_filename)
+    db_drawing = models.Drawing(
+        project_id=project_id,
+        filename=payload.key.rsplit("/", 1)[-1],
+        original_filename=payload.original_filename,
+        file_path=storage.to_uri(payload.key),
+        file_size=head.get("ContentLength", 0),
+        file_type=file_ext.upper(),
+        sheet_name=payload.sheet_name,
+        scale=payload.scale,
+        processing_status=models.ProcessingStatus.PROCESSING,
+    )
+    db.add(db_drawing)
+    db.commit()
+    db.refresh(db_drawing)
+
+    from routes.takeoff_routes import _run_ai_analysis
+    background_tasks.add_task(_run_ai_analysis, db_drawing.id, db_drawing.file_path, db)
+    background_tasks.add_task(_generate_tiles, db_drawing.id, project_id, db_drawing.file_path)
+
+    return db_drawing
+
+
 @router.get("/project/{project_id}/drawings", response_model=List[schemas.Drawing])
 async def list_project_drawings(
     project_id: int,
@@ -169,6 +293,20 @@ async def download_drawing_file(
     ).first()
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
+
+    # Object-storage-backed drawing (memory/TOGAL_PARITY_REAUDIT.md #12):
+    # redirect to a short-lived presigned URL instead of proxying bytes
+    # through this server — the CLAUDE.md §3 guardrail this whole feature
+    # closes ("heavy work is a job/bypasses the app server", applied here
+    # to heavy file transfer, not just ML inference).
+    if storage.is_storage_uri(drawing.file_path):
+        if not storage.storage_available():
+            raise HTTPException(status_code=503, detail="Object storage isn't configured but this drawing is stored there.")
+        key = storage.key_from_uri(drawing.file_path)
+        if storage.object_head(key) is None:
+            raise HTTPException(status_code=404, detail="File not found in object storage")
+        return RedirectResponse(storage.generate_presigned_download(key))
+
     if not os.path.exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
 
@@ -224,7 +362,7 @@ async def trigger_tile_generation(
 ):
     """Manual (re)generate — e.g. a retry after the auto-triggered build failed."""
     drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
-    if not os.path.exists(drawing.file_path):
+    if not _file_exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
     background_tasks.add_task(_generate_tiles, drawing.id, drawing.project_id, drawing.file_path)
     return {"status": "generating", "drawing_id": drawing_id}

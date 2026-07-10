@@ -61,21 +61,27 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session):
         # Import AI engine (loaded once at server startup)
         from server import ai_engine
         from ai.spatial_reasoning import enrich_takeoff_result
+        import storage
 
         logger.info(f"[AI] Starting analysis: drawing_id={drawing_id}")
 
-        # Step 1: YOLOv8 inference
-        analysis = ai_engine.analyze(file_path, drawing_id)
+        # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
+        # #12) — resolve_local_path() downloads it to a temp file for the
+        # duration of inference/OCR, transparently, and is a no-op for the
+        # (still-supported) local-disk case.
+        with storage.resolve_local_path(file_path) as local_path:
+            # Step 1: YOLOv8 inference
+            analysis = ai_engine.analyze(local_path, drawing_id)
 
-        # Step 2: Spatial reasoning layer (room graph, quantities, scale)
-        raw_detection = {
-            "rooms":   analysis.rooms,
-            "walls":   analysis.walls,
-            "doors":   analysis.doors,
-            "windows": analysis.windows,
-            "summary": analysis.summary,
-        }
-        enriched = enrich_takeoff_result(json.dumps(raw_detection), file_path)
+            # Step 2: Spatial reasoning layer (room graph, quantities, scale)
+            raw_detection = {
+                "rooms":   analysis.rooms,
+                "walls":   analysis.walls,
+                "doors":   analysis.doors,
+                "windows": analysis.windows,
+                "summary": analysis.summary,
+            }
+            enriched = enrich_takeoff_result(json.dumps(raw_detection), local_path)
 
         # Step 3: Save to database
         db_result = models.TakeoffResult(

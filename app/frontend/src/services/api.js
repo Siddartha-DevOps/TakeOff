@@ -58,19 +58,58 @@ export const projectsAPI = {
   delete: (id) => api.delete(`/api/projects/${id}`),
 };
 
+// Object storage (S3/R2) presigned upload — memory/TOGAL_PARITY_REAUDIT.md
+// #12 / CLAUDE.md guardrail #1+#3: the file bytes go straight from the
+// browser to object storage, never through this app's API server. Falls
+// back to the legacy proxied upload below if the server 503s (S3_BUCKET
+// unset — see backend/storage.py), so this stays a drop-in replacement:
+// nothing else in the app needs to know which path a given deployment uses.
+async function uploadDrawingViaPresign(projectId, file, metadata) {
+  const presignRes = await api.post(`/api/uploads/project/${projectId}/drawings/presign`, {
+    filename: file.name,
+    content_type: file.type || 'application/octet-stream',
+  });
+  const { key, upload_url, fields } = presignRes.data;
+
+  const form = new FormData();
+  Object.entries(fields).forEach(([k, v]) => form.append(k, v));
+  form.append('file', file);
+  // Plain axios, not the `api` instance: this goes to the storage
+  // provider's own origin, not our backend — it must not carry our
+  // Authorization header or /api baseURL, and needs none of that since
+  // the presigned form fields are themselves a short-lived credential.
+  await axios.post(upload_url, form);
+
+  return api.post(`/api/uploads/project/${projectId}/drawings/confirm`, {
+    key,
+    original_filename: file.name,
+    sheet_name: metadata?.sheet_name,
+    scale: metadata?.scale,
+  });
+}
+
+function uploadDrawingViaProxy(projectId, file, metadata) {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (metadata?.sheet_name) formData.append('sheet_name', metadata.sheet_name);
+  if (metadata?.scale) formData.append('scale', metadata.scale);
+
+  return api.post(`/api/uploads/project/${projectId}/drawings`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+}
+
 // Uploads API
 export const uploadsAPI = {
-  uploadDrawing: (projectId, file, metadata) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    if (metadata?.sheet_name) formData.append('sheet_name', metadata.sheet_name);
-    if (metadata?.scale) formData.append('scale', metadata.scale);
-
-    return api.post(`/api/uploads/project/${projectId}/drawings`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
+  uploadDrawing: async (projectId, file, metadata) => {
+    try {
+      return await uploadDrawingViaPresign(projectId, file, metadata);
+    } catch (err) {
+      if (err.response?.status !== 503) throw err; // only fall back on "storage not configured"
+    }
+    return uploadDrawingViaProxy(projectId, file, metadata);
   },
   listDrawings: (projectId) => api.get(`/api/uploads/project/${projectId}/drawings`),
   getDrawing: (drawingId) => api.get(`/api/uploads/drawings/${drawingId}`),
