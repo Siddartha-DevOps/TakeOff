@@ -29,5 +29,13 @@ export function useAnnotationStore() {
     )));
   }, []);
 
-  return { annotations, loadFromDetection, loadFromJSON, toJSON, assignCondition };
+  // Accept/reject/relabel from DetectionHoverCard — same rule as
+  // assignCondition: meta only, geometry/measuredValue untouched.
+  const updateAnnotationMeta = useCallback((id, patch) => {
+    setAnnotations((prev) => prev.map((a) => (
+      a.id === id ? { ...a, meta: { ...a.meta, ...patch } } : a
+    )));
+  }, []);
+
+  return { annotations, loadFromDetection, loadFromJSON, toJSON, assignCondition, updateAnnotationMeta };
 }

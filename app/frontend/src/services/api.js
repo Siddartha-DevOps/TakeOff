@@ -98,6 +98,12 @@ export const conditionsAPI = {
   delete: (conditionId) => api.delete(`/api/conditions/${conditionId}`),
 };
 
+// Correction events API — the training-data flywheel (CLAUDE.md §2/§5)
+export const correctionsAPI = {
+  list: (projectId, params) => api.get(`/api/projects/${projectId}/corrections`, { params }),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/corrections`, data),
+};
+
 // Payments API
 export const paymentsAPI = {
   createCheckoutSession: (packageId, originUrl) => api.post('/api/payments/checkout/session', null, {

@@ -228,6 +228,58 @@ export default function Takeoff() {
     }
   }
 
+  // Accept/reject/relabel from DetectionHoverCard -> CorrectionEvent, the
+  // training-data flywheel (CLAUDE.md §2/§5). drawing_id is only sent when a
+  // real Sheet is selected — demo-canvas corrections still log (annotation_id
+  // + project scope is enough signal), just without a Drawing FK.
+  function snapshotAnnotation(annotation) {
+    return {
+      label: annotation?.meta?.label,
+      confidence: annotation?.meta?.confidence,
+      measuredValue: annotation?.measuredValue,
+    };
+  }
+
+  async function recordCorrection(annotation, action, before, after) {
+    try {
+      await correctionsAPI.create(id, {
+        drawing_id: selectedDrawing?.id ?? null,
+        annotation_id: annotation.id,
+        annotation_type: annotation.type,
+        action,
+        before,
+        after,
+      });
+    } catch (error) {
+      console.error('Failed to record correction:', error);
+    }
+  }
+
+  function handleAcceptDetection(item) {
+    const annotation = annotationsById.get(item.id);
+    if (!annotation) return;
+    annotationStore.updateAnnotationMeta(item.id, { reviewed: true });
+    const snapshot = snapshotAnnotation(annotation);
+    recordCorrection(annotation, 'accept', snapshot, snapshot);
+    setSelectedId(null);
+  }
+
+  function handleRejectDetection(item) {
+    const annotation = annotationsById.get(item.id);
+    if (!annotation) return;
+    annotationStore.updateAnnotationMeta(item.id, { rejected: true });
+    recordCorrection(annotation, 'reject', snapshotAnnotation(annotation), null);
+    setSelectedId(null);
+  }
+
+  function handleRelabelDetection(item, newLabel) {
+    const annotation = annotationsById.get(item.id);
+    if (!annotation || !newLabel.trim() || newLabel === annotation.meta?.label) return;
+    const before = { label: annotation.meta?.label };
+    annotationStore.updateAnnotationMeta(item.id, { label: newLabel, reviewed: true });
+    recordCorrection(annotation, 'relabel', before, { label: newLabel });
+  }
+
   async function runAnalysis() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
     const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
@@ -284,16 +336,17 @@ export default function Takeoff() {
   }
   function onMouseUp() { dragRef.current = null; }
 
-  const selected = useMemo(() => {
-    if (!detection || !selectedId) return null;
-    return [...detection.rooms, ...detection.doors, ...detection.windows].find((x) => x.id === selectedId);
-  }, [detection, selectedId]);
-
   const annotationsById = useMemo(() => {
     const map = new Map();
     annotationStore.annotations.forEach((a) => map.set(a.id, a));
     return map;
   }, [annotationStore.annotations]);
+
+  const selected = useMemo(() => {
+    if (!detection || !selectedId) return null;
+    if (annotationsById.get(selectedId)?.meta?.rejected) return null;
+    return [...detection.rooms, ...detection.doors, ...detection.windows].find((x) => x.id === selectedId);
+  }, [detection, selectedId, annotationsById]);
 
   const conditionsById = useMemo(() => {
     const map = new Map();
@@ -506,7 +559,16 @@ export default function Takeoff() {
               AI complete · {detection.processingTimeMs}ms · {detection.rooms.length + detection.doors.length + detection.windows.length} detections
             </div>
           )}
-          {selected && <DetectionHoverCard item={selected} onClose={() => setSelectedId(null)} />}
+          {selected && (
+            <DetectionHoverCard
+              item={selected}
+              annotation={annotationsById.get(selected.id)}
+              onClose={() => setSelectedId(null)}
+              onAccept={() => handleAcceptDetection(selected)}
+              onReject={() => handleRejectDetection(selected)}
+              onRelabel={(newLabel) => handleRelabelDetection(selected, newLabel)}
+            />
+          )}
           {calibrating && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
               <Ruler className="w-3.5 h-3.5 text-amber-400" />
@@ -647,7 +709,7 @@ function CanvasFull({
     const layerVisible = { rooms: layers.rooms, doors: layers.doors, windows: layers.windows, mep: true };
     const hits = [];
     annotationsById.forEach((a, id) => {
-      if (layerVisible[a.layerId] === false) return;
+      if (layerVisible[a.layerId] === false || a.meta?.rejected) return;
       if (rectsIntersect(box, boundsOf(a.geometry))) hits.push(id);
     });
     dragStartRef.current = null;
@@ -693,9 +755,11 @@ function CanvasFull({
         <line x1="260" y1="510" x2="340" y2="510" />
       </g>
       {detection && layers.rooms && detection.rooms.map((r) => {
+        if (annotationsById.get(r.id)?.meta?.rejected) return null;
         const [x1, y1, x2, y2] = r.bbox;
         const sel = selectedId === r.id || selectedIdSet.has(r.id);
         const dot = conditionDotFor(r.id, annotationsById, conditionsById);
+        const label = annotationsById.get(r.id)?.meta?.label ?? r.label;
         return (
           <g key={r.id}>
             <rect
@@ -708,7 +772,7 @@ function CanvasFull({
               onClick={(e) => { if (selectMode) return; e.stopPropagation(); onSelect(r.id); }}
             />
             <g transform={`translate(${(x1 + x2) / 2},${(y1 + y2) / 2})`} style={{ pointerEvents: 'none' }}>
-              <text textAnchor="middle" fontSize="12" fontWeight="600" fill="#1e293b">{r.label}</text>
+              <text textAnchor="middle" fontSize="12" fontWeight="600" fill="#1e293b">{label}</text>
               <text y="14" textAnchor="middle" fontSize="9" fill="#64748b" fontFamily="JetBrains Mono, monospace">{r.area} sf · {Math.round(r.confidence * 100)}%</text>
             </g>
             {dot && <circle cx={x1 + 12} cy={y1 + 12} r="5" fill={dot.color} stroke="#fff" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />}
@@ -716,6 +780,7 @@ function CanvasFull({
         );
       })}
       {detection && layers.doors && detection.doors.map((d) => {
+        if (annotationsById.get(d.id)?.meta?.rejected) return null;
         const dot = conditionDotFor(d.id, annotationsById, conditionsById);
         const sel = selectedIdSet.has(d.id);
         return (
@@ -728,6 +793,7 @@ function CanvasFull({
         );
       })}
       {detection && layers.windows && detection.windows.map((w) => {
+        if (annotationsById.get(w.id)?.meta?.rejected) return null;
         const dot = conditionDotFor(w.id, annotationsById, conditionsById);
         const sel = selectedIdSet.has(w.id);
         return (
@@ -749,16 +815,39 @@ function CanvasFull({
   );
 }
 
-function DetectionHoverCard({ item, onClose }) {
-  const label = item.label || (item.id?.startsWith('d') ? 'Door' : item.id?.startsWith('w') ? 'Window' : 'Element');
+function DetectionHoverCard({ item, annotation, onClose, onAccept, onReject, onRelabel }) {
+  const [editing, setEditing] = useState(false);
+  const label = annotation?.meta?.label || item.label || (item.id?.startsWith('d') ? 'Door' : item.id?.startsWith('w') ? 'Window' : 'Element');
+  const [draftLabel, setDraftLabel] = useState(label);
+  const reviewed = annotation?.meta?.reviewed;
+
+  function saveRelabel(e) {
+    e.preventDefault();
+    onRelabel(draftLabel);
+    setEditing(false);
+  }
+
   return (
     <div className="absolute top-4 right-4 w-64 rounded-xl bg-white border border-slate-200 shadow-xl p-4 z-10 animate-fade-up">
       <div className="flex items-start justify-between">
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Detection</div>
-          <div className="mt-0.5 text-base font-semibold text-slate-900">{label}</div>
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
+            Detection {reviewed && <Check className="w-3 h-3 text-emerald-600" />}
+          </div>
+          {editing ? (
+            <form onSubmit={saveRelabel} className="mt-1 flex items-center gap-1">
+              <input
+                value={draftLabel} onChange={(e) => setDraftLabel(e.target.value)} autoFocus
+                className="min-w-0 flex-1 rounded border border-slate-300 px-1.5 py-1 text-sm outline-none focus:border-slate-500"
+              />
+              <button type="submit" className="text-emerald-600 hover:text-emerald-700"><Check className="w-4 h-4" /></button>
+              <button type="button" onClick={() => { setEditing(false); setDraftLabel(label); }} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+            </form>
+          ) : (
+            <div className="mt-0.5 text-base font-semibold text-slate-900 truncate">{label}</div>
+          )}
         </div>
-        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xs">Close</button>
+        <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xs flex-shrink-0">Close</button>
       </div>
       <div className="mt-3 space-y-1.5 text-xs">
         <div className="flex justify-between"><span className="text-slate-500">ID</span><span className="mono text-slate-900">{item.id}</span></div>
@@ -767,8 +856,9 @@ function DetectionHoverCard({ item, onClose }) {
         <div className="flex justify-between"><span className="text-slate-500">Confidence</span><span className="mono text-emerald-600 font-semibold">{Math.round(item.confidence * 100)}%</span></div>
       </div>
       <div className="mt-4 flex gap-1.5">
-        <button className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">Accept</button>
-        <button className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Edit</button>
+        <button onClick={onAccept} className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">Accept</button>
+        <button onClick={() => setEditing(true)} className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Edit</button>
+        <button onClick={onReject} className="py-1.5 px-2.5 text-xs font-medium text-rose-600 bg-rose-50 rounded-md hover:bg-rose-100">Reject</button>
       </div>
     </div>
   );

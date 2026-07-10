@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
 from models import ProcessingStatus
 
@@ -132,6 +132,27 @@ class Condition(ConditionBase):
 
     class Config:
         from_attributes = True
+
+# Correction Event Schemas — the training-data flywheel (CLAUDE.md §2/§5)
+class CorrectionEventCreate(BaseModel):
+    drawing_id: Optional[int] = None
+    annotation_id: str
+    annotation_type: Literal["count", "line", "area"]
+    action: Literal["accept", "reject", "relabel", "edit"]
+    before: Optional[Dict[str, Any]] = None
+    after: Optional[Dict[str, Any]] = None
+
+class CorrectionEvent(BaseModel):
+    id: int
+    project_id: int
+    drawing_id: Optional[int]
+    annotation_id: str
+    annotation_type: str
+    action: str
+    before: Optional[Dict[str, Any]]
+    after: Optional[Dict[str, Any]]
+    user_id: int
+    created_at: datetime
 
 # Takeoff Result Schemas
 class TakeoffResultCreate(BaseModel):

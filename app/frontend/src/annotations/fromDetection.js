@@ -30,6 +30,8 @@ function roomToAnnotation(room, detectionMeta) {
   });
 }
 
+const DEFAULT_SYMBOL_LABEL = { doors: 'Door', windows: 'Window', mep: 'Fixture' };
+
 // Doors / windows / MEP symbols all carry a bbox in the real detection engine
 // (mock data derives one from x/y/width when it's missing). Modeled as
 // `count` shapes: a placed symbol with a footprint, worth 1 unit each.
@@ -48,6 +50,8 @@ function symbolToAnnotation(item, layerId, detectionMeta) {
     layerId,
     source: 'ai',
     meta: {
+      // label mirrors room.label — a uniform relabel target across all AI shapes.
+      label: item.type ?? DEFAULT_SYMBOL_LABEL[layerId] ?? 'Element',
       symbolType: item.type ?? layerId,
       confidence: item.confidence,
       rotation: item.rotation ?? 0,

@@ -129,6 +129,32 @@ class TakeoffResult(Base):
     # Relationships
     drawing = relationship("Drawing", back_populates="takeoff_results")
 
+class CorrectionEvent(Base):
+    """
+    The training-data flywheel (CLAUDE.md §2/§5): every accept/reject/relabel
+    a user makes on an AI (or manual) annotation, logged from day one.
+    annotation_id matches the frontend Annotation.id — annotations themselves
+    aren't persisted as rows yet (still JSON blobs in TakeoffResult), so this
+    is intentionally not a hard FK, just a matching key.
+    """
+    __tablename__ = "correction_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=True)  # null for un-uploaded/demo sheets
+    annotation_id = Column(String(64), nullable=False)
+    annotation_type = Column(String(20), nullable=False)  # 'count' | 'line' | 'area'
+    action = Column(String(20), nullable=False)  # 'accept' | 'reject' | 'relabel' | 'edit'
+    before = Column(Text, nullable=True)  # JSON snapshot
+    after = Column(Text, nullable=True)   # JSON snapshot
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    user = relationship("User")
+
 class PaymentTransaction(Base):
     __tablename__ = "payment_transactions"
     
