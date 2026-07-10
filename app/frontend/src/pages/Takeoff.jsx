@@ -57,6 +57,7 @@ export default function Takeoff() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
+  const [editingCondition, setEditingCondition] = useState(null); // Condition object being edited, or null
 
   useEffect(() => {
     fetchProject();
@@ -228,6 +229,15 @@ export default function Takeoff() {
     }
   }
 
+  async function updateCondition(conditionId, data) {
+    try {
+      const res = await conditionsAPI.update(conditionId, data);
+      setConditions((prev) => prev.map((c) => (c.id === conditionId ? res.data : c)));
+    } catch (error) {
+      console.error('Failed to update condition:', error);
+    }
+  }
+
   // Accept/reject/relabel from DetectionHoverCard -> CorrectionEvent, the
   // training-data flywheel (CLAUDE.md §2/§5). drawing_id is only sent when a
   // real Sheet is selected — demo-canvas corrections still log (annotation_id
@@ -365,6 +375,27 @@ export default function Takeoff() {
     return totals;
   }, [annotationStore.annotations, conditions]);
 
+  // Custom formula (TOGAL_PARITY_REAUDIT.md #5): cost = quantity * unit_cost
+  // * (1 + waste% / 100). "Area x Unit Cost" is the common case
+  // (annotation_type='area', unit='sf') but this generalizes to any unit.
+  // Recomputes live off conditionTotals, which is itself live off the
+  // annotation store — editing unit_cost/waste_percent or re-assigning a
+  // shape both flow straight through to this number.
+  const conditionCostTotals = useMemo(() => {
+    const costs = new Map();
+    conditions.forEach((c) => {
+      const qty = conditionTotals.get(c.id) ?? 0;
+      const wasteMultiplier = 1 + (c.waste_percent || 0) / 100;
+      costs.set(c.id, qty * (c.unit_cost || 0) * wasteMultiplier);
+    });
+    return costs;
+  }, [conditionTotals, conditions]);
+
+  const grandTotalCost = useMemo(
+    () => Array.from(conditionCostTotals.values()).reduce((sum, v) => sum + v, 0),
+    [conditionCostTotals]
+  );
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-900">
       <header className="h-14 bg-slate-900 text-white border-b border-slate-800 flex items-center px-4 gap-4 flex-shrink-0">
@@ -486,19 +517,39 @@ export default function Takeoff() {
               <div className="text-[11px] text-slate-500 px-2 py-1">Box-select shapes, right-click, assign.</div>
             )}
             {conditions.map((c) => (
-              <div key={c.id} className="group w-full flex items-center justify-between px-2 py-1.5 rounded text-xs text-slate-300 hover:bg-slate-800">
-                <span className="flex items-center gap-2 min-w-0">
-                  <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: c.color }} />
-                  <span className="truncate">{c.name}</span>
-                </span>
-                <span className="flex items-center gap-1.5 flex-shrink-0">
-                  <span className="mono text-[11px] text-slate-400">{(conditionTotals.get(c.id) ?? 0).toLocaleString()} {c.unit}</span>
-                  <button onClick={() => deleteCondition(c.id)} className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400">
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </span>
-              </div>
+              <button
+                key={c.id}
+                onClick={() => setEditingCondition(c)}
+                className="group w-full flex flex-col gap-0.5 px-2 py-1.5 rounded text-xs text-slate-300 hover:bg-slate-800 text-left"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: c.color }} />
+                    <span className="truncate">{c.name}</span>
+                  </span>
+                  <span className="flex items-center gap-1.5 flex-shrink-0">
+                    <span className="mono text-[11px] text-slate-400">{(conditionTotals.get(c.id) ?? 0).toLocaleString()} {c.unit}</span>
+                    <span
+                      onClick={(e) => { e.stopPropagation(); deleteCondition(c.id); }}
+                      className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </span>
+                  </span>
+                </div>
+                {c.unit_cost > 0 && (
+                  <div className="pl-4 text-[10px] text-slate-500 mono">
+                    ${c.unit_cost.toLocaleString()}/{c.unit}{c.waste_percent ? ` · ${c.waste_percent}% waste` : ''} = ${(conditionCostTotals.get(c.id) ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                )}
+              </button>
             ))}
+            {grandTotalCost > 0 && (
+              <div className="flex items-center justify-between px-2 py-1.5 mt-1 border-t border-slate-800 text-xs font-semibold text-white">
+                <span>Total cost</span>
+                <span className="mono">${grandTotalCost.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+              </div>
+            )}
           </div>
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Revisions</div>
           <div className="space-y-1">
@@ -625,6 +676,13 @@ export default function Takeoff() {
           </div>
         </aside>
       </div>
+      {editingCondition && (
+        <ConditionEditModal
+          condition={editingCondition}
+          onSave={(data) => { updateCondition(editingCondition.id, data); setEditingCondition(null); }}
+          onCancel={() => setEditingCondition(null)}
+        />
+      )}
     </div>
   );
 }
@@ -930,12 +988,14 @@ function ScaleCalibrationModal({ busy, onCancel, onConfirm }) {
 
 const CONDITION_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#ef4444', '#84cc16'];
 
-function ConditionForm({ initialType = 'area', onSubmit, onCancel, submitLabel = 'Create' }) {
-  const [name, setName] = useState('');
-  const [trade, setTrade] = useState('');
-  const [annotationType, setAnnotationType] = useState(initialType);
-  const [unit, setUnit] = useState(initialType === 'area' ? 'sf' : initialType === 'line' ? 'lf' : 'ea');
-  const [color, setColor] = useState(CONDITION_COLORS[Math.floor(Math.random() * CONDITION_COLORS.length)]);
+function ConditionForm({ initial, initialType = 'area', onSubmit, onCancel, submitLabel = 'Create' }) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [trade, setTrade] = useState(initial?.trade ?? '');
+  const [annotationType, setAnnotationType] = useState(initial?.annotation_type ?? initialType);
+  const [unit, setUnit] = useState(initial?.unit ?? (initialType === 'area' ? 'sf' : initialType === 'line' ? 'lf' : 'ea'));
+  const [color, setColor] = useState(initial?.color ?? CONDITION_COLORS[Math.floor(Math.random() * CONDITION_COLORS.length)]);
+  const [unitCost, setUnitCost] = useState(initial?.unit_cost ?? 0);
+  const [wastePercent, setWastePercent] = useState(initial?.waste_percent ?? 0);
 
   function handleTypeChange(t) {
     setAnnotationType(t);
@@ -945,7 +1005,10 @@ function ConditionForm({ initialType = 'area', onSubmit, onCancel, submitLabel =
   function submit(e) {
     e.preventDefault();
     if (!name.trim() || !trade.trim()) return;
-    onSubmit({ name: name.trim(), trade: trade.trim(), annotation_type: annotationType, unit, color });
+    onSubmit({
+      name: name.trim(), trade: trade.trim(), annotation_type: annotationType, unit, color,
+      unit_cost: parseFloat(unitCost) || 0, waste_percent: parseFloat(wastePercent) || 0,
+    });
   }
 
   return (
@@ -963,6 +1026,25 @@ function ConditionForm({ initialType = 'area', onSubmit, onCancel, submitLabel =
           {ANNOTATION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
         <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="w-8 h-8 rounded border border-slate-300" />
+      </div>
+      <div className="flex items-center gap-1.5">
+        <label className="flex-1 flex items-center gap-1.5 text-xs text-slate-600">
+          <span className="text-slate-400">$</span>
+          <input
+            type="number" step="any" min="0" value={unitCost} onChange={(e) => setUnitCost(e.target.value)}
+            placeholder="Unit cost" title={`Cost per ${unit}`}
+            className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-slate-500"
+          />
+          <span className="text-slate-400 flex-shrink-0">/{unit}</span>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-slate-600">
+          <input
+            type="number" step="any" min="0" value={wastePercent} onChange={(e) => setWastePercent(e.target.value)}
+            placeholder="Waste"
+            className="w-16 rounded-md border border-slate-300 px-2 py-1.5 text-xs outline-none focus:border-slate-500"
+          />
+          <span className="text-slate-400 flex-shrink-0">% waste</span>
+        </label>
       </div>
       <div className="flex gap-1.5 pt-1">
         <button type="button" onClick={onCancel} className="flex-1 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200">Cancel</button>
@@ -984,6 +1066,17 @@ function ConditionCreateButton({ onCreate }) {
       <div className="w-72 rounded-xl bg-white border border-slate-200 shadow-2xl p-4" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-sm font-semibold text-slate-900 mb-3">New condition</h3>
         <ConditionForm onSubmit={(data) => { onCreate(data); setOpen(false); }} onCancel={() => setOpen(false)} />
+      </div>
+    </div>
+  );
+}
+
+function ConditionEditModal({ condition, onSave, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40" onClick={onCancel}>
+      <div className="w-72 rounded-xl bg-white border border-slate-200 shadow-2xl p-4" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">Edit condition</h3>
+        <ConditionForm initial={condition} onSubmit={onSave} onCancel={onCancel} submitLabel="Save" />
       </div>
     </div>
   );

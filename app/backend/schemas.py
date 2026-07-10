@@ -111,6 +111,7 @@ class ConditionBase(BaseModel):
     unit: str
     color: str = "#6366f1"
     waste_percent: float = 0
+    unit_cost: float = 0
 
 class ConditionCreate(ConditionBase):
     pass
@@ -123,6 +124,7 @@ class ConditionUpdate(BaseModel):
     unit: Optional[str] = None
     color: Optional[str] = None
     waste_percent: Optional[float] = None
+    unit_cost: Optional[float] = None
 
 class Condition(ConditionBase):
     id: int

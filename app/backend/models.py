@@ -76,6 +76,14 @@ class Condition(Base):
     unit = Column(String(20), nullable=False)            # 'ea' | 'lf' | 'sf'
     color = Column(String(20), default="#6366f1")
     waste_percent = Column(Float, default=0)
+    # Custom formula (CLAUDE.md's "waste%, formula" field, TOGAL_PARITY_REAUDIT.md
+    # #5 "Add Custom Formula fields (Area × Unit Cost)"): total cost for a
+    # condition is quantity * unit_cost * (1 + waste_percent/100), where
+    # quantity is the live sum of measuredValue across its attached shapes
+    # (see Takeoff.jsx's conditionCostTotals). "Area" is the common case
+    # (annotation_type='area', unit='sf') but the same formula generalizes
+    # to any unit (lf, ea).
+    unit_cost = Column(Float, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
