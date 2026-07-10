@@ -412,7 +412,7 @@ export default function Takeoff() {
   const selected = useMemo(() => {
     if (!detection || !selectedId) return null;
     if (annotationsById.get(selectedId)?.meta?.rejected) return null;
-    return [...detection.rooms, ...detection.doors, ...detection.windows].find((x) => x.id === selectedId);
+    return [...detection.rooms, ...detection.doors, ...detection.windows, ...(detection.wall_segments ?? [])].find((x) => x.id === selectedId);
   }, [detection, selectedId, annotationsById]);
 
   const conditionsById = useMemo(() => {
@@ -852,7 +852,7 @@ function CanvasFull({
     }
     const [x1, y1, x2, y2] = marquee;
     const box = [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
-    const layerVisible = { rooms: layers.rooms, doors: layers.doors, windows: layers.windows, mep: true };
+    const layerVisible = { rooms: layers.rooms, doors: layers.doors, windows: layers.windows, walls: layers.walls, mep: true };
     const hits = [];
     annotationsById.forEach((a, id) => {
       if (layerVisible[a.layerId] === false || a.meta?.rejected) return;
@@ -885,21 +885,26 @@ function CanvasFull({
       </defs>
       <rect width="800" height="680" fill="#fafbff" />
       <rect width="800" height="680" fill="url(#grid2)" />
-      <g stroke="#eab308" strokeWidth="4" fill="none" opacity={layers.walls ? 1 : 0.15}>
-        <rect x="60" y="60" width="660" height="560" />
-      </g>
-      <g stroke="#ca8a04" strokeWidth="2" fill="none" opacity={layers.walls ? 1 : 0.15}>
-        <line x1="300" y1="60" x2="300" y2="200" />
-        <line x1="60" y1="200" x2="300" y2="200" />
-        <line x1="260" y1="200" x2="260" y2="440" />
-        <line x1="340" y1="200" x2="340" y2="440" />
-        <line x1="340" y1="340" x2="720" y2="340" />
-        <line x1="560" y1="200" x2="560" y2="440" />
-        <line x1="60" y1="370" x2="260" y2="370" />
-        <line x1="340" y1="440" x2="720" y2="440" />
-        <line x1="340" y1="600" x2="560" y2="600" />
-        <line x1="260" y1="510" x2="340" y2="510" />
-      </g>
+      {detection && (detection.wall_segments ?? []).map((seg) => {
+        if (annotationsById.get(seg.id)?.meta?.rejected) return null;
+        const [[x1, y1], [x2, y2]] = seg.geometry;
+        const sel = selectedId === seg.id || selectedIdSet.has(seg.id);
+        const dot = conditionDotFor(seg.id, annotationsById, conditionsById);
+        const exterior = seg.wallType === 'exterior';
+        return (
+          <g key={seg.id} opacity={layers.walls ? 1 : 0.15}>
+            <line
+              x1={x1} y1={y1} x2={x2} y2={y2}
+              stroke={sel ? '#4f46e5' : (exterior ? '#eab308' : '#ca8a04')}
+              strokeWidth={sel ? (exterior ? 6 : 4) : (exterior ? 4 : 2)}
+              strokeLinecap="square"
+              style={{ cursor: selectMode ? 'crosshair' : 'pointer' }}
+              onClick={(e) => { if (selectMode) return; e.stopPropagation(); onSelect(seg.id); }}
+            />
+            {dot && <circle cx={(x1 + x2) / 2} cy={(y1 + y2) / 2} r="4" fill={dot.color} stroke="#fff" strokeWidth="1.5" style={{ pointerEvents: 'none' }} />}
+          </g>
+        );
+      })}
       {detection && layers.rooms && detection.rooms.map((r) => {
         if (annotationsById.get(r.id)?.meta?.rejected) return null;
         const [x1, y1, x2, y2] = r.bbox;
@@ -999,7 +1004,12 @@ function DetectionHoverCard({ item, annotation, onClose, onAccept, onReject, onR
         <div className="flex justify-between"><span className="text-slate-500">ID</span><span className="mono text-slate-900">{item.id}</span></div>
         {item.area && <div className="flex justify-between"><span className="text-slate-500">Area</span><span className="mono text-slate-900">{item.area} sf</span></div>}
         {item.width && <div className="flex justify-between"><span className="text-slate-500">Width</span><span className="mono text-slate-900">{item.width}"</span></div>}
-        <div className="flex justify-between"><span className="text-slate-500">Confidence</span><span className="mono text-emerald-600 font-semibold">{Math.round(item.confidence * 100)}%</span></div>
+        {item.lengthPx != null && <div className="flex justify-between"><span className="text-slate-500">Length</span><span className="mono text-slate-900">{item.lengthPx}px</span></div>}
+        {item.confidence != null ? (
+          <div className="flex justify-between"><span className="text-slate-500">Confidence</span><span className="mono text-emerald-600 font-semibold">{Math.round(item.confidence * 100)}%</span></div>
+        ) : (
+          <div className="flex justify-between"><span className="text-slate-500">Source</span><span className="mono text-slate-500">Derived from room layout</span></div>
+        )}
       </div>
       <div className="mt-4 flex gap-1.5">
         <button onClick={onAccept} className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">Accept</button>

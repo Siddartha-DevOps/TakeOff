@@ -33,6 +33,11 @@ def _bbox_to_wkt_polygon(bbox: list) -> WKTElement:
     return WKTElement(f"POLYGON(({ring}))", srid=GEOM_SRID)
 
 
+def _points_to_wkt_linestring(points: list) -> WKTElement:
+    coords = ", ".join(f"{x} {y}" for x, y in points)
+    return WKTElement(f"LINESTRING({coords})", srid=GEOM_SRID)
+
+
 def _symbol_bbox(item: dict) -> list:
     bbox = item.get("bbox")
     if bbox:
@@ -79,6 +84,31 @@ def persist_detection_geometries(
             detection_id=det.id,
             value=room.get("area", 0),
             unit="sf",
+            geom=geom,
+        ))
+        created += 1
+
+    # Real vectorized wall centerlines (ai/wall_vectorization.py), typed
+    # exterior/interior — LineString geometry, not a bbox rectangle, since a
+    # wall segment has no meaningful footprint of its own to persist.
+    for seg in detection.get("wall_segments") or []:
+        geom = _points_to_wkt_linestring(seg["geometry"])
+        det = models.Detection(
+            project_id=project_id,
+            drawing_id=drawing_id,
+            annotation_id=str(seg["id"]),
+            annotation_type="line",
+            class_label=f"{seg.get('wall_type', 'interior')}_wall",
+            confidence=seg.get("confidence"),
+            source=source,
+            geom=geom,
+        )
+        db.add(det)
+        db.flush()
+        db.add(models.Measurement(
+            detection_id=det.id,
+            value=seg.get("length_px", 0),
+            unit="lf",
             geom=geom,
         ))
         created += 1

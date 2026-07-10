@@ -30,6 +30,24 @@ function roomToAnnotation(room, detectionMeta) {
   });
 }
 
+function wallSegmentToAnnotation(seg, detectionMeta) {
+  return finalize({
+    id: seg.id,
+    type: 'line',
+    geometry: seg.geometry,
+    style: { stroke: seg.wallType === 'exterior' ? '#eab308' : '#ca8a04', strokeWidth: seg.wallType === 'exterior' ? 4 : 2 },
+    layerId: 'walls',
+    source: 'ai',
+    meta: {
+      label: seg.wallType === 'exterior' ? 'Exterior wall' : 'Interior wall',
+      wallType: seg.wallType,
+      roomIds: seg.roomIds,
+      confidence: seg.confidence,
+      ...detectionMeta,
+    },
+  });
+}
+
 const DEFAULT_SYMBOL_LABEL = { doors: 'Door', windows: 'Window', mep: 'Fixture' };
 
 // Doors / windows / MEP symbols all carry a bbox in the real detection engine
@@ -77,10 +95,10 @@ export function annotationsFromDetection(detection) {
   const doors = (detection.doors ?? []).map((d) => symbolToAnnotation(d, 'doors', detectionMeta));
   const windows = (detection.windows ?? []).map((w) => symbolToAnnotation(w, 'windows', detectionMeta));
   const mep = (detection.mep ?? []).map((m) => symbolToAnnotation(m, 'mep', detectionMeta));
+  // wall_segments: true vectorized centerlines (wallVectorization.js / backend's
+  // ai/wall_vectorization.py), typed exterior/interior — see CanvasFull for the
+  // matching data-driven render, which replaced the old hardcoded SVG lines.
+  const walls = (detection.wall_segments ?? []).map((w) => wallSegmentToAnnotation(w, detectionMeta));
 
-  // NOTE: walls are not part of the AI detection payload today (see Milestone 0
-  // audit notes in the PR) — they're hardcoded SVG lines in CanvasFull /
-  // FloorPlanCanvas, not data-driven, so there's nothing to migrate yet.
-
-  return [...rooms, ...doors, ...windows, ...mep];
+  return [...rooms, ...doors, ...windows, ...mep, ...walls];
 }
