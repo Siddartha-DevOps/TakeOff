@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List
 import uuid
 from datetime import datetime, timezone
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes
 
 # Import models so every relationship("ClassName") string reference across
 # the ORM mapper registry resolves before the app starts handling requests.
@@ -78,6 +78,7 @@ app.include_router(eval_routes.router,    prefix="/api")
 app.include_router(handoff_routes.router, prefix="/api")
 app.include_router(realtime_routes.router, prefix="/api")
 app.include_router(realtime_routes.collab_router, prefix="/api")
+app.include_router(team_routes.router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 app.post("/api/webhook/stripe")(stripe_webhook)

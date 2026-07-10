@@ -17,6 +17,8 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Dashboard from './pages/Dashboard';
 import Takeoff from './pages/Takeoff';
+import Team from './pages/Team';
+import AcceptInvite from './pages/AcceptInvite';
 import Blog from './pages/Blog';
 import { Toaster } from './components/ui/sonner';
 import PaymentSuccess from './pages/PaymentSuccess';
@@ -48,8 +50,10 @@ function App() {
             <Route path="/blog" element={<MarketingShell><Blog /></MarketingShell>} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
+            <Route path="/invite/:token" element={<AcceptInvite />} />
             <Route path="/payment-success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
             <Route path="/app" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/app/team" element={<ProtectedRoute><Team /></ProtectedRoute>} />
             <Route path="/app/projects/:id" element={<ProtectedRoute><Takeoff /></ProtectedRoute>} />
           </Routes>
           <ChatWidget />

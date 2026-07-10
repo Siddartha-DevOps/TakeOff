@@ -12,6 +12,23 @@ class ProcessingStatus(enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class UserRole(enum.Enum):
+    """
+    Org-scoped role — memory/TOGAL_PARITY_REAUDIT.md #17: "No roles/RBAC/
+    invites (org exists only)." A User belongs to exactly one Organization
+    today (User.organization_id, set once at signup/invite-accept and never
+    reassigned anywhere in the app) — CLAUDE.md's "Clerk (orgs/teams
+    built-in)" line treats org == team, so this is a plain column on User
+    rather than a separate OrganizationMembership join table; a
+    many-orgs-per-user model isn't something any other part of the app
+    supports today, and adding it here would be scope the gap didn't ask
+    for. permissions.py defines the rank ordering and what each role can do.
+    """
+    OWNER = "owner"    # the org's creator (routes/auth_routes.py's signup); at least one must always exist
+    ADMIN = "admin"    # manage members/invites/roles; full project CRUD
+    MEMBER = "member"  # create projects; edit/delete only projects they own
+    VIEWER = "viewer"  # read-only
+
 class Organization(Base):
     __tablename__ = "organizations"
     
@@ -33,9 +50,10 @@ class User(Base):
     full_name = Column(String(255))
     is_active = Column(Boolean, default=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"))
+    role = Column(SQLEnum(UserRole), default=UserRole.MEMBER, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     organization = relationship("Organization", back_populates="users")
     projects = relationship("Project", back_populates="owner")
@@ -490,3 +508,37 @@ class Comment(Base):
     project = relationship("Project")
     drawing = relationship("Drawing")
     author = relationship("User", foreign_keys=[author_id])
+
+
+class InviteStatus(enum.Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"  # lazily flipped from PENDING once expires_at has passed (team_routes.py)
+
+
+class Invite(Base):
+    """
+    Org invite — memory/TOGAL_PARITY_REAUDIT.md #17's "invites" half.
+    No SMTP/SendGrid/Resend or any mail-sending capability exists anywhere
+    in this codebase (grepped — zero hits) — POST /team/invites returns the
+    invite (including its token) directly in the API response rather than
+    emailing it, and the frontend surfaces a copyable accept link. A real
+    deployment would wire a mail provider to actually send it; the
+    token/accept flow itself is fully real, only delivery is manual.
+    """
+    __tablename__ = "invites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.MEMBER)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(SQLEnum(InviteStatus), default=InviteStatus.PENDING, nullable=False)
+    invited_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    organization = relationship("Organization")
+    inviter = relationship("User", foreign_keys=[invited_by])

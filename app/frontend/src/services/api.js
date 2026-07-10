@@ -233,3 +233,16 @@ export const collabAPI = {
   resolveComment: (commentId, resolved = true) => api.patch(`/api/collab/comments/${commentId}/resolve`, { resolved }),
   deleteComment: (commentId) => api.delete(`/api/collab/comments/${commentId}`),
 };
+
+// Teams/roles/permissions + invites — routes/team_routes.py, permissions.py
+export const teamAPI = {
+  listMembers: () => api.get('/api/team/members'),
+  updateMemberRole: (userId, role) => api.patch(`/api/team/members/${userId}/role`, { role }),
+  removeMember: (userId) => api.delete(`/api/team/members/${userId}`),
+  listInvites: () => api.get('/api/team/invites'),
+  createInvite: (email, role) => api.post('/api/team/invites', { email, role }),
+  revokeInvite: (inviteId) => api.delete(`/api/team/invites/${inviteId}`),
+  // Public — no auth token yet, the invitee doesn't have an account
+  previewInvite: (token) => api.get(`/api/team/invites/${token}/preview`),
+  acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
+};

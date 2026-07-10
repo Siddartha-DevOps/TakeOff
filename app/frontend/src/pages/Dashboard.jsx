@@ -231,7 +231,7 @@ function AppSidebar({ user, onLogout }) {
   const items = [
     { icon: LayoutDashboard, label: 'Dashboard', to: '/app', active: true },
     { icon: FolderOpen, label: 'Projects', to: '/app' },
-    { icon: Users, label: 'Team', to: '#' },
+    { icon: Users, label: 'Team', to: '/app/team' },
     { icon: Settings, label: 'Settings', to: '#' },
   ];
 

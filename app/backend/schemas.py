@@ -19,10 +19,12 @@ class User(UserBase):
     id: int
     is_active: bool
     organization_id: Optional[int]
+    role: str
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
+        use_enum_values = True
 
 class Token(BaseModel):
     access_token: str

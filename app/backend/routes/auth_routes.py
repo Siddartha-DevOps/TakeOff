@@ -24,13 +24,16 @@ async def signup(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(org)
     
-    # Create user
+    # Create user — the org's creator is its owner (routes/team_routes.py's
+    # RBAC treats org == team; signup always makes a brand-new org today,
+    # so whoever creates it is definitionally the first/only owner).
     hashed_password = get_password_hash(user_data.password)
     db_user = models.User(
         email=user_data.email,
         full_name=user_data.full_name,
         hashed_password=hashed_password,
-        organization_id=org.id
+        organization_id=org.id,
+        role=models.UserRole.OWNER,
     )
     db.add(db_user)
     db.commit()
