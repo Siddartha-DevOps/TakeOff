@@ -191,4 +191,16 @@ export const exportAPI = {
   exportProject: (projectId, format) => api.get(`/api/export/projects/${projectId}/${format}`, {
     responseType: 'blob'
   }),
+  // Rich export — grouping, filtering, drawing selection, multiplier,
+  // inline editable grid (routes/export_routes.py's preview/generate).
+  previewProjectExport: (projectId, { drawingIds, trades, multiplier } = {}) => api.get(`/api/export/projects/${projectId}/preview`, {
+    params: {
+      drawing_ids: drawingIds?.length ? drawingIds.join(',') : undefined,
+      trades: trades?.length ? trades.join(',') : undefined,
+      multiplier,
+    },
+  }),
+  generateProjectExport: (projectId, payload) => api.post(`/api/export/projects/${projectId}/generate`, payload, {
+    responseType: 'blob'
+  }),
 };

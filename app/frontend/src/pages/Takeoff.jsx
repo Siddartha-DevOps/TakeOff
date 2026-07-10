@@ -51,6 +51,7 @@ export default function Takeoff() {
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [showAdvancedExport, setShowAdvancedExport] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -540,11 +541,23 @@ export default function Takeoff() {
                 <button onClick={() => handleExport('csv')} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                   <FileDown className="w-3.5 h-3.5" /> Export as CSV
                 </button>
+                <div className="my-1 border-t border-slate-100" />
+                <button onClick={() => { setShowExportMenu(false); setShowAdvancedExport(true); }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                  <FileDown className="w-3.5 h-3.5" /> Advanced export (PDF, grouping…)
+                </button>
               </div>
             )}
           </div>
         </div>
       </header>
+      {showAdvancedExport && (
+        <ExportModal
+          projectId={id}
+          drawings={drawings}
+          projectName={project?.name}
+          onClose={() => setShowAdvancedExport(false)}
+        />
+      )}
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
         <aside className="bg-slate-900 text-slate-200 border-r border-slate-800 p-4 overflow-auto">
@@ -1281,6 +1294,246 @@ function CompareModal({ current, target, loading, error, result, onClose }) {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Rich export — memory/TOGAL_PARITY_REAUDIT.md #14: PDF export + 3-level
+// grouping, filtering, drawing selection, export multiplier, inline
+// editable grid. Rows come from routes/export_routes.py's preview
+// endpoint (TakeoffResult.quantities_data per drawing, not the
+// client-only Condition/cost concept — see export_engine.py's docstring
+// for why); doExport() posts back exactly what's shown here, edits and
+// exclusions included, so the grid is genuinely what gets exported.
+function ExportModal({ projectId, drawings, projectName, onClose }) {
+  const [selectedDrawingIds, setSelectedDrawingIds] = useState(() => new Set(drawings.map((d) => d.id)));
+  const [selectedTrades, setSelectedTrades] = useState(new Set()); // empty = all trades
+  const [multiplier, setMultiplier] = useState(1);
+  const [groupBy, setGroupBy] = useState(['trade', 'drawing', '']);
+  const [rows, setRows] = useState(null); // null = not yet loaded
+  const [availableTrades, setAvailableTrades] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [exportingFormat, setExportingFormat] = useState(null);
+  const [excludedRowIds, setExcludedRowIds] = useState(new Set());
+
+  async function loadPreview() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await exportAPI.previewProjectExport(projectId, {
+        drawingIds: Array.from(selectedDrawingIds),
+        trades: selectedTrades.size ? Array.from(selectedTrades) : undefined,
+        multiplier,
+      });
+      setRows(res.data.rows);
+      setAvailableTrades(res.data.available_trades);
+      setExcludedRowIds(new Set());
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to load preview');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadPreview(); /* eslint-disable-next-line */ }, []);
+
+  function updateRowQuantity(rowId, value) {
+    setRows((prev) => prev.map((r) => (r.row_id === rowId ? { ...r, quantity: value } : r)));
+  }
+
+  function toggleExcluded(rowId) {
+    setExcludedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId); else next.add(rowId);
+      return next;
+    });
+  }
+
+  function toggleDrawing(drawingId) {
+    setSelectedDrawingIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(drawingId)) next.delete(drawingId); else next.add(drawingId);
+      return next;
+    });
+  }
+
+  function toggleTrade(trade) {
+    setSelectedTrades((prev) => {
+      const next = new Set(prev);
+      if (next.has(trade)) next.delete(trade); else next.add(trade);
+      return next;
+    });
+  }
+
+  const includedRows = (rows || []).filter((r) => !excludedRowIds.has(r.row_id));
+
+  async function doExport(format) {
+    if (!includedRows.length) return;
+    setExportingFormat(format);
+    try {
+      const res = await exportAPI.generateProjectExport(projectId, {
+        format,
+        rows: includedRows.map((r) => ({ ...r, quantity: parseFloat(r.quantity) || 0 })),
+        group_by: groupBy.filter(Boolean),
+        title: `${projectName || 'Project'} — Takeoff Export`,
+      });
+      const mediaType = format === 'excel'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : format === 'pdf' ? 'application/pdf' : 'text/csv';
+      const blob = new Blob([res.data], { type: mediaType });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `takeoff_export.${format === 'excel' ? 'xlsx' : format}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Export failed');
+    } finally {
+      setExportingFormat(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/50" onClick={onClose}>
+      <div className="w-[880px] max-w-[95vw] max-h-[88vh] overflow-hidden flex flex-col rounded-xl bg-white border border-slate-200 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5"><FileDown className="w-4 h-4" /> Export project quantities</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-auto px-5 py-4 space-y-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">
+              Drawings ({selectedDrawingIds.size}/{drawings.length})
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {drawings.map((d) => (
+                <button
+                  key={d.id}
+                  onClick={() => toggleDrawing(d.id)}
+                  className={`px-2.5 py-1 text-[11px] font-medium rounded-md border ${selectedDrawingIds.has(d.id) ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'bg-white border-slate-200 text-slate-500'}`}
+                >
+                  {d.sheet_number || d.sheet_name || d.original_filename}
+                </button>
+              ))}
+              {drawings.length === 0 && <span className="text-xs text-slate-400">No drawings in this project yet.</span>}
+            </div>
+          </div>
+
+          {availableTrades.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">Trades (none selected = all)</div>
+              <div className="flex flex-wrap gap-1.5">
+                {availableTrades.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => toggleTrade(t)}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md ${selectedTrades.has(t) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-end gap-3 flex-wrap">
+            {[0, 1, 2].map((level) => (
+              <div key={level}>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Group {level + 1}</div>
+                <select
+                  value={groupBy[level]}
+                  onChange={(e) => setGroupBy((prev) => prev.map((v, i) => (i === level ? e.target.value : v)))}
+                  className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+                >
+                  <option value="">None</option>
+                  <option value="trade">Trade</option>
+                  <option value="drawing">Sheet</option>
+                  <option value="item">Item</option>
+                </select>
+              </div>
+            ))}
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Multiplier</div>
+              <input
+                type="number" min="0.01" step="0.1" value={multiplier}
+                onChange={(e) => setMultiplier(parseFloat(e.target.value) || 1)}
+                className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+              />
+            </div>
+            <button onClick={loadPreview} disabled={loading} className="px-3 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-50 flex items-center gap-1.5">
+              {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Apply
+            </button>
+          </div>
+
+          {error && <div className="text-xs text-rose-600">{error}</div>}
+
+          {rows && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1.5">
+                Preview — {includedRows.length}/{rows.length} rows included · edit quantities or exclude rows below
+              </div>
+              <div className="border border-slate-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 sticky top-0">
+                    <tr>
+                      <th className="w-8"></th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Item</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Trade</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Sheet</th>
+                      <th className="text-right px-2 py-1.5 font-medium text-slate-500">Quantity</th>
+                      <th className="text-left px-2 py-1.5 font-medium text-slate-500">Unit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => {
+                      const excluded = excludedRowIds.has(r.row_id);
+                      return (
+                        <tr key={r.row_id} className={excluded ? 'opacity-40' : ''}>
+                          <td className="px-2 py-1"><input type="checkbox" checked={!excluded} onChange={() => toggleExcluded(r.row_id)} /></td>
+                          <td className="px-2 py-1 truncate max-w-[180px]" title={r.item}>{r.item}</td>
+                          <td className="px-2 py-1 text-slate-500">{r.trade}</td>
+                          <td className="px-2 py-1 text-slate-500">{r.drawing_name}</td>
+                          <td className="px-2 py-1 text-right">
+                            <input
+                              type="number" value={r.quantity}
+                              onChange={(e) => updateRowQuantity(r.row_id, e.target.value)}
+                              disabled={excluded}
+                              className="w-20 text-right rounded border border-slate-200 px-1.5 py-0.5 mono disabled:bg-slate-50"
+                            />
+                          </td>
+                          <td className="px-2 py-1 text-slate-500">{r.unit}</td>
+                        </tr>
+                      );
+                    })}
+                    {rows.length === 0 && (
+                      <tr><td colSpan={6} className="px-2 py-6 text-center text-slate-400">No quantities match these filters.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-200">
+          {['excel', 'pdf', 'csv'].map((format) => (
+            <button
+              key={format}
+              onClick={() => doExport(format)}
+              disabled={!includedRows.length || exportingFormat !== null}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50"
+            >
+              {exportingFormat === format ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
+              {format.toUpperCase()}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import List, Optional
 import schemas
 import models
+import export_engine
 from auth import get_current_user
 from database import get_db
 import json
@@ -13,6 +16,134 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 router = APIRouter(prefix="/export", tags=["Export"])
+
+# ── Rich export: grouping, filtering, drawing selection, multiplier,
+# inline editable grid — memory/TOGAL_PARITY_REAUDIT.md #14 ────────────────
+# The two endpoints above are untouched (still the quick single-drawing/
+# first-drawing-only Excel+CSV path some part of the UI may already call).
+# These are new, additive: a real multi-drawing, multi-format export built
+# on export_engine.py. See that module's docstring for why it reads
+# TakeoffResult.quantities_data rather than Condition/Detection.condition_id.
+
+def _get_project_for_export(project_id: int, current_user: models.User, db: Session) -> models.Project:
+    project = db.query(models.Project).filter(
+        models.Project.id == project_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.get("/projects/{project_id}/preview")
+async def preview_project_export(
+    project_id: int,
+    drawing_ids: Optional[str] = None,  # comma-separated Drawing ids; omit for all
+    trades: Optional[str] = None,       # comma-separated trade names; omit for all
+    multiplier: float = 1.0,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    One row per AI-detected quantity line item across every selected
+    drawing — fixes the old export_project()'s "first drawing only" bug by
+    construction, since every matching Drawing contributes its rows here,
+    not just drawings[0]. Returns the same row shape the frontend's inline
+    editable grid renders and, after edits, posts to /generate verbatim.
+    """
+    _get_project_for_export(project_id, current_user, db)
+
+    drawings_query = db.query(models.Drawing).filter(models.Drawing.project_id == project_id)
+    if drawing_ids:
+        try:
+            id_filter = [int(x) for x in drawing_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="drawing_ids must be a comma-separated list of integers")
+        drawings_query = drawings_query.filter(models.Drawing.id.in_(id_filter))
+    drawings = drawings_query.order_by(models.Drawing.page_number, models.Drawing.uploaded_at).all()
+
+    all_rows = []
+    for drawing in drawings:
+        all_rows.extend(export_engine.extract_rows(db, drawing))
+    available_trades = sorted({r["trade"] for r in all_rows})
+
+    trade_filter = [t.strip() for t in trades.split(",") if t.strip()] if trades else None
+    filtered_rows = export_engine.filter_rows(all_rows, trades=trade_filter)
+    final_rows = export_engine.apply_multiplier(filtered_rows, multiplier)
+
+    return {
+        "rows": final_rows,
+        "available_trades": available_trades,
+        "drawings": [
+            {"id": d.id, "name": d.sheet_number or d.sheet_name or d.original_filename}
+            for d in drawings
+        ],
+    }
+
+
+class GenerateExportRow(BaseModel):
+    row_id: str
+    drawing_id: int
+    drawing_name: str
+    trade: str
+    item: str
+    quantity: float
+    unit: str
+
+
+class GenerateExportRequest(BaseModel):
+    format: str  # 'excel' | 'csv' | 'pdf'
+    rows: List[GenerateExportRow]
+    group_by: Optional[List[str]] = None  # up to 3, from export_engine.GROUP_DIMENSIONS
+    title: Optional[str] = None
+
+
+_EXPORT_MEDIA_TYPES = {
+    "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv",
+    "pdf": "application/pdf",
+}
+_EXPORT_EXTENSIONS = {"excel": "xlsx", "csv": "csv", "pdf": "pdf"}
+
+
+@router.post("/projects/{project_id}/generate")
+async def generate_project_export(
+    project_id: int,
+    payload: GenerateExportRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Renders exactly the rows it's given, verbatim — this is what makes the
+    inline editable grid real rather than cosmetic: whatever the frontend
+    submits here (after a user edited quantities or excluded rows in the
+    preview) is what ends up in the file, with no re-query in between that
+    could silently diverge from what was shown/edited.
+    """
+    project = _get_project_for_export(project_id, current_user, db)
+
+    if payload.format not in _EXPORT_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="format must be one of: excel, csv, pdf")
+    if not payload.rows:
+        raise HTTPException(status_code=400, detail="No rows to export")
+
+    rows = [r.model_dump() for r in payload.rows]
+    title = payload.title or f"{project.name} — Takeoff Export"
+
+    try:
+        file_content = export_engine.generate_report(rows, payload.format, group_by=payload.group_by, title=title)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in project.name) or "export"
+    filename = f"takeoff_{safe_name}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.{_EXPORT_EXTENSIONS[payload.format]}"
+
+    return StreamingResponse(
+        file_content,
+        media_type=_EXPORT_MEDIA_TYPES[payload.format],
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
 
 def generate_excel_export(drawing_data, result_data):
     """Generate Excel file from takeoff data"""
@@ -320,4 +451,6 @@ async def export_project(
             "Content-Disposition": f"attachment; filename={filename}"
         }
     )
+
+
 
