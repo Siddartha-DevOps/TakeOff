@@ -143,9 +143,21 @@ def ingest_plan_set(
     for d in drawings:
         db.refresh(d)
 
-    from routes.takeoff_routes import _run_ai_analysis
+    # Real async queue (celery_app.py) is the primary path here too — a
+    # 50-sheet plan set is exactly the case CLAUDE.md guardrail #3's "long
+    # work is a job" rule exists for. Falls back to in-process
+    # BackgroundTasks per-drawing only if the broker itself is unreachable
+    # (same degraded-mode rule as takeoff_routes.py's analyze_drawing).
+    try:
+        from celery_app import run_ai_analysis_task
+        for d in drawings:
+            run_ai_analysis_task.delay(d.id, d.file_path, d.page_number)
+    except Exception as e:
+        logger.warning(f"[PlanSet] Celery broker unavailable, falling back to in-process background tasks: {e}")
+        from routes.takeoff_routes import _run_ai_analysis
+        for d in drawings:
+            background_tasks.add_task(_run_ai_analysis, d.id, d.file_path, db, d.page_number)
     for d in drawings:
-        background_tasks.add_task(_run_ai_analysis, d.id, d.file_path, db, d.page_number)
         background_tasks.add_task(_generate_tiles, d.id, project_id, d.file_path, d.page_number)
 
     return drawings

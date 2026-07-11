@@ -67,12 +67,28 @@ async def analyze_drawing(
     drawing.processing_status = models.ProcessingStatus.PROCESSING
     db.commit()
 
-    # Run AI in background — response returns immediately
-    background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db, drawing.page_number)
+    # Real async queue (celery_app.py) is the primary path — CLAUDE.md
+    # guardrail #3: long work is a job, not in-request work. Only falls
+    # back to FastAPI's in-process BackgroundTasks (same failure mode as
+    # before this change, now an explicit degraded mode instead of the
+    # silent default) if enqueueing itself fails — i.e. the broker
+    # (Redis) is unreachable. A successfully enqueued task with no worker
+    # currently running to consume it is a deployment/ops concern, not
+    # something this request can detect or should paper over — that's
+    # true of every queue system, not specific to Celery.
+    async_mode = "celery"
+    try:
+        from celery_app import run_ai_analysis_task
+        run_ai_analysis_task.delay(drawing_id, drawing.file_path, drawing.page_number)
+    except Exception as e:
+        logger.warning(f"[AI] Celery broker unavailable, falling back to in-process background task: {e}")
+        async_mode = "in_process_fallback"
+        background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db, drawing.page_number)
 
     return {
         "status": "processing",
         "drawing_id": drawing_id,
+        "async_mode": async_mode,
         "message": "AI analysis started. Poll /results for output."
     }
 
