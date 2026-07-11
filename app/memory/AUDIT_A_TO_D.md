@@ -51,16 +51,19 @@ Took the A–D branch as the trunk (broader) and ported PR #5's real engine onto
 - Fixed **`seed.py`**. Ported the engine's tests.
 - **41 backend tests pass** (33 engine + 8 existing); frontend builds.
 
-## Remaining follow-ups (documented, not yet done)
-1. **Coordinate-space transform for overlay/persistence.** The vector engine emits
-   PDF points (72 DPI); this branch's canvas + `Detection.geom` use raster
-   plan-space (300 DPI). The Area/Line/Count **numbers are correct** (computed in
-   real feet), but AUTODETECT room polygons need ×(300/72) before they overlay/
-   persist correctly in this branch's coordinate space. Until then, wire the
-   numbers, not the on-canvas geometry, for vector results.
-2. **Persist vector detections to PostGIS** via `persist_detection_geometries`
-   (after the transform above), so vector AUTODETECT flows into
-   Detection/Measurement, not just the JSON blob.
+## Remaining follow-ups (documented)
+1. ✅ **Coordinate-space transform — DONE.** Resolved as *asymmetric*, per the
+   actual code: the vector engine emits PDF points (72 DPI); the **untiled PDF
+   canvas maps from that same point space** (so the overlay renders in points,
+   `planScale=1` — no multiply), while the **OpenSeadragon tile pyramid is 300 DPI**
+   (`tiling.py`) and **`Detection.geom`/`scale_ratio`/3D view are 300-DPI pixels**.
+   So: overlay in points on the untiled path, ×(300/72) on the tiled path
+   (`DetectionShapes planScale`), and ×(300/72) for persistence
+   (`geometry/coords.py`). A read-only `DetectionShapes` overlay now renders
+   AUTODETECT rooms on the canvas.
+2. ✅ **Persist vector detections to PostGIS — DONE.** AUTODETECT now writes
+   Detection/Measurement rows via `persist_detection_geometries` (points→300-DPI
+   px), not just the JSON blob.
 3. **Unify migrations** — the branch `alembic/` chain already covers PostGIS; drop
    PR #5's separate `migrations/` dir (superseded) once this branch is the trunk.
 4. **Backfill tests** for the untested A–D routes (conditions, corrections,

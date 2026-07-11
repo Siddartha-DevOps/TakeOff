@@ -53,6 +53,7 @@ export default function DrawingRenderer({
   drawing, onLoad, calibrating = false, onCalibrationPoints,
   commentMode = false, onCommentClick, onPointerMove,
   remoteCursors = [], commentPins = [], onPinClick,
+  detection = null,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -404,6 +405,52 @@ export default function DrawingRenderer({
     );
   }
 
+  // Read-only overlay of AUTODETECT room polygons (memory/TOGAL_PARITY_REAUDIT.md
+  // #1). The vector engine emits geometry in PDF points (72 DPI). The untiled PDF
+  // canvas maps from that same point space (planScale=1), but the OpenSeadragon
+  // tile pyramid is built at 300 DPI (tiling.py), so on the tiled path the point
+  // coords must be scaled to 300-DPI image pixels first (planScale = 300/72) —
+  // the same reference space geometry/coords.py persists into.
+  function DetectionShapes({ screenPointFor, planScale = 1 }) {
+    const rooms = detection?.rooms;
+    if (!rooms || rooms.length === 0) return null;
+    const ringOf = (room) => {
+      const gj = room.geojson;
+      if (gj && gj.type === 'Polygon' && gj.coordinates?.[0]?.length >= 3) return gj.coordinates[0];
+      if (Array.isArray(room.bbox) && room.bbox.length === 4) {
+        const [x1, y1, x2, y2] = room.bbox;
+        return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+      }
+      return null;
+    };
+    const S = (x, y) => screenPointFor(x * planScale, y * planScale);
+    return (
+      <svg className="fixed inset-0 pointer-events-none z-40" width="100%" height="100%">
+        {rooms.map((room) => {
+          const ring = ringOf(room);
+          if (!ring) return null;
+          const pts = ring.map(([x, y]) => S(x, y)).filter(Boolean);
+          if (pts.length < 3) return null;
+          const c = room.centroid ? S(room.centroid[0], room.centroid[1]) : pts[0];
+          return (
+            <g key={room.id}>
+              <polygon
+                points={pts.map((p) => `${p.x},${p.y}`).join(' ')}
+                fill="#6366f1" fillOpacity="0.18" stroke="#4f46e5" strokeWidth="1.5"
+              />
+              {c && (
+                <text x={c.x} y={c.y} textAnchor="middle" fontSize="11" fontWeight="600" fill="#1e293b"
+                  style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
+                  {room.label}{room.area != null ? ` · ${room.area} sf` : ''}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }
+
   if (!drawing) {
     return (
       <div className="w-full h-full flex items-center justify-center text-slate-400">
@@ -426,16 +473,22 @@ export default function DrawingRenderer({
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
-        <CollabOverlay
-          screenPointFor={(x, y) => {
+        {(() => {
+          const osdScreenPointFor = (x, y) => {
             if (!osdContainerRef.current) return null;
             const pixel = osdImagePointToViewerPixel(x, y);
             if (!pixel) return null;
             const rect = osdContainerRef.current.getBoundingClientRect();
             void osdTick; // recompute this callback's closure whenever the viewport moves
             return { x: rect.left + pixel.x, y: rect.top + pixel.y };
-          }}
-        />
+          };
+          return (
+            <>
+              <DetectionShapes screenPointFor={osdScreenPointFor} planScale={300 / 72} />
+              <CollabOverlay screenPointFor={osdScreenPointFor} />
+            </>
+          );
+        })()}
         <div className="absolute top-4 left-4 flex items-center gap-2 p-2 bg-slate-900/90 backdrop-blur rounded-lg">
           <button
             onClick={() => osdViewerRef.current?.viewport.zoomBy(0.7).applyConstraints()}
@@ -539,13 +592,20 @@ export default function DrawingRenderer({
             <Page pageNumber={pageNumber} scale={scale} onLoadSuccess={onPageLoadSuccess} />
           </Document>
           <CalibrationMarkers />
-          <CollabOverlay
-            screenPointFor={(x, y) => {
+          {(() => {
+            const pdfScreenPointFor = (x, y) => {
               if (!pageWrapRef.current || !pageNativeSize) return null;
               const rect = pageWrapRef.current.getBoundingClientRect();
               return planToFixedScreenPoint(rect, pageNativeSize.width, pageNativeSize.height, x, y);
-            }}
-          />
+            };
+            return (
+              <>
+                {/* Untiled PDF canvas is in PDF points — same space the engine emits. */}
+                <DetectionShapes screenPointFor={pdfScreenPointFor} planScale={1} />
+                <CollabOverlay screenPointFor={pdfScreenPointFor} />
+              </>
+            );
+          })()}
         </div>
       </div>
     );

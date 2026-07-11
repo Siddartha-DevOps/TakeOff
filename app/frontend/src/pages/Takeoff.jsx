@@ -917,6 +917,7 @@ export default function Takeoff() {
             <div className="absolute inset-0">
               <DrawingRenderer
                 drawing={selectedDrawing}
+                detection={detection}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}

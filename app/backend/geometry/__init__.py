@@ -34,6 +34,7 @@ from .vector_pdf import (
 )
 from .quantities import autodetect_from_measure, vector_quantities
 from .vector_symbol_match import match_symbols, symbols_to_persistence
+from .coords import REFERENCE_DPI, bbox_to_pixels, points_to_pixels, ring_to_pixels
 
 __all__ = [
     "POINTS_PER_INCH",

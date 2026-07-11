@@ -348,6 +348,37 @@ async def autodetect_drawing(
         logger.error(f"[autodetect] persist failed {drawing_id}: {exc}")
         db.rollback()
 
+    # Persist as first-class geometry (CLAUDE.md §2/§5), converting the engine's
+    # PDF points -> the 300-DPI raster plan-space that Detection.geom / scale_ratio
+    # / the 3D view use (geometry/coords.py). The response above stays in points
+    # (the PDF canvas overlays in points); only the stored geometry is scaled.
+    # Best-effort — never fail the AUTODETECT run.
+    try:
+        from geometry.coords import bbox_to_pixels
+        det_px = {"rooms": [], "doors": [], "windows": [], "mep": []}
+        for room in measure["rooms"]:
+            det_px["rooms"].append({
+                "id": room["id"],
+                "label": room.get("label", "Space"),
+                "bbox": bbox_to_pixels(room["bbox"]),
+                "area": room.get("area", 0),  # sqft — DPI-independent, unchanged
+                "confidence": room.get("confidence", 1.0),
+            })
+        _sym_layer = {"door": "doors", "window": "windows", "fixture": "mep", "symbol": "mep"}
+        for group in (result.get("symbol_groups") or []):
+            layer = _sym_layer.get(group.get("symbol_type"), "mep")
+            for inst in group.get("instances", []):
+                det_px[layer].append({
+                    "id": inst["id"],
+                    "type": group.get("symbol_type", "symbol"),
+                    "bbox": bbox_to_pixels(inst["bbox"]),
+                    "confidence": 1.0,
+                })
+        persist_detection_geometries(db, drawing.project_id, drawing_id, det_px, source="vector")
+    except Exception as exc:
+        logger.warning(f"[autodetect] geometry persistence failed {drawing_id}: {exc}")
+        db.rollback()
+
     return result
 
 
