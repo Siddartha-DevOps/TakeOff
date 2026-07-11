@@ -124,6 +124,18 @@ export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
+  // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
+  // view (memory/TOGAL_PARITY_REAUDIT.md #19).
+  getDetections: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/detections`),
+};
+
+// Repeating Groups — master-unit -> many (memory/TOGAL_PARITY_REAUDIT.md #19)
+export const repeatingAPI = {
+  listMasterUnits: (projectId) => api.get(`/api/repeating/projects/${projectId}/master-units`),
+  createMasterUnit: (projectId, payload) => api.post(`/api/repeating/projects/${projectId}/master-units`, payload),
+  updateMasterUnit: (masterUnitId, payload) => api.put(`/api/repeating/master-units/${masterUnitId}`, payload),
+  deleteMasterUnit: (masterUnitId) => api.delete(`/api/repeating/master-units/${masterUnitId}`),
+  preview: (projectId) => api.get(`/api/repeating/projects/${projectId}/preview`),
 };
 
 // Scale calibration API

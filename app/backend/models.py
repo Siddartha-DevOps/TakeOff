@@ -542,3 +542,39 @@ class Invite(Base):
 
     organization = relationship("Organization")
     inviter = relationship("User", foreign_keys=[invited_by])
+
+
+class MasterUnit(Base):
+    """
+    Repeating Groups — memory/TOGAL_PARITY_REAUDIT.md #19: "take off one
+    master unit (hotel room/apartment) -> apply to hundreds of identical
+    spaces." One Drawing (a sheet the estimator measured once — e.g. a
+    single hotel room type) tagged with how many times that unit actually
+    repeats across the project. repeating_groups.py's apply_multiplier()
+    scales that drawing's quantities by instance_count wherever project-
+    wide quantities are computed (export_engine.extract_rows()'s two real
+    call sites: routes/export_routes.py and handoff_engine.py), so the
+    estimator measures the unit once instead of redrawing it N times.
+
+    One row per drawing (unique constraint below) — a drawing is either a
+    master unit or it isn't; letting two overlapping MasterUnits target the
+    same drawing would make "what's the multiplier here" ambiguous.
+    """
+    __tablename__ = "master_units"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    instance_count = Column(Integer, nullable=False, default=1)
+    notes = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+
+    __table_args__ = (
+        Index("ux_master_units_drawing_id", "drawing_id", unique=True),
+    )

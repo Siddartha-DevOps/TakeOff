@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat } from 'lucide-react';
+import Drawing3DView from '../components/Drawing3DView';
+import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -53,6 +55,8 @@ export default function Takeoff() {
   const [exporting, setExporting] = useState(false);
   const [showAdvancedExport, setShowAdvancedExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showRepeatingGroups, setShowRepeatingGroups] = useState(false);
+  const [show3DView, setShow3DView] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -639,6 +643,15 @@ export default function Takeoff() {
             <MessageSquare className="w-3.5 h-3.5" /> Comment
           </button>
         )}
+        {selectedDrawing && (
+          <button
+            onClick={() => setShow3DView(true)}
+            title="Interactive 3D view of this drawing's detected geometry"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
+          >
+            <Box className="w-3.5 h-3.5" /> 3D View
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -686,6 +699,10 @@ export default function Takeoff() {
                 <button onClick={() => { setShowExportMenu(false); setShowHandoff(true); }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
                   <ArrowRightLeft className="w-3.5 h-3.5" /> Estimating handoff (UPC/WBS)
                 </button>
+                <div className="my-1 border-t border-slate-100" />
+                <button onClick={() => { setShowExportMenu(false); setShowRepeatingGroups(true); }} className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-2">
+                  <Repeat className="w-3.5 h-3.5" /> Repeating groups
+                </button>
               </div>
             )}
           </div>
@@ -704,6 +721,21 @@ export default function Takeoff() {
           projectId={id}
           projectName={project?.name}
           onClose={() => setShowHandoff(false)}
+        />
+      )}
+      {showRepeatingGroups && (
+        <RepeatingGroupsModal
+          projectId={id}
+          drawings={drawings}
+          onClose={() => setShowRepeatingGroups(false)}
+        />
+      )}
+      {show3DView && selectedDrawing && (
+        <Drawing3DView
+          drawingId={selectedDrawing.id}
+          drawingName={selectedDrawing.sheet_name || selectedDrawing.original_filename}
+          scaleRatio={scaleInfo?.scale_ratio}
+          onClose={() => setShow3DView(false)}
         />
       )}
 

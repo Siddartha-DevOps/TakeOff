@@ -6,6 +6,7 @@ from typing import List, Optional
 import schemas
 import models
 import export_engine
+import repeating_groups
 from auth import get_current_user
 from database import get_db
 import json
@@ -64,7 +65,11 @@ async def preview_project_export(
 
     all_rows = []
     for drawing in drawings:
-        all_rows.extend(export_engine.extract_rows(db, drawing))
+        # Repeating Groups (memory/TOGAL_PARITY_REAUDIT.md #19) — a master
+        # unit's rows get scaled by its instance_count here, before
+        # filtering/the global multiplier, so both compose correctly.
+        rows = repeating_groups.apply_multiplier(db, drawing, export_engine.extract_rows(db, drawing))
+        all_rows.extend(rows)
     available_trades = sorted({r["trade"] for r in all_rows})
 
     trade_filter = [t.strip() for t in trades.split(",") if t.strip()] if trades else None

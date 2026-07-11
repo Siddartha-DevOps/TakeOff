@@ -49,6 +49,7 @@ from typing import Optional
 
 import export_engine
 import models
+import repeating_groups
 
 CSI_SEED_CATALOG = {
     "Flooring":    {"wbs_code": "09-650", "upc_code": "09.65.00-FLOOR", "description": "Resilient / carpet flooring (CSI 09 65 00 / 09 68 00)"},
@@ -76,7 +77,12 @@ def aggregate_project_quantities(db, project: "models.Project", drawing_ids: Opt
 
     totals: dict[tuple, dict] = {}
     for drawing in drawings:
-        for row in export_engine.extract_rows(db, drawing):
+        # Repeating Groups (memory/TOGAL_PARITY_REAUDIT.md #19) — same
+        # multiplier step export_routes.py's preview applies, so a
+        # master-unit drawing's contribution to the handoff bill of
+        # quantities is scaled here too, not just in the export UI.
+        rows = repeating_groups.apply_multiplier(db, drawing, export_engine.extract_rows(db, drawing))
+        for row in rows:
             key = (row["trade"], row["item"], row["unit"])
             if key not in totals:
                 totals[key] = {"trade": row["trade"], "item": row["item"], "unit": row["unit"], "quantity": 0.0, "drawing_names": set()}
