@@ -412,8 +412,9 @@ export default function DrawingRenderer({
   // coords must be scaled to 300-DPI image pixels first (planScale = 300/72) —
   // the same reference space geometry/coords.py persists into.
   function DetectionShapes({ screenPointFor, planScale = 1 }) {
-    const rooms = detection?.rooms;
-    if (!rooms || rooms.length === 0) return null;
+    const rooms = detection?.rooms || [];
+    const symbolGroups = detection?.symbolGroups || [];
+    if (rooms.length === 0 && symbolGroups.length === 0) return null;
     const ringOf = (room) => {
       const gj = room.geojson;
       if (gj && gj.type === 'Polygon' && gj.coordinates?.[0]?.length >= 3) return gj.coordinates[0];
@@ -424,6 +425,14 @@ export default function DrawingRenderer({
       return null;
     };
     const S = (x, y) => screenPointFor(x * planScale, y * planScale);
+    const SYMBOL_COLORS = { door: '#10b981', window: '#3b82f6', fixture: '#f59e0b', symbol: '#a855f7' };
+    const symCenter = (inst) => {
+      if (Array.isArray(inst.centroid)) return S(inst.centroid[0], inst.centroid[1]);
+      if (Array.isArray(inst.bbox) && inst.bbox.length === 4) {
+        return S((inst.bbox[0] + inst.bbox[2]) / 2, (inst.bbox[1] + inst.bbox[3]) / 2);
+      }
+      return null;
+    };
     return (
       <svg className="fixed inset-0 pointer-events-none z-40" width="100%" height="100%">
         {rooms.map((room) => {
@@ -446,6 +455,17 @@ export default function DrawingRenderer({
               )}
             </g>
           );
+        })}
+        {symbolGroups.map((group) => {
+          const color = SYMBOL_COLORS[group.symbol_type] || SYMBOL_COLORS.symbol;
+          return (group.instances || []).map((inst) => {
+            const p = symCenter(inst);
+            if (!p) return null;
+            return (
+              <circle key={inst.id} cx={p.x} cy={p.y} r="5"
+                fill={color} fillOpacity="0.85" stroke="#fff" strokeWidth="1.5" />
+            );
+          });
         })}
       </svg>
     );

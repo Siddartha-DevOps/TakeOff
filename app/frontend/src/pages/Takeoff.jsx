@@ -302,6 +302,7 @@ export default function Takeoff() {
         walls: prim.line ?? 0, totalArea: prim.area ?? 0,
       },
       symbol_counts: data.symbol_counts || {},
+      symbolGroups: data.symbol_groups || [],
       primitives: prim, page: data.page, method: 'vector',
       scale: data.scale_ratio ? `1:${Math.round(data.scale_ratio)}` : '—',
       sheet: drawing?.sheet_name || drawing?.original_filename || '',
