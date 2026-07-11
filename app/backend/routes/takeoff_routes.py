@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 import schemas
 import models
+import entitlements
 from auth import get_current_user
 from database import get_db
 from detection_geometry import persist_detection_geometries
@@ -15,6 +16,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/takeoff", tags=["Takeoff & AI"])
+
+
+def _require_ai_takeoff_entitlement(db: Session, organization_id: int):
+    """
+    Entitlements — memory/TOGAL_PARITY_REAUDIT.md #18. Shared by both
+    endpoints below that can create a TakeoffResult row (entitlements.py's
+    usage count *is* "TakeoffResult rows this month", so either one
+    bypassing the check would silently let usage exceed the plan limit).
+    """
+    allowed, snapshot = entitlements.check_entitlement(db, organization_id, "ai_takeoff")
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "message": f"Monthly AI takeoff limit reached for the {snapshot['plan_label']} plan "
+                           f"({snapshot['ai_takeoffs']['used']}/{snapshot['ai_takeoffs']['limit']}). Upgrade to run more takeoffs.",
+                "billing": snapshot,
+            },
+        )
 
 
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
@@ -40,6 +60,8 @@ async def analyze_drawing(
 
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
+
+    _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
     # Mark as processing immediately so frontend shows spinner
     drawing.processing_status = models.ProcessingStatus.PROCESSING
@@ -201,6 +223,11 @@ async def save_detection_results(
     ).first()
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
+
+    # This is the endpoint the real frontend flow actually calls per
+    # takeoff run (Takeoff.jsx's takeoffAPI.saveResults) — the primary
+    # enforcement point, not just analyze_drawing's background-job trigger.
+    _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
     db_result = models.TakeoffResult(
         drawing_id=drawing_id,

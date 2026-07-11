@@ -181,6 +181,8 @@ export const paymentsAPI = {
   }),
   getCheckoutStatus: (sessionId) => api.get(`/api/payments/checkout/status/${sessionId}`),
   getUserSubscription: () => api.get('/api/payments/subscription'),
+  // Entitlements + usage metering (entitlements.py, routes/stripe_routes.py)
+  getUsage: () => api.get('/api/payments/usage'),
 };
 
 // Export API

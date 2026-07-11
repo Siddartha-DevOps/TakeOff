@@ -4,6 +4,7 @@ from typing import List
 import schemas
 import models
 import permissions
+import entitlements
 from auth import get_current_user
 from database import get_db
 
@@ -21,6 +22,22 @@ async def create_project(
     current_user: models.User = Depends(permissions.require_role(models.UserRole.MEMBER)),
     db: Session = Depends(get_db)
 ):
+    # Entitlements — memory/TOGAL_PARITY_REAUDIT.md #18. 402, not 403: this
+    # isn't a permissions problem (the user IS allowed to create projects),
+    # it's a "pay for more" problem — the distinct HTTP status lets the
+    # frontend tell the two apart and show an upgrade prompt instead of a
+    # generic access-denied message.
+    allowed, snapshot = entitlements.check_entitlement(db, current_user.organization_id, "project")
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "message": f"Monthly project limit reached for the {snapshot['plan_label']} plan "
+                           f"({snapshot['projects']['used']}/{snapshot['projects']['limit']}). Upgrade to create more projects.",
+                "billing": snapshot,
+            },
+        )
+
     db_project = models.Project(
         name=project_data.name,
         description=project_data.description,
