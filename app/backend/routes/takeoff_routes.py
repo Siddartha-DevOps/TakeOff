@@ -224,6 +224,168 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
             db.commit()
 
 
+# ── Vector AUTODETECT (exact Area/Line/Count, no model weights) ───
+# Complements analyze_drawing above: that path runs YOLOv8-seg (needs trained
+# weights) on a rasterized page; this path reads the PDF's native vector
+# geometry and measures it exactly, so it works today with no weights on any
+# vector PDF. The frontend calls this first and only falls back to the raster
+# AI path (or the mock) when a sheet has no vector geometry.
+
+_FRACTION_SCALE_RATIOS = {
+    (3, 1): 4, (1, 1): 12, (3, 4): 16, (1, 2): 24,
+    (3, 8): 32, (1, 4): 48, (3, 16): 64, (1, 8): 96,
+    (3, 32): 128, (1, 16): 192,
+}
+
+
+def _parse_scale_ratio(scale_text):
+    """Best-effort parse of a stored scale string (e.g. '1/8\"=1'-0\"') to a ratio."""
+    if not scale_text:
+        return None
+    import re
+    m = re.search(r"(\d+)\s*/\s*(\d+)", str(scale_text))
+    if m:
+        return float(_FRACTION_SCALE_RATIOS.get((int(m.group(1)), int(m.group(2))), 0)) or None
+    m = re.search(r'1\s*["”]?\s*=\s*(\d+)\s*[\'’]', str(scale_text))
+    if m:
+        return float(m.group(1)) * 12.0
+    return None
+
+
+def _scale_ratio_for(drawing, override=None):
+    """Resolve the scale ratio: explicit override → calibrated → stored → default 96."""
+    return (
+        override
+        or getattr(drawing, "scale_ratio", None)
+        or _parse_scale_ratio(getattr(drawing, "scale", None))
+        or _parse_scale_ratio(getattr(drawing, "ocr_scale_text", None))
+        or 96.0
+    )
+
+
+@router.post("/drawings/{drawing_id}/autodetect")
+async def autodetect_drawing(
+    drawing_id: int,
+    scale_ratio: float = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """One-click AUTODETECT — exact Area/Line/Count from vector geometry.
+
+    Measures the drawing's native PDF vector geometry (no model weights) and
+    returns Togal's three primitives plus per-space GeoJSON for the canvas
+    overlay and per-type symbol counts. Persisted to TakeoffResult so the
+    Quantities panel and export read it. Returns ``is_vector: false`` for
+    scanned sheets (use /analyze for those)."""
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    if (drawing.file_type or "").upper() != "PDF":
+        return {"drawing_id": drawing_id, "is_vector": False,
+                "message": "Vector AUTODETECT needs a PDF; use /analyze for images."}
+
+    _require_ai_takeoff_entitlement(db, current_user.organization_id)
+
+    ratio = _scale_ratio_for(drawing, scale_ratio)
+    page_no = getattr(drawing, "page_number", 0) or 0
+
+    import storage
+    from geometry import measure_pdf, autodetect_from_measure, match_symbols
+    from geometry.postgis import to_geojson
+
+    try:
+        with storage.resolve_local_path(drawing.file_path) as local_path:
+            measure = measure_pdf(local_path, ratio, page_no=page_no)
+            symbols = None
+            if measure is not None:
+                try:
+                    symbols = match_symbols(local_path, page_no=page_no)
+                except Exception as sym_err:
+                    logger.warning(f"[autodetect] symbol match failed {drawing_id}: {sym_err}")
+    except Exception as exc:
+        logger.error(f"[autodetect] drawing_id={drawing_id} failed: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not read PDF geometry: {exc}")
+
+    if measure is None:
+        return {"drawing_id": drawing_id, "is_vector": False, "scale_ratio": ratio,
+                "message": "No vector geometry on this sheet — use AI detection (/analyze)."}
+
+    for room in measure["rooms"]:
+        geom = room.pop("geometry", None)
+        room["geojson"] = to_geojson(geom) if geom is not None else None
+
+    result = autodetect_from_measure(measure)
+    symbol_counts = symbols.get("symbol_counts", {}) if symbols else {}
+    result["symbol_counts"] = symbol_counts
+    result["symbol_groups"] = symbols.get("groups", []) if symbols else []
+    result["drawing_id"] = drawing_id
+    result["status"] = "ok"
+
+    # Persist to TakeoffResult (symbol_counts folded into the JSON blob so no
+    # schema change is needed on this branch). Best-effort — never fail the run.
+    try:
+        detection_data = {
+            "rooms": result.get("area", []), "doors": [], "windows": [],
+            "summary": result.get("summary", {}), "primitives": result.get("primitives", {}),
+            "symbol_counts": symbol_counts, "scale_ratio": ratio, "method": "vector",
+        }
+        db.add(models.TakeoffResult(
+            drawing_id=drawing_id,
+            detection_data=json.dumps(detection_data),
+            quantities_data=json.dumps(result.get("quantities", [])),
+            confidence_scores=json.dumps({"avg": 1.0, "source": "vector"}),
+            processing_time_ms=0,
+            ai_model_version="vector-geometry-v1",
+        ))
+        drawing.processing_status = models.ProcessingStatus.COMPLETED
+        drawing.processed_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception as exc:
+        logger.error(f"[autodetect] persist failed {drawing_id}: {exc}")
+        db.rollback()
+
+    return result
+
+
+@router.post("/drawings/{drawing_id}/detect_symbols")
+async def detect_symbols_endpoint(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Count symbols (doors/windows/fixtures). Vector PDFs are counted
+    geometrically with no weights; scanned sheets use the YOLOv8-seg symbol
+    model, which returns needs_weights until trained weights exist."""
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    import storage
+    page_no = getattr(drawing, "page_number", 0) or 0
+    with storage.resolve_local_path(drawing.file_path) as local_path:
+        if (drawing.file_type or "").upper() == "PDF":
+            try:
+                from geometry import match_symbols
+                result = match_symbols(local_path, page_no=page_no)
+                if result.get("total_symbols", 0) > 0 or result.get("groups"):
+                    result["drawing_id"] = drawing_id
+                    result["status"] = "ok"
+                    return result
+            except Exception as exc:
+                logger.warning(f"[detect_symbols] vector match failed {drawing_id}: {exc}")
+        from ai.detect_symbols import detect_symbols_raster
+        result = detect_symbols_raster(local_path, page_no=page_no)
+        result["drawing_id"] = drawing_id
+        return result
+
+
 # ── Existing routes (unchanged) ───────────────────────────────────
 
 @router.post("/drawings/{drawing_id}/results", response_model=schemas.TakeoffResult)

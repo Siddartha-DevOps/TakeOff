@@ -127,6 +127,14 @@ export const takeoffAPI = {
   // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
   // view (memory/TOGAL_PARITY_REAUDIT.md #19).
   getDetections: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/detections`),
+  // One-click AUTODETECT — exact Area/Line/Count from the PDF's vector geometry,
+  // no model weights needed (geometry/ engine). Frontend calls this first and
+  // falls back to the raster AI path / mock only when a sheet isn't vector.
+  autodetect: (drawingId, scaleRatio) =>
+    api.post(`/api/takeoff/drawings/${drawingId}/autodetect`, null, {
+      params: scaleRatio ? { scale_ratio: scaleRatio } : {},
+    }),
+  detectSymbols: (drawingId) => api.post(`/api/takeoff/drawings/${drawingId}/detect_symbols`),
 };
 
 // Repeating Groups — master-unit -> many (memory/TOGAL_PARITY_REAUDIT.md #19)

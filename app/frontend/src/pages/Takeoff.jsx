@@ -281,25 +281,75 @@ export default function Takeoff() {
     setCompareError(null);
   }
 
+  // Map the backend AUTODETECT response into the detection shape the panels +
+  // annotation store expect. Area/Line/Count come from exact vector geometry.
+  const mapAutodetect = (data, drawing) => {
+    const prim = data.primitives || {};
+    const rooms = (data.area || []).map((s) => ({
+      id: s.id,
+      label: s.label || 'Space',
+      bbox: s.bbox || [0, 0, 0, 0],
+      area: s.sqft,
+      confidence: s.confidence ?? 1,
+      geojson: s.geojson,
+      centroid: s.centroid,
+    }));
+    return {
+      rooms, doors: [], windows: [],
+      quantities: data.quantities || [],
+      summary: {
+        rooms: prim.count ?? rooms.length, doors: 0, windows: 0,
+        walls: prim.line ?? 0, totalArea: prim.area ?? 0,
+      },
+      symbol_counts: data.symbol_counts || {},
+      primitives: prim, page: data.page, method: 'vector',
+      scale: data.scale_ratio ? `1:${Math.round(data.scale_ratio)}` : '—',
+      sheet: drawing?.sheet_name || drawing?.original_filename || '',
+      processingTimeMs: 0,
+    };
+  };
+
   const runAnalysisForDrawing = async (drawing) => {
     setStatus('processing');
-    const result = await runTakeoffAI({
-      onProgress: setProgress,
-      seed: drawing.id,
-    });
+    setProgress({ msg: 'Reading vector geometry from the plan…', pct: 30 });
+
+    // Real vector AUTODETECT first (exact, no weights). Falls back to the mock
+    // only when the sheet isn't a vector PDF or the call fails — same
+    // real-first/fallback pattern this app uses for chat.
+    let result = null;
+    let fromVector = false;
+    if ((drawing.file_type || '').toUpperCase() === 'PDF') {
+      try {
+        const { data } = await takeoffAPI.autodetect(drawing.id);
+        if (data && data.method === 'vector' && data.is_vector !== false) {
+          result = mapAutodetect(data, drawing);
+          fromVector = true;
+        }
+      } catch (error) {
+        console.warn('AUTODETECT unavailable, falling back:', error);
+      }
+    }
+    if (!result) {
+      result = await runTakeoffAI({ onProgress: setProgress, seed: drawing.id });
+    }
+
     setDetection(result);
     annotationStore.loadFromDetection(result);
     setStatus('ready');
-    try {
-      await takeoffAPI.saveResults(drawing.id, {
-        detection_data: JSON.stringify(result),
-        quantities_data: JSON.stringify(result.summary || {}),
-        confidence_scores: JSON.stringify({ avg: 0.95 }),
-        processing_time_ms: result.processingTimeMs || 1500,
-      });
-      console.log('✅ AI results saved to database');
-    } catch (error) {
-      console.error('Failed to save AI results:', error);
+
+    // The vector AUTODETECT endpoint already persisted a TakeoffResult; only the
+    // mock/fallback path needs to save here (avoids a duplicate row + usage count).
+    if (!fromVector) {
+      try {
+        await takeoffAPI.saveResults(drawing.id, {
+          detection_data: JSON.stringify(result),
+          quantities_data: JSON.stringify(result.summary || {}),
+          confidence_scores: JSON.stringify({ avg: 0.95 }),
+          processing_time_ms: result.processingTimeMs || 1500,
+        });
+      } catch (error) {
+        console.error('Failed to save AI results:', error);
+      }
     }
   };
 
