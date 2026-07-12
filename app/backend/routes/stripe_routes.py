@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 import schemas
 import models
+import entitlements
 from auth import get_current_user
 from database import get_db
 import json
@@ -222,6 +223,21 @@ async def get_user_subscription(
         "status": subscription.status,
         "started_at": subscription.started_at
     }
+
+@router.get("/usage")
+async def get_billing_usage(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Entitlements + usage metering — memory/TOGAL_PARITY_REAUDIT.md #18.
+    Org-scoped (see entitlements.py's module docstring for why), so every
+    member of the team sees the same numbers regardless of who's logged in
+    or who holds the UserSubscription that funds the org's plan.
+    """
+    if current_user.organization_id is None:
+        raise HTTPException(status_code=400, detail="User has no organization")
+    return entitlements.get_billing_snapshot(db, current_user.organization_id)
 
 @router.post("/webhook/stripe")
 async def stripe_webhook(

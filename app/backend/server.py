@@ -1,18 +1,13 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes
 
-# Import database and models
-from database import engine, Base
+# Import models so every relationship("ClassName") string reference across
+# the ORM mapper registry resolves before the app starts handling requests.
 import models
 
 # ── NEW: Import AI engine ─────────────────────────────────────────
@@ -31,13 +26,12 @@ except Exception as e:
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Schema is Alembic-owned now (run `alembic upgrade head` before starting
+# the server — see backend/alembic/). Base.metadata.create_all() used to run
+# here, which is exactly the "no migrations applied" gap this fixes: it
+# silently diverges from what's actually tracked/versioned, and can't apply
+# things a migration can (e.g. `CREATE EXTENSION postgis`, dropping enum
+# types on rollback). Schema changes now only happen through `alembic upgrade`.
 
 # Create FastAPI app
 app = FastAPI(
@@ -56,8 +50,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_router = APIRouter(prefix="/api")
-
 app.include_router(auth_routes.router,    prefix="/api")
 app.include_router(project_routes.router, prefix="/api")
 app.include_router(upload_routes.router,  prefix="/api")
@@ -65,6 +57,18 @@ app.include_router(takeoff_routes.router, prefix="/api")
 app.include_router(blog_routes.router,    prefix="/api")
 app.include_router(stripe_routes.router,  prefix="/api")
 app.include_router(export_routes.router,  prefix="/api")
+app.include_router(scale_routes.router,   prefix="/api")
+app.include_router(condition_routes.router, prefix="/api")
+app.include_router(correction_routes.router, prefix="/api")
+app.include_router(ai_routes.router,      prefix="/api")
+app.include_router(compare_routes.router, prefix="/api")
+app.include_router(eval_routes.router,    prefix="/api")
+app.include_router(handoff_routes.router, prefix="/api")
+app.include_router(realtime_routes.router, prefix="/api")
+app.include_router(realtime_routes.collab_router, prefix="/api")
+app.include_router(team_routes.router, prefix="/api")
+app.include_router(repeating_routes.router, prefix="/api")
+app.include_router(webhook_routes.router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 app.post("/api/webhook/stripe")(stripe_webhook)
@@ -82,42 +86,6 @@ async def health_check():
 async def root():
     return {"message": "TakeOff.ai API v1.0", "docs": "/docs", "health": "/api/health"}
 
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-@api_router.get("/")
-async def _root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    return status_checks
-
-app.include_router(api_router)
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.info("TakeOff.ai API started successfully")
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

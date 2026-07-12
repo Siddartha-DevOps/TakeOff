@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { X, Loader2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { X, Loader2, ArrowUpRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { projectsAPI } from '../services/api';
 
 export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [limitReached, setLimitReached] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -28,6 +30,7 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setLimitReached(false);
 
     try {
       const response = await projectsAPI.create(formData);
@@ -40,7 +43,16 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
         project_type: 'High-rise residential',
       });
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create project. Please try again.');
+      // Entitlements (memory/TOGAL_PARITY_REAUDIT.md #18) — a 402 sends
+      // `detail` as an object ({message, billing}), not a plain string
+      // like every other error here, so it can't just be rendered as-is.
+      const detail = err.response?.data?.detail;
+      if (err.response?.status === 402 && detail?.message) {
+        setError(detail.message);
+        setLimitReached(true);
+      } else {
+        setError(typeof detail === 'string' ? detail : 'Failed to create project. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -82,7 +94,12 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
             <form onSubmit={handleSubmit} className="p-6">
               {error && (
                 <div className="mb-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-800">
-                  {error}
+                  <p>{error}</p>
+                  {limitReached && (
+                    <Link to="/pricing" className="mt-2 inline-flex items-center gap-1 font-medium text-rose-900 hover:underline">
+                      Upgrade plan <ArrowUpRight className="w-3.5 h-3.5" />
+                    </Link>
+                  )}
                 </div>
               )}
 

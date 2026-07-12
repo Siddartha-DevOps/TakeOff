@@ -19,6 +19,16 @@ ultralytics==8.2.0
 paddlepaddle==2.6.1
 paddleocr==2.7.3
 
+# OCR (title-block sheet number/discipline/title extraction — ai/title_block_ocr.py).
+# Deliberately pytesseract, not PaddleOCR, for this one use: PaddleOCR needs a
+# runtime model-weight download (like CLIP's — both confirmed network-blocked
+# in this project's sandbox this session) whereas pytesseract's tesseract-ocr
+# system binary ships its language data locally and needs no network at
+# runtime, so title-block extraction can actually be verified end-to-end.
+# Still fully optional/graceful-degrading like every other heavy dep here —
+# also needs the tesseract-ocr system package (apt-get install tesseract-ocr).
+pytesseract==0.3.10
+
 # CLIP (image search embeddings)
 ftfy==6.1.3
 regex

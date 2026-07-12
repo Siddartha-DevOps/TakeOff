@@ -12,6 +12,8 @@ import json
 import numpy as np
 from typing import List, Dict, Optional, Tuple, Any
 
+from ai.wall_vectorization import vectorize_walls
+
 
 class ScaleDetector:
     """Detect drawing scale and convert pixels to real feet."""
@@ -111,7 +113,7 @@ def build_adjacency(rooms, tol=10):
     return adj
 
 
-def derive_quantities(rooms, walls, doors, windows, scale):
+def derive_quantities(rooms, walls, doors, windows, scale, wall_segments=None):
     """Build full trade-level quantity list."""
     qs = []
     flooring = {"bedroom": "Carpet", "bathroom": "Tile", "kitchen": "Tile"}
@@ -124,14 +126,20 @@ def derive_quantities(rooms, walls, doors, windows, scale):
     for mat, area in by_mat.items():
         qs.append({"trade":"Flooring","item":f"{mat} flooring","quantity":area,"unit":"sf"})
 
-    total_lf = sum(max(w["bbox"][2]-w["bbox"][0], w["bbox"][3]-w["bbox"][1]) / scale for w in walls)
-    total_lf = round(total_lf, 1)
+    # Real vectorized wall segments (wall_vectorization.py) replace the old
+    # `4·sqrt(area)·1.8` perimeter guess — length is summed from actual
+    # centerline geometry, typed exterior/interior, not inferred from area.
+    wall_segments = wall_segments or []
+    exterior_lf = round(sum(s["length_px"] for s in wall_segments if s["wall_type"] == "exterior") / scale, 1)
+    interior_lf = round(sum(s["length_px"] for s in wall_segments if s["wall_type"] == "interior") / scale, 1)
+    total_lf = round(exterior_lf + interior_lf, 1)
     drywall_sf = round(total_lf * 9, 1)
     ceiling_sf = round(sum(r["area"] / (scale**2) for r in rooms), 1)
     paint_sf   = round(drywall_sf + ceiling_sf, 1)
 
     qs += [
-        {"trade":"Drywall",    "item":"Wall linear footage",    "quantity":total_lf,                 "unit":"lf"},
+        {"trade":"Framing",    "item":"Exterior wall linear footage", "quantity":exterior_lf,          "unit":"lf"},
+        {"trade":"Framing",    "item":"Interior wall linear footage", "quantity":interior_lf,          "unit":"lf"},
         {"trade":"Drywall",    "item":"Gypsum board (9ft walls)","quantity":drywall_sf,              "unit":"sf"},
         {"trade":"Painting",   "item":"Paintable surface",      "quantity":paint_sf,                 "unit":"sf"},
         {"trade":"Doors",      "item":"Interior doors (3'-0\")", "quantity":len(doors),              "unit":"ea"},
@@ -189,12 +197,17 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
     from collections import Counter
     room_count = dict(Counter(r["label"] for r in rooms))
 
-    quantities = derive_quantities(rooms, walls, doors, windows, scale)
+    # True wall vectorization (ai/wall_vectorization.py) — real typed
+    # centerline segments, not the old area-based perimeter guess.
+    wall_segments = vectorize_walls(rooms, wall_detections=walls)
+
+    quantities = derive_quantities(rooms, walls, doors, windows, scale, wall_segments=wall_segments)
 
     return {
         "detection": {
             **detection,
             "rooms": enriched_rooms,
+            "wall_segments": wall_segments,
             "room_graph": {"adjacency_matrix": adj, "room_count": room_count},
             "spatial_metrics": {
                 "total_area_sqft":     total,

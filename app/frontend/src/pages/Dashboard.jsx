@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Sparkles, LayoutDashboard, FolderOpen, Users, Settings, LogOut, Search, Plus, MoreVertical, Upload, Bell, HelpCircle, ArrowUpRight, Loader2 } from 'lucide-react';
+import { Sparkles, LayoutDashboard, FolderOpen, Users, Settings, LogOut, Search, Plus, MoreVertical, Upload, Bell, HelpCircle, ArrowUpRight, Loader2, Gauge } from 'lucide-react';
 import * as LIcons from 'lucide-react';
 import { DASHBOARD_ACTIVITY } from '../mock/mockData';
-import { projectsAPI } from '../services/api';
+import { projectsAPI, paymentsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CreateProjectModal from '../components/CreateProjectModal';
 
@@ -31,9 +31,11 @@ export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showNewProject, setShowNewProject] = useState(false);
+  const [usage, setUsage] = useState(null);
 
   useEffect(() => {
     fetchProjects();
+    paymentsAPI.getUsage().then((res) => setUsage(res.data)).catch(() => setUsage(null));
   }, []);
 
   const fetchProjects = async () => {
@@ -66,6 +68,7 @@ export default function Dashboard() {
   const handleProjectCreated = (newProject) => {
     setProjects([newProject, ...projects]);
     setShowNewProject(false);
+    paymentsAPI.getUsage().then((res) => setUsage(res.data)).catch(() => {});
   };
 
   return (
@@ -178,19 +181,7 @@ export default function Dashboard() {
                 </div>
               </section>
 
-              <section className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 to-indigo-950 p-5 text-white relative overflow-hidden">
-                <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(circle at 80% 20%, rgba(99,102,241,0.4), transparent 50%)' }} />
-                <div className="relative">
-                  <Sparkles className="w-6 h-6 text-indigo-300" />
-                  <h3 className="mt-3 text-base font-semibold">Upgrade to Business</h3>
-                  <p className="mt-1 text-xs text-white/70 leading-relaxed">
-                    Unlock SSO, dedicated support and custom libraries.
-                  </p>
-                  <button className="mt-4 w-full py-2 rounded-lg bg-white text-slate-900 text-xs font-semibold">
-                    Talk to sales
-                  </button>
-                </div>
-              </section>
+              <UsagePanel usage={usage} />
             </aside>
           </div>
         </main>
@@ -202,6 +193,59 @@ export default function Dashboard() {
         onSuccess={handleProjectCreated}
       />
     </div>
+  );
+}
+
+// Entitlements + usage metering — memory/TOGAL_PARITY_REAUDIT.md #18
+// (entitlements.py, GET /api/payments/usage). Org-scoped: every member of
+// the team sees the same numbers, since projects/AI takeoffs are shared
+// org resources, not per-user quotas.
+function UsageMeter({ label, metric }) {
+  const unlimited = metric.limit === null;
+  const pct = unlimited ? 0 : Math.min(100, Math.round((metric.used / Math.max(metric.limit, 1)) * 100));
+  const barColor = metric.at_limit ? 'bg-rose-500' : pct > 70 ? 'bg-amber-500' : 'bg-indigo-500';
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1.5">
+        <span className="text-white/70">{label}</span>
+        <span className="font-medium text-white">{unlimited ? `${metric.used} · Unlimited` : `${metric.used} / ${metric.limit}`}</span>
+      </div>
+      {!unlimited && (
+        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+          <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsagePanel({ usage }) {
+  const nearOrAtLimit = usage && (usage.projects.at_limit || usage.ai_takeoffs.at_limit);
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-900 to-indigo-950 p-5 text-white relative overflow-hidden">
+      <div className="absolute inset-0 opacity-40" style={{ backgroundImage: 'radial-gradient(circle at 80% 20%, rgba(99,102,241,0.4), transparent 50%)' }} />
+      <div className="relative">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <Gauge className="w-5 h-5 text-indigo-300" />
+            <h3 className="text-base font-semibold">{usage ? `${usage.plan_label} plan` : 'Plan usage'}</h3>
+          </div>
+        </div>
+        {!usage ? (
+          <p className="mt-3 text-xs text-white/50">Loading usage…</p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            <UsageMeter label="Projects this month" metric={usage.projects} />
+            <UsageMeter label="AI takeoffs this month" metric={usage.ai_takeoffs} />
+          </div>
+        )}
+        {(nearOrAtLimit || usage?.plan === 'free' || usage?.plan === 'starter') && (
+          <Link to="/pricing" className="mt-4 w-full py-2 rounded-lg bg-white text-slate-900 text-xs font-semibold flex items-center justify-center gap-1.5">
+            {nearOrAtLimit ? 'Upgrade now' : 'Upgrade plan'} <ArrowUpRight className="w-3.5 h-3.5" />
+          </Link>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -231,7 +275,7 @@ function AppSidebar({ user, onLogout }) {
   const items = [
     { icon: LayoutDashboard, label: 'Dashboard', to: '/app', active: true },
     { icon: FolderOpen, label: 'Projects', to: '/app' },
-    { icon: Users, label: 'Team', to: '#' },
+    { icon: Users, label: 'Team', to: '/app/team' },
     { icon: Settings, label: 'Settings', to: '#' },
   ];
 

@@ -3,17 +3,41 @@ from sqlalchemy.orm import Session
 from typing import List
 import schemas
 import models
+import permissions
+import entitlements
 from auth import get_current_user
 from database import get_db
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
+# RBAC — memory/TOGAL_PARITY_REAUDIT.md #17: before this, every route here
+# only checked organization_id, so any user in an org (including a VIEWER)
+# had full CRUD on every project in it. create/update/delete now go
+# through permissions.py; list/get stay open to any org member (VIEWER
+# included — read access is the point of that role).
+
 @router.post("", response_model=schemas.Project)
 async def create_project(
     project_data: schemas.ProjectCreate,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.MEMBER)),
     db: Session = Depends(get_db)
 ):
+    # Entitlements — memory/TOGAL_PARITY_REAUDIT.md #18. 402, not 403: this
+    # isn't a permissions problem (the user IS allowed to create projects),
+    # it's a "pay for more" problem — the distinct HTTP status lets the
+    # frontend tell the two apart and show an upgrade prompt instead of a
+    # generic access-denied message.
+    allowed, snapshot = entitlements.check_entitlement(db, current_user.organization_id, "project")
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "message": f"Monthly project limit reached for the {snapshot['plan_label']} plan "
+                           f"({snapshot['projects']['used']}/{snapshot['projects']['limit']}). Upgrade to create more projects.",
+                "billing": snapshot,
+            },
+        )
+
     db_project = models.Project(
         name=project_data.name,
         description=project_data.description,
@@ -92,7 +116,9 @@ async def update_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found"
         )
-    
+    if not permissions.can_modify_project(current_user, project):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have permission to edit this project")
+
     # Update fields
     if project_data.name is not None:
         project.name = project_data.name
@@ -123,7 +149,9 @@ async def delete_project(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found"
         )
-    
+    if not permissions.can_modify_project(current_user, project):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have permission to delete this project")
+
     db.delete(project)
     db.commit()
     return {"message": "Project deleted successfully"}

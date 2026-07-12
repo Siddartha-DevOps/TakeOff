@@ -1,19 +1,23 @@
 """
-TakeOff.ai — Real AI Takeoff Routes
-Replaces the mock endpoints in takeoff_routes.py.
+TakeOff.ai — AI Search + Chat routes.
 
-Drop-in: add to server.py as:
-    from routes.ai_routes import router as ai_router
-    app.include_router(ai_router, prefix="/api")
-
-The frontend calls /api/takeoff/drawings/{id}/analyze which is unchanged —
-only the implementation switches from mock to real AI.
+Was previously unmounted (memory/TOGAL_PARITY_REAUDIT.md #3/#6: "two
+conflicting route files... server.py only mounts takeoff_routes, so CLIP
+image search and real Claude chat are never reachable"). This file used to
+also define POST /drawings/{id}/analyze, duplicating takeoff_routes.py's
+(Celery-based vs. the synchronous path takeoff_routes.py actually uses,
+now wired to PostGIS persistence — see detection_geometry.py). That
+duplicate is why this router couldn't be mounted alongside takeoff_routes.py
+before: FastAPI would silently let whichever router registered first shadow
+the other's identical route. It's removed here — takeoff_routes.py's
+/analyze is the one real path — so only image search and chat remain,
+which don't collide with anything.
 """
 
 import json
-import time
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 # These imports assume the backend dir is in PYTHONPATH
@@ -24,377 +28,153 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import models
 from auth import get_current_user
 from database import get_db
+from clip_embeddings import clip_available, embed_image_patch, embed_text, search_embeddings
 
-router = APIRouter(prefix="/takeoff", tags=["AI Takeoff"])
+router = APIRouter(prefix="/takeoff", tags=["AI Search & Chat"])
 
-
-# ──────────────────────────────────────────────────────────────
-# Trigger AI analysis for a drawing (async, non-blocking)
-# ──────────────────────────────────────────────────────────────
-@router.post("/drawings/{drawing_id}/analyze")
-async def analyze_drawing(
-    drawing_id: int,
-    background_tasks: BackgroundTasks,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Trigger real AI analysis of a drawing.
-
-    Returns immediately with status=processing.
-    Frontend polls GET /drawings/{id}/results for completion.
-    """
-    drawing = db.query(models.Drawing).join(models.Project).filter(
-        models.Drawing.id == drawing_id,
-        models.Project.organization_id == current_user.organization_id,
-    ).first()
-
-    if not drawing:
-        raise HTTPException(status_code=404, detail="Drawing not found")
-
-    if drawing.processing_status == models.ProcessingStatus.PROCESSING:
-        return {"status": "already_processing", "drawing_id": drawing_id}
-
-    # Update status
-    drawing.processing_status = models.ProcessingStatus.PROCESSING
-    db.commit()
-
-    # Dispatch to Celery worker (non-blocking)
-    background_tasks.add_task(
-        _dispatch_ai_task,
-        drawing_id=drawing_id,
-        file_path=drawing.file_path,
-        db_url=os.getenv("DATABASE_URL", ""),
-    )
-
-    return {
-        "status": "processing",
-        "drawing_id": drawing_id,
-        "message": "AI analysis started. Poll GET /results for completion.",
-    }
+CLIP_UNAVAILABLE_DETAIL = (
+    "AI Search isn't available yet — CLIP model dependencies aren't installed "
+    "on the server (app/requirements.txt's torch + CLIP, kept out of the base "
+    "API image per CLAUDE.md's separate-GPU-service guardrail)."
+)
 
 
-async def _dispatch_ai_task(drawing_id: int, file_path: str, db_url: str):
-    """
-    Dispatch AI task to Celery worker.
-    If Celery is not available, run synchronously (for local dev without Redis).
-    """
-    try:
-        from ai_tasks import run_ai_analysis, index_drawing_for_search
-
-        # Fire-and-forget Celery tasks
-        task = run_ai_analysis.delay(drawing_id, file_path)
-        index_drawing_for_search.delay(drawing_id, file_path)
-
-        import logging
-        logging.getLogger(__name__).info(
-            f"AI task dispatched: {task.id} for drawing {drawing_id}"
-        )
-
-        # Set up Celery result callback to update DB
-        _schedule_result_save(task.id, drawing_id)
-
-    except ImportError:
-        # Celery not available — run synchronously (dev mode)
-        import logging
-        logging.getLogger(__name__).warning(
-            "Celery not available — running AI synchronously (not for production)"
-        )
-        await _run_ai_sync(drawing_id, file_path)
-
-
-async def _run_ai_sync(drawing_id: int, file_path: str):
-    """
-    Run AI analysis synchronously (development fallback).
-    In production, always use Celery workers.
-    """
-    import asyncio
-    from concurrent.futures import ThreadPoolExecutor
-
-    def _run():
-        # Check if real model exists
-        try:
-            sys.path.insert(0, os.path.dirname(__file__))
-            from detection_engine import BlueprintDetector, model_is_available
-            from preprocessing import load_drawing
-            from scale_detection import run_ocr_for_scale
-        except ImportError:
-            return None
-
-        if not model_is_available():
-            return None
-
-        img = load_drawing(file_path, page_number=0)
-        scale_info = run_ocr_for_scale(img)
-        detector = BlueprintDetector()
-        return detector.detect(img, scale_info=scale_info)
-
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as pool:
-        result = await loop.run_in_executor(pool, _run)
-
-    # Save to DB
-    from database import SessionLocal
-    db = SessionLocal()
-    try:
-        drawing = db.query(models.Drawing).filter(models.Drawing.id == drawing_id).first()
-        if not drawing:
-            return
-
-        if result:
-            db_result = models.TakeoffResult(
-                drawing_id=drawing_id,
-                detection_data=json.dumps(result),
-                quantities_data=json.dumps(result.get("quantities", [])),
-                confidence_scores=json.dumps(_avg_confidence(result)),
-                processing_time_ms=result.get("processing_time_ms", 0),
-                ai_model_version=result.get("model_version", "yolov8m-v1"),
-            )
-            db.add(db_result)
-            drawing.processing_status = models.ProcessingStatus.COMPLETED
-        else:
-            # No model yet — use fallback mock
-            mock_result = _generate_fallback_result(drawing_id)
-            db_result = models.TakeoffResult(
-                drawing_id=drawing_id,
-                detection_data=json.dumps(mock_result),
-                quantities_data=json.dumps(mock_result.get("quantities", [])),
-                confidence_scores=json.dumps({"avg": 0.0, "note": "mock — train model first"}),
-                processing_time_ms=0,
-                ai_model_version="mock_fallback_v0",
-            )
-            db.add(db_result)
-            drawing.processing_status = models.ProcessingStatus.COMPLETED
-
-        drawing.processed_at = datetime.now(timezone.utc)
-        db.commit()
-
-    finally:
-        db.close()
-
-
-def _schedule_result_save(celery_task_id: str, drawing_id: int):
-    """
-    Schedule a follow-up task to save Celery results to DB when done.
-    This runs as a separate low-overhead Celery task.
-    """
-    try:
-        from ai_tasks import app as celery_app
-
-        @celery_app.task(name="ai_tasks.save_results")
-        def save_results(task_id, drw_id):
-            from celery.result import AsyncResult
-            result = AsyncResult(task_id)
-            result.wait(timeout=180)
-            if result.successful():
-                _persist_result(drw_id, result.result)
-            else:
-                _mark_failed(drw_id)
-
-        save_results.apply_async(
-            args=[celery_task_id, drawing_id],
-            countdown=5,  # check after 5 seconds
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Could not schedule result save: {e}")
-
-
-def _persist_result(drawing_id: int, result: dict):
-    """Save AI result to database."""
-    from database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        drawing = db.query(models.Drawing).filter(models.Drawing.id == drawing_id).first()
-        if not drawing:
-            return
-
-        # Remove or update existing result
-        existing = db.query(models.TakeoffResult).filter(
-            models.TakeoffResult.drawing_id == drawing_id
-        ).first()
-
-        data = {
-            "drawing_id": drawing_id,
-            "detection_data": json.dumps(result),
-            "quantities_data": json.dumps(result.get("quantities", [])),
-            "confidence_scores": json.dumps(_avg_confidence(result)),
-            "processing_time_ms": result.get("processing_time_ms", 0),
-            "ai_model_version": result.get("model_version", "yolov8m-v1"),
-        }
-
-        if existing:
-            for k, v in data.items():
-                setattr(existing, k, v)
-        else:
-            db.add(models.TakeoffResult(**data))
-
-        drawing.processing_status = models.ProcessingStatus.COMPLETED
-        drawing.processed_at = datetime.now(timezone.utc)
-        db.commit()
-
-    finally:
-        db.close()
-
-
-def _mark_failed(drawing_id: int):
-    from database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        drawing = db.query(models.Drawing).filter(models.Drawing.id == drawing_id).first()
-        if drawing:
-            drawing.processing_status = models.ProcessingStatus.FAILED
-            db.commit()
-    finally:
-        db.close()
-
-
-def _avg_confidence(result: dict) -> dict:
-    """Compute average confidence scores per detection type."""
-    def avg(items):
-        if not items:
-            return 0.0
-        return round(sum(i.get("confidence", 0) for i in items) / len(items), 3)
-
-    return {
-        "rooms": avg(result.get("rooms", [])),
-        "doors": avg(result.get("doors", [])),
-        "windows": avg(result.get("windows", [])),
-        "mep": avg(result.get("mep", [])),
-    }
-
-
-def _generate_fallback_result(drawing_id: int) -> dict:
-    """
-    Returns an empty result with clear indication that training is needed.
-    This replaces the old mock data — shows real status to users.
-    """
-    return {
-        "rooms": [],
-        "doors": [],
-        "windows": [],
-        "mep": [],
-        "summary": {"rooms": 0, "doors": 0, "windows": 0, "totalArea": 0},
-        "quantities": [],
-        "model_status": "untrained",
-        "message": "AI model not trained yet. Run: python training/train.py to train.",
-        "processing_time_ms": 0,
-    }
-
-
-# ──────────────────────────────────────────────────────────────
-# AI Image Search endpoint
-# ──────────────────────────────────────────────────────────────
-@router.post("/projects/{project_id}/search/image")
-async def ai_image_search(
-    project_id: int,
-    query_bbox: dict,               # {drawing_id, x1, y1, x2, y2} — user drew a box
-    top_k: int = 10,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    AI Image Search: find similar visual regions across all project drawings.
-
-    Args:
-        query_bbox: The region the user drew (source drawing + pixel coords).
-        top_k:      Number of matches to return.
-    """
+def _require_project(project_id: int, current_user: models.User, db: Session) -> models.Project:
     project = db.query(models.Project).filter(
         models.Project.id == project_id,
         models.Project.organization_id == current_user.organization_id,
     ).first()
-
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    return project
 
-    source_drawing = db.query(models.Drawing).filter(
-        models.Drawing.id == query_bbox.get("drawing_id"),
-        models.Drawing.project_id == project_id,
-    ).first()
 
-    if not source_drawing:
-        raise HTTPException(status_code=404, detail="Source drawing not found")
-
-    try:
-        import clip
-        import torch
-        import numpy as np
-        from PIL import Image as PILImage
-        from preprocessing import load_drawing
-
-        # Extract query patch
-        img = load_drawing(source_drawing.file_path, page_number=0)
-        x1, y1 = int(query_bbox["x1"]), int(query_bbox["y1"])
-        x2, y2 = int(query_bbox["x2"]), int(query_bbox["y2"])
-        patch = img[y1:y2, x1:x2]
-
-        # Encode with CLIP
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
-
-        pil_patch = PILImage.fromarray(patch[:, :, ::-1])  # BGR→RGB
-        tensor = clip_preprocess(pil_patch).unsqueeze(0).to(device)
-
-        with torch.no_grad():
-            query_emb = clip_model.encode_image(tensor)
-            query_emb = query_emb / query_emb.norm(dim=-1, keepdim=True)
-
-        # TODO: Query pgvector index for similar patches
-        # This is where you'd do:
-        # SELECT * FROM drawing_embeddings
-        # ORDER BY embedding <=> $1 LIMIT $2
-        # For now return empty — implement after adding pgvector
-        return {
-            "query_bbox": query_bbox,
-            "results": [],
-            "message": "Image search index not yet built. Run index_drawing_for_search task.",
+def _search_results_to_response(rows) -> list:
+    return [
+        {
+            "detection_id": row.annotation_id,
+            "drawing_id": row.drawing_id,
+            "label_hint": row.label_hint,
+            "similarity": round(1 - distance, 4),  # cosine_distance -> similarity, easier for a UI to show as "94% match"
+            "geometry": json.loads(geojson)["coordinates"][0],  # ring -> same shape as frontend Annotation.geometry
         }
-
-    except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="CLIP not installed. Run: pip install git+https://github.com/openai/CLIP.git",
-        )
+        for row, distance, geojson in rows
+    ]
 
 
 # ──────────────────────────────────────────────────────────────
-# TakeOff Chat endpoint (real Claude API, not mock)
+# AI Image / Pattern Search — draw a region, find visually similar
+# patches across the project (auto-count/auto-locate a symbol or condition).
 # ──────────────────────────────────────────────────────────────
-@router.post("/drawings/{drawing_id}/chat")
-async def takeoff_chat(
-    drawing_id: int,
-    body: dict,                     # {message: str, conversation_history: list}
+class ImageSearchQuery(BaseModel):
+    drawing_id: int
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    top_k: int = 10
+
+
+@router.post("/projects/{project_id}/search/image")
+async def ai_image_search(
+    project_id: int,
+    query: ImageSearchQuery,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    TakeOff Chat: answer questions about a drawing using Claude API.
-    Context = detection results + OCR text of the drawing.
+    Embed the region the user drew and find its nearest neighbors in the
+    project's CLIP index (pgvector cosine search). This is also "pattern
+    search" — draw one instance of a recurring symbol/condition and this
+    returns every visually similar patch across every sheet in the project,
+    ready to convert into count/area annotations (see Takeoff.jsx).
     """
-    drawing = db.query(models.Drawing).join(models.Project).filter(
-        models.Drawing.id == drawing_id,
-        models.Project.organization_id == current_user.organization_id,
+    _require_project(project_id, current_user, db)
+
+    source_drawing = db.query(models.Drawing).filter(
+        models.Drawing.id == query.drawing_id,
+        models.Drawing.project_id == project_id,
     ).first()
+    if not source_drawing:
+        raise HTTPException(status_code=404, detail="Source drawing not found")
 
-    if not drawing:
-        raise HTTPException(status_code=404, detail="Drawing not found")
+    if not clip_available():
+        raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
 
-    # Get detection context
+    ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
+    sys.path.insert(0, ai_dir)
+    from preprocessing import load_drawing
+
+    img = load_drawing(source_drawing.file_path, page_number=0)
+    x1, y1, x2, y2 = int(query.x1), int(query.y1), int(query.x2), int(query.y2)
+    patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
+    if patch.size == 0:
+        raise HTTPException(status_code=400, detail="Query region is empty")
+
+    query_embedding = embed_image_patch(patch)
+    rows = search_embeddings(db, project_id, query_embedding, top_k=query.top_k)
+
+    return {"query": query.model_dump(), "results": _search_results_to_response(rows)}
+
+
+# ──────────────────────────────────────────────────────────────
+# AI Text Search — "find all outlets", "find all bedrooms"
+# ──────────────────────────────────────────────────────────────
+class TextSearchQuery(BaseModel):
+    query: str
+    top_k: int = 10
+
+
+@router.post("/projects/{project_id}/search/text")
+async def ai_text_search(
+    project_id: int,
+    body: TextSearchQuery,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    CLIP's text and image encoders share one embedding space, so a plain-
+    English query searches the exact same DrawingEmbedding index the image/
+    pattern search above does — no separate text index needed.
+    """
+    _require_project(project_id, current_user, db)
+
+    if not clip_available():
+        raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
+
+    if not body.query.strip():
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    query_embedding = embed_text(body.query.strip())
+    rows = search_embeddings(db, project_id, query_embedding, top_k=body.top_k)
+
+    return {"query": body.query, "results": _search_results_to_response(rows)}
+
+
+# ──────────────────────────────────────────────────────────────
+# TakeOff.CHAT (real Claude API, not mock) — RAG over detections,
+# conditions, human corrections, and OCR; citations; SOW/RFP/RFI drafting.
+# ──────────────────────────────────────────────────────────────
+CLAUDE_MODEL = "claude-sonnet-5"
+
+
+def _build_detection_context(drawing_id: int, db: Session) -> str:
     result = db.query(models.TakeoffResult).filter(
         models.TakeoffResult.drawing_id == drawing_id
     ).order_by(models.TakeoffResult.created_at.desc()).first()
+    if not result:
+        return ""
+    try:
+        det = json.loads(result.detection_data)
+    except json.JSONDecodeError:
+        return ""
 
-    detection_context = ""
-    if result:
-        try:
-            det = json.loads(result.detection_data)
-            summary = det.get("summary", {})
-            quantities = det.get("quantities", [])
-            detection_context = f"""
-Drawing analysis results:
+    summary = det.get("summary", {})
+    quantities = det.get("quantities", [])
+    rooms = [{"label": r.get("label"), "area": r.get("area"), "confidence": r.get("confidence")}
+             for r in det.get("rooms", [])]
+
+    return f"""Drawing analysis results:
 - Rooms detected: {summary.get('rooms', 0)} | Total area: {summary.get('totalArea', 0)} sqft
 - Doors detected: {summary.get('doors', 0)}
 - Windows detected: {summary.get('windows', 0)}
@@ -404,29 +184,103 @@ Quantities:
 {json.dumps(quantities, indent=2)}
 
 Room breakdown:
-{json.dumps([{'label': r['label'], 'area': r['area'], 'confidence': r['confidence']} for r in det.get('rooms', [])], indent=2)}
-"""
-        except (json.JSONDecodeError, KeyError):
-            pass
+{json.dumps(rooms, indent=2)}"""
 
-    # Build Claude API request
+
+def _build_conditions_context(project_id: int, db: Session) -> str:
+    conditions = db.query(models.Condition).filter(models.Condition.project_id == project_id).all()
+    if not conditions:
+        return ""
+    lines = [
+        f"- {c.name} ({c.trade}): unit={c.unit}"
+        + (f", unit_cost=${c.unit_cost}/{c.unit}" if c.unit_cost else "")
+        + (f", waste={c.waste_percent}%" if c.waste_percent else "")
+        for c in conditions
+    ]
+    return "Defined conditions for this project:\n" + "\n".join(lines)
+
+
+def _build_corrections_context(drawing_id: int, db: Session) -> str:
+    """Human-verified accept/reject/relabel events — the flywheel (see
+    routes/correction_routes.py). Real ground truth, stronger signal than
+    the raw AI detection blob alone."""
+    corrections = db.query(models.CorrectionEvent).filter(
+        models.CorrectionEvent.drawing_id == drawing_id
+    ).order_by(models.CorrectionEvent.created_at.desc()).limit(20).all()
+    if not corrections:
+        return ""
+    lines = []
+    for c in corrections:
+        before = json.loads(c.before) if c.before else None
+        after = json.loads(c.after) if c.after else None
+        lines.append(f"- {c.action} on {c.annotation_type} '{c.annotation_id}': {before} -> {after}")
+    return "Human-verified corrections on this sheet (trust these over raw detections where they conflict):\n" + "\n".join(lines)
+
+
+@router.post("/drawings/{drawing_id}/chat")
+async def takeoff_chat(
+    drawing_id: int,
+    body: dict,                     # {message: str, conversation_history: list}
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    TakeOff.CHAT: answer questions about a drawing using Claude, grounded in
+    this sheet's AI detections, defined conditions, human corrections, and
+    OCR-read scale notation. Also drafts Scope of Work / RFP / RFI documents
+    on request. Every drawing-specific answer is expected to cite the sheet
+    by name (see the "citations" field in the response).
+    """
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    citation = drawing.sheet_name or drawing.original_filename
+
+    context_sections = [
+        _build_detection_context(drawing_id, db),
+        _build_conditions_context(drawing.project_id, db),
+        _build_corrections_context(drawing_id, db),
+    ]
+    if drawing.ocr_scale_text:
+        context_sections.append(f'OCR-read scale notation: "{drawing.ocr_scale_text}"')
+    context = "\n\n".join(s for s in context_sections if s)
+
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
 
     import httpx
 
-    system_prompt = f"""You are TakeOff.ai's AI assistant helping construction estimators understand their drawings.
+    system_prompt = f"""You are TakeOff.CHAT, TakeOff.ai's assistant for construction estimators.
 
-Drawing: {drawing.sheet_name or drawing.original_filename}
+Sheet: {citation}
 Scale: {drawing.scale or 'unknown'}
-File: {drawing.file_type}
+File type: {drawing.file_type}
 
-{detection_context}
+{context or "No AI detections, conditions, or corrections recorded for this sheet yet."}
 
-Answer questions about quantities, measurements, room types, scope of work, and RFP generation.
-Be specific and cite the detection data above. Keep answers concise and actionable for estimators.
-When writing scope of work or RFPs, use standard construction industry language."""
+Answer using only the data above — never invent quantities, rooms, or counts
+that aren't in it. If the data doesn't cover what's asked, say so instead of
+guessing. When you use a number, name, or fact from the data above, cite it
+by referring to "{citation}".
+
+You can also draft standard construction documents when asked:
+- Scope of Work (SOW): organize by trade/condition, one line item per
+  condition with quantity, unit, and a one-sentence work description.
+- Request for Proposal (RFP): SOW plus bid instructions — a due-date
+  placeholder, submission format, and a unit-price bid schedule table using
+  the defined conditions and their units.
+- Request for Information (RFI): numbered, specific questions about
+  anything ambiguous, missing, or conflicting in the data above — don't
+  guess at intent, ask.
+
+Keep answers concise and actionable. End every answer that uses
+drawing-specific data with a line: "Source: {citation}"."""
 
     messages = body.get("conversation_history", [])
     messages.append({"role": "user", "content": body.get("message", "")})
@@ -440,7 +294,7 @@ When writing scope of work or RFPs, use standard construction industry language.
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": CLAUDE_MODEL,
                 "max_tokens": 1024,
                 "system": system_prompt,
                 "messages": messages,
@@ -456,5 +310,6 @@ When writing scope of work or RFPs, use standard construction industry language.
     return {
         "answer": reply,
         "drawing_id": drawing_id,
-        "model": "claude-sonnet-4-20250514",
+        "citations": [citation],
+        "model": CLAUDE_MODEL,
     }

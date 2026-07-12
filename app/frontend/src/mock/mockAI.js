@@ -1,6 +1,8 @@
 // Simulated AI service: looks and behaves like a real async API
 // Produces structured, realistic detection JSON for the canvas viewer.
 
+import { vectorizeWallsFromRooms } from '../annotations/wallVectorization';
+
 const rand = (min, max) => Math.round((Math.random() * (max - min) + min) * 100) / 100;
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -136,7 +138,12 @@ export async function runTakeoffAI({ onProgress, seed }) {
   out.rooms = out.rooms.map((r, i) => ({ ...r, revealDelay: i * 80 }));
   out.doors = out.doors.map((d, i) => ({ ...d, revealDelay: i * 40 }));
   out.windows = out.windows.map((w, i) => ({ ...w, revealDelay: i * 40 }));
-  
+
+  // True wall vectorization (annotations/wallVectorization.js, mirrors
+  // ai/wall_vectorization.py) — real typed centerline segments derived from
+  // the room layout above, replacing CanvasFull's old hardcoded SVG walls.
+  out.wall_segments = vectorizeWallsFromRooms(out.rooms);
+
   return out;
 }
 

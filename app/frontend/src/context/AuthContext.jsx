@@ -84,6 +84,17 @@ export const AuthProvider = ({ children }) => {
     setIsAuthenticated(false);
   };
 
+  // For flows that already have a token+user from a non-login endpoint —
+  // e.g. AcceptInvite.jsx's POST /team/invites/{token}/accept, which
+  // returns the same Token shape as login/signup so the newly-created
+  // member lands straight in the app instead of having to log in again.
+  const loginWithSession = (accessToken, userData) => {
+    localStorage.setItem('auth_token', accessToken);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setUser(userData);
+    setIsAuthenticated(true);
+  };
+
   const value = {
     user,
     loading,
@@ -91,6 +102,7 @@ export const AuthProvider = ({ children }) => {
     login,
     signup,
     logout,
+    loginWithSession,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
