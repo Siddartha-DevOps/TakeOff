@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-e2e:
+    name: Backend tests + PostGIS end-to-end
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/backend
+    env:
+      DATABASE_URL: postgresql://takeoff_user:takeoff_dev_pass_2025@localhost/takeoff_db
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Postgres + PostGIS + pgvector
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --fix-missing \
+            postgresql-16 postgresql-16-postgis-3 postgresql-16-pgvector
+
+      - name: Start Postgres + create role/db
+        run: |
+          sudo pg_ctlcluster 16 main start
+          sudo -u postgres psql -c "CREATE ROLE takeoff_user LOGIN PASSWORD 'takeoff_dev_pass_2025' SUPERUSER;"
+          sudo -u postgres psql -c "CREATE DATABASE takeoff_db OWNER takeoff_user;"
+
+      - name: Install Python deps (engine + db + test)
+        run: |
+          python -m pip install -q \
+            pymupdf shapely numpy pytest \
+            sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru
+
+      - name: Alembic upgrade head (real PostGIS)
+        run: python -m alembic upgrade head
+
+      - name: Backend unit tests
+        run: python -m pytest tests/ -q
+
+      - name: End-to-end smoke test (vector -> PostGIS -> ST_Area)
+        run: python scripts/smoke_test.py
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
