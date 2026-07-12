@@ -7,7 +7,7 @@ python-dotenv>=1.0.1
 pydantic>=2.6.4
 email-validator>=2.2.0
 pyjwt>=2.10.1
-bcrypt==4.1.3
+bcrypt==4.0.1  # passlib 1.7.4 is incompatible with bcrypt>=4.1 (its backend self-test raises "password cannot be longer than 72 bytes"), which 500s every signup/login. Pin the last compatible bcrypt.
 passlib>=1.7.4
 tzdata>=2024.2
 pytest>=8.0.0
