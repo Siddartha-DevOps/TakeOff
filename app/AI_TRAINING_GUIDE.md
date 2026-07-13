@@ -319,6 +319,21 @@ def classify_symbol_with_clip(image_crop):
     return top_class, confidence
 ```
 
+### Production training: Model 2 (SESYD-sourced symbol/object detector)
+For the broader appliance/MEP/circulation class list (`training/objects_dataset.
+SYMBOL_CLASSES` — door, window, sink, toilet, ..., stairs, elevator), convert
+SESYD + CubiCasa icon annotations and train on a Modal A10G rather than a
+local/Colab box:
+```bash
+cd app/backend
+python training/sesyd_to_yolo.py --sesyd-root SESYD/floorplans --output datasets/symbols_yolo
+# split the flat pool into train/val, e.g. ultralytics.data.utils.autosplit
+modal run training/modal_gpu_objects.py    # ~similar order of magnitude as Stage 1 above
+```
+This is a distinct class list from the plumbing/electrical set above and from
+`ai/detect_symbols.SYMBOL_CLASS_NAMES` (the door/window-*type* segmentation
+set) — see `training/objects_dataset.py`'s docstring for how the three relate.
+
 ---
 
 ## PRODUCTION DEPLOYMENT PIPELINE
