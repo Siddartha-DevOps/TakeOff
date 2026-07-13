@@ -3,10 +3,21 @@ TakeOff.ai — Modal training stub (Phase 0 infra scaffolding).
 
 CLAUDE.md §2 guardrail #2: "All heavy ML runs on a separate GPU service
 (Modal / Replicate / RunPod / AWS GPU), invoked asynchronously" — this is
-that service's training half, wrapping app/training/train.py's existing
-train_yolo() / train_wall_classifier() / evaluate_model() so the actual
-training logic (hyperparameters, augmentation, loss weights) has exactly
-one home; this file only adds the "run it on a rented GPU" part.
+that service's training half, wrapping the repo's existing training
+code so the actual training logic (hyperparameters, augmentation, loss
+weights) has exactly one home; this file only adds the "run it on a
+rented GPU" part.
+
+Two training entry points exist in this repo and this file wraps both,
+deliberately, rather than picking one:
+  - app/backend/training/train_yolov8_seg.py::train() — the current,
+    tested, live-loaded symbols trainer (ai/detect_symbols.py loads its
+    output). train_symbols() below wraps this one.
+  - app/training/train.py::train_yolo() / train_wall_classifier() — older,
+    but still the only trainer in the repo for a dedicated *rooms-only*
+    segmentation model and for the wall classifier CNN; no modern
+    replacement for either exists yet. train_rooms() and
+    train_wall_classifier() below wrap this one.
 
 This module is infrastructure scaffolding: importing/deploying it defines
 the App and its functions on Modal but does not start any training run.
@@ -39,7 +50,8 @@ import modal
 
 APP_NAME = "takeoff-ai-training"
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TRAINING_SRC = REPO_ROOT / "app" / "training"
+TRAINING_SRC = REPO_ROOT / "app" / "training"                     # rooms + wall classifier (train_rooms, train_wall_classifier)
+BACKEND_TRAINING_SRC = REPO_ROOT / "app" / "backend" / "training"  # symbols (train_symbols) — the live one ai/detect_symbols.py loads from
 DATASETS_SRC = REPO_ROOT / "datasets"
 
 app = modal.App(APP_NAME)
@@ -57,6 +69,7 @@ training_image = (
         "pyyaml",
     )
     .add_local_dir(str(TRAINING_SRC), remote_path="/root/training")
+    .add_local_dir(str(BACKEND_TRAINING_SRC), remote_path="/root/backend_training")
     .add_local_dir(str(DATASETS_SRC), remote_path="/root/datasets")
 )
 
@@ -122,24 +135,35 @@ def train_rooms(epochs: int = 200, model_size: str = "m", batch: int = 8, upload
     secrets=[s3_secret],
     timeout=TRAIN_TIMEOUT_SECONDS,
 )
-def train_symbols(epochs: int = 300, model_size: str = "s", batch: int = 16, upload_to_s3: str = "") -> str:
-    """model_size defaults to 's' (small) — symbols are small objects (door/window/MEP icons at 30-60px), per AI_TRAINING_GUIDE.md Feature 5's own choice of yolov8s over yolov8m."""
-    import sys
-    sys.path.insert(0, "/root/training")
-    import train as train_module
+def train_symbols(epochs: int = 100, base_model: str = "yolov8s-seg.pt", batch: int = 16, upload_to_s3: str = "") -> str:
+    """
+    Wraps app/backend/training/train_yolov8_seg.py::train() — the same
+    function app/backend/ml/training/retrain.py's flywheel calls — rather
+    than app/training/train.py, so a Modal-trained checkpoint lands through
+    the identical code path a local/CI-triggered retrain would use.
+    base_model defaults to the 's' (small) variant — symbols are small
+    objects (door/window/MEP icons at 30-60px), per AI_TRAINING_GUIDE.md
+    Feature 5's own choice of yolov8s over yolov8m.
 
-    _stage_data_yaml("/data/symbols", "symbols.yaml")
-    best_path = train_module.train_yolo(
-        dataset_path="/data/symbols", model_size=model_size, epochs=epochs, batch=batch, device="0",
+    Expects /data/symbols laid out as images/{train,val} + labels/{train,val}
+    (see datasets/symbols.yaml and scripts/cubicasa_to_coco.py) — train()
+    builds its own data.yaml from that layout, so nothing needs staging here.
+    """
+    import sys
+    sys.path.insert(0, "/root/backend_training")
+    sys.path.insert(0, "/root/training")
+    import train as train_module  # app/training/train.py — only used here for upload_model_to_s3
+    import train_yolov8_seg
+
+    best_path = train_yolov8_seg.train(
+        dataset_dir="/data/symbols", epochs=epochs, base_model=base_model, batch=batch,
+        output_dir=Path("/models") / "symbol_counts",
     )
 
-    dest = Path("/models") / "symbols_v1.pt"
-    dest.write_bytes(Path(best_path).read_bytes())
-    models_volume.commit()
-
     if upload_to_s3:
-        train_module.upload_model_to_s3(str(dest), upload_to_s3)
-    return str(dest)
+        train_module.upload_model_to_s3(str(best_path), upload_to_s3)
+    models_volume.commit()
+    return str(best_path)
 
 
 @app.function(
@@ -168,7 +192,7 @@ def train_wall_classifier(epochs: int = 50, batch_size: int = 32, upload_to_s3: 
 
 
 @app.local_entrypoint()
-def main(stage: str = "rooms", epochs: int = 0, model_size: str = "", batch: int = 0, upload_to_s3: str = ""):
+def main(stage: str = "rooms", epochs: int = 0, model_size: str = "", base_model: str = "", batch: int = 0, upload_to_s3: str = ""):
     """
     Entry point for `modal run infra/modal_gpu.py --stage <rooms|symbols|walls> ...`.
     Deliberately NOT called by anything else in this file — a training run
@@ -180,7 +204,7 @@ def main(stage: str = "rooms", epochs: int = 0, model_size: str = "", batch: int
         )
     elif stage == "symbols":
         result = train_symbols.remote(
-            **{k: v for k, v in {"epochs": epochs or None, "model_size": model_size or None, "batch": batch or None, "upload_to_s3": upload_to_s3}.items() if v}
+            **{k: v for k, v in {"epochs": epochs or None, "base_model": base_model or None, "batch": batch or None, "upload_to_s3": upload_to_s3}.items() if v}
         )
     elif stage == "walls":
         result = train_wall_classifier.remote(

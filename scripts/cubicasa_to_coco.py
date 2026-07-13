@@ -8,9 +8,12 @@ up 1:1 with datasets/rooms.yaml or datasets/symbols.yaml. This script
 parses each sample's model.svg, maps CubiCasa's classes onto ours via the
 tables below, and writes both a COCO instance-segmentation JSON (rooms
 only — COCO segmentation is polygon-based) and YOLO-format label .txt
-files (rooms: YOLOv8-seg polygon labels; doors/windows: YOLOv8 detect
-labels) into the train/val/test/images+labels layout that rooms.yaml and
-symbols.yaml expect.
+files into the train/val/test/images+labels layout that rooms.yaml and
+symbols.yaml expect. Symbol labels default to YOLOv8-seg polygon format
+(--symbols-format polygon) so the output is directly consumable by
+app/backend/training/train_yolov8_seg.py, which already trains symbols
+as task="segment"; pass --symbols-format bbox for plain YOLOv8-detect
+training against symbols.yaml standalone instead.
 
 Expected input layout (standard CubiCasa5K release):
     <root>/
@@ -44,8 +47,9 @@ Usage:
         --format both        # coco | yolo | both
 
 Output:
-    <output-dir>/rooms/{train,val,test}/{images,labels}/...
-    <output-dir>/symbols/{train,val,test}/{images,labels}/...
+    <output-dir>/rooms/{train,val,test}/{images,labels}/...      # split-first, matches datasets/rooms.yaml
+    <output-dir>/symbols/{images,labels}/{train,val,test}/...    # images-first, matches datasets/symbols.yaml
+                                                                   # and train_yolov8_seg.py's own layout
     <output-dir>/rooms/coco_rooms_{train,val,test}.json   (--format coco/both)
 """
 
@@ -238,22 +242,31 @@ def _image_size(sample_dir: Path):
     return None, None
 
 
-def write_yolo_seg_label(path: Path, rooms: list, width: int, height: int):
+def write_yolo_seg_label(path: Path, items: list, class_list: list, width: int, height: int):
+    """
+    YOLOv8-seg polygon label format: "cls x1 y1 x2 y2 ...". Used for both
+    rooms and symbols — app/backend/training/train_yolov8_seg.py trains
+    symbols as segmentation (task="segment") too, not plain bbox detection,
+    and a CubiCasa icon's 4-corner rectangle polygon carries strictly more
+    information than its bbox, so there's no format-specific data loss in
+    sharing this writer.
+    """
     lines = []
-    for room in rooms:
-        cls_id = ROOM_CLASSES.index(room["class"])
+    for item in items:
+        cls_id = class_list.index(item["class"])
         coords = []
-        for x, y in room["points"]:
+        for x, y in item["points"]:
             coords.append(f"{x / width:.6f}")
             coords.append(f"{y / height:.6f}")
         lines.append(f"{cls_id} " + " ".join(coords))
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
 
 
-def write_yolo_bbox_label(path: Path, symbols: list, width: int, height: int):
+def write_yolo_bbox_label(path: Path, symbols: list, class_list: list, width: int, height: int):
+    """Plain YOLOv8-detect bbox format — kept for callers training a bbox-only detector against symbols.yaml directly rather than through train_yolov8_seg.py."""
     lines = []
     for sym in symbols:
-        cls_id = SYMBOL_CLASSES.index(sym["class"])
+        cls_id = class_list.index(sym["class"])
         x1, y1, x2, y2 = _bbox_of_points(sym["points"])
         cx, cy = (x1 + x2) / 2 / width, (y1 + y2) / 2 / height
         w, h = (x2 - x1) / width, (y2 - y1) / height
@@ -261,7 +274,7 @@ def write_yolo_bbox_label(path: Path, symbols: list, width: int, height: int):
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
 
 
-def convert(cubicasa_root: Path, output_dir: Path, fmt: str, splits_wanted: list):
+def convert(cubicasa_root: Path, output_dir: Path, fmt: str, splits_wanted: list, symbols_format: str = "polygon"):
     unmapped = Counter()
     coco_accum = {name: {"images": [], "annotations": [], "next_img_id": 1, "next_ann_id": 1} for name in splits_wanted}
 
@@ -271,10 +284,13 @@ def convert(cubicasa_root: Path, output_dir: Path, fmt: str, splits_wanted: list
         samples = splits.get(split_name, [])
         logger.info("Split '%s': %d samples", split_name, len(samples))
 
+        # rooms: split-first (train/images/...), matches datasets/rooms.yaml.
+        # symbols: images-first (images/train/...), matches datasets/symbols.yaml
+        # *and* app/backend/training/train_yolov8_seg.py's build_data_yaml().
         rooms_img_dir = output_dir / "rooms" / split_name / "images"
         rooms_lbl_dir = output_dir / "rooms" / split_name / "labels"
-        symbols_img_dir = output_dir / "symbols" / split_name / "images"
-        symbols_lbl_dir = output_dir / "symbols" / split_name / "labels"
+        symbols_img_dir = output_dir / "symbols" / "images" / split_name
+        symbols_lbl_dir = output_dir / "symbols" / "labels" / split_name
         for d in (rooms_img_dir, rooms_lbl_dir, symbols_img_dir, symbols_lbl_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +314,7 @@ def convert(cubicasa_root: Path, output_dir: Path, fmt: str, splits_wanted: list
             if parsed["rooms"]:
                 shutil.copy(img_path, rooms_img_dir / image_filename)
                 if fmt in ("yolo", "both"):
-                    write_yolo_seg_label(rooms_lbl_dir / f"{stem}.txt", parsed["rooms"], width, height)
+                    write_yolo_seg_label(rooms_lbl_dir / f"{stem}.txt", parsed["rooms"], ROOM_CLASSES, width, height)
                 if fmt in ("coco", "both"):
                     acc = coco_accum[split_name]
                     img_id = acc["next_img_id"]
@@ -322,7 +338,10 @@ def convert(cubicasa_root: Path, output_dir: Path, fmt: str, splits_wanted: list
             if symbols:
                 shutil.copy(img_path, symbols_img_dir / image_filename)
                 if fmt in ("yolo", "both"):
-                    write_yolo_bbox_label(symbols_lbl_dir / f"{stem}.txt", symbols, width, height)
+                    if symbols_format == "polygon":
+                        write_yolo_seg_label(symbols_lbl_dir / f"{stem}.txt", symbols, SYMBOL_CLASSES, width, height)
+                    else:
+                        write_yolo_bbox_label(symbols_lbl_dir / f"{stem}.txt", symbols, SYMBOL_CLASSES, width, height)
 
             if (i + 1) % 200 == 0:
                 logger.info("  ... %d/%d", i + 1, len(samples))
@@ -350,13 +369,18 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path, help="Where to write rooms/ and symbols/ output trees")
     parser.add_argument("--format", choices=["coco", "yolo", "both"], default="both")
     parser.add_argument("--splits", default="train,val,test", help="Comma-separated splits to convert")
+    parser.add_argument(
+        "--symbols-format", choices=["polygon", "bbox"], default="polygon",
+        help="polygon (default) matches app/backend/training/train_yolov8_seg.py's YOLOv8-seg labels; "
+             "bbox is plain YOLOv8-detect, for training directly against datasets/symbols.yaml as a detector.",
+    )
     args = parser.parse_args()
 
     if not args.cubicasa_root.is_dir():
         logger.error("--cubicasa-root %s does not exist", args.cubicasa_root)
         sys.exit(1)
 
-    convert(args.cubicasa_root, args.output_dir, args.format, args.splits.split(","))
+    convert(args.cubicasa_root, args.output_dir, args.format, args.splits.split(","), args.symbols_format)
 
 
 if __name__ == "__main__":

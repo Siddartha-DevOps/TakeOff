@@ -2,16 +2,24 @@
 """
 TakeOff.ai — offline eval harness for candidate model checkpoints.
 
-Complements, does not replace, app/backend/eval_harness.py: that one
-computes mIoU/map_proxy/measurement-error from live CorrectionEvent data
-(production accuracy, drifting as real users correct real AI output).
-This script evaluates a candidate .pt checkpoint against a held-out
-labeled validation split (e.g. produced by scripts/cubicasa_to_coco.py)
-*before* it's ever deployed — the gate a newly-trained checkpoint has to
-clear to become a promotion candidate in the first place. Different
-inputs (dataset dir vs. Postgres), different question ("is this
-checkpoint good enough to ship") vs. ("is what's already shipped still
-good"), same spirit: don't promote a model without a number behind it.
+Three eval mechanisms now exist in this repo; this is the cheapest/first
+of them, not a replacement for either of the other two:
+  1. THIS SCRIPT — plain `ultralytics model.val()` against a held-out
+     split (e.g. produced by scripts/cubicasa_to_coco.py). Cheapest,
+     fastest signal on a freshly-trained checkpoint; no golden set or
+     Postgres needed. Good for "did this training run even work" before
+     spending a golden-set eval on it.
+  2. app/backend/ml/eval/harness.py — the sanctioned release gate
+     (`python -m ml.eval.harness`), scored against a fixed labeled
+     *golden* plan set (mIoU / mAP@0.5 / measurement-error %, see
+     app/backend/ml/README.md). This is what actually promotes a
+     ModelVersion in app/backend/ml/training/retrain.py's flywheel —
+     run it before shipping a checkpoint, not this script.
+  3. app/backend/eval_harness.py — computes the same style of metrics
+     from live CorrectionEvent data instead of a fixed set: production
+     accuracy, drifting as real users correct real AI output, answering
+     "is what's already shipped still good" rather than "is this new
+     checkpoint good enough to ship."
 
 Targets are transcribed from AI_TRAINING_GUIDE.md's per-feature table.
 symbols.yaml trains door+window+MEP as one combined detector, so the
@@ -23,11 +31,10 @@ Usage:
     python scripts/evaluate.py --model runs/blueprint_seg/weights/best.pt \
         --data datasets/rooms.yaml --task rooms
 
-    python scripts/evaluate.py --model models/symbols_v1.pt \
+    python scripts/evaluate.py --model app/backend/ai/models/symbol_counts/yolov8-seg.pt \
         --data datasets/symbols.yaml --task symbols
 
-    python scripts/evaluate.py --task all \
-        --rooms-model models/rooms_v1.pt --symbols-model models/symbols_v1.pt
+    python scripts/evaluate.py --task all --rooms-model models/rooms_v1.pt
 
 Exit code is non-zero if any evaluated task misses its target — meant to
 gate a CI/CD promotion step, not just print a report.
@@ -123,7 +130,8 @@ def main():
     parser.add_argument("--data", type=str, help="Path to data yaml (single-task mode)")
     parser.add_argument("--rooms-model", type=str, default="models/rooms_v1.pt")
     parser.add_argument("--rooms-data", type=str, default=str(Path(__file__).resolve().parent.parent / "datasets" / "rooms.yaml"))
-    parser.add_argument("--symbols-model", type=str, default="models/symbols_v1.pt")
+    parser.add_argument("--symbols-model", type=str, default="app/backend/ai/models/symbol_counts/yolov8-seg.pt",
+                         help="Default matches app/backend/training/train_yolov8_seg.py's DEFAULT_OUTPUT — the weights ai/detect_symbols.py actually loads.")
     parser.add_argument("--symbols-data", type=str, default=str(Path(__file__).resolve().parent.parent / "datasets" / "symbols.yaml"))
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()

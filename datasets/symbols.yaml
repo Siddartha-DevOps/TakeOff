@@ -14,11 +14,17 @@
 # reuse the 9-26 offsets from detection_engine.py's combined CLASS_NAMES —
 # names match exactly, so re-deriving the offset mapping is a one-line
 # dict comprehension if these two taxonomies ever need to be reconciled.
+#
+# Directory layout (images/{split}, labels/{split}) and class list/order
+# match app/backend/training/train_yolov8_seg.py's SYMBOL_CLASSES and
+# build_data_yaml() exactly — this file is an explicit, checked-in,
+# editable equivalent of the data.yaml that script otherwise generates
+# on the fly, usable as an override or just for human inspection.
 
 path: /data/symbols
-train: train/images
-val: val/images
-test: test/images
+train: images/train
+val: images/val
+test: images/test
 
 nc: 18
 names:

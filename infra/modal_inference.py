@@ -52,7 +52,7 @@ inference_image = (
 models_volume = modal.Volume.from_name("takeoff-ai-models", create_if_missing=True)
 
 ROOM_MODEL_PATH = "/models/rooms_v1.pt"
-SYMBOL_MODEL_PATH = "/models/symbols_v1.pt"
+SYMBOL_MODEL_PATH = "/models/symbol_counts/yolov8-seg.pt"  # matches infra/modal_gpu.py::train_symbols()'s output_dir, and ai/detect_symbols.py's own DEFAULT_OUTPUT convention
 
 # Containers stay warm for 5 minutes after the last request so consecutive
 # sheet uploads in one takeoff session don't each pay a cold-start model load.
