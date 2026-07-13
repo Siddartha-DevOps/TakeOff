@@ -66,6 +66,17 @@ degrees=0,    # NO rotation — floor plans are always upright
 fliplr=0.3,   # Mirror horizontally (valid for floor plans)
 ```
 
+### Production training: Modal GPU (recommended over a local/Colab box)
+SAM2 zero-shot gives room shapes but no type label. `training/modal_gpu.py`
+fine-tunes YOLOv8-seg for just that — the 9 room classes above — on a Modal
+A10G, with the dataset scaffolding (`rooms.yaml`, class list) in
+`training/rooms_dataset.py`:
+```bash
+cd app/backend
+pip install modal && modal token new     # one-time
+modal run training/modal_gpu.py          # ~2-4h on A10G with CubiCasa5K
+```
+
 ---
 
 ## FEATURE 2: Door Detection & Classification
