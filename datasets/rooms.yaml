@@ -1,0 +1,32 @@
+# TakeOff.ai — YOLOv8-seg data config for room/space segmentation.
+#
+# CLAUDE.md §3 names spaces (YOLOv8-seg) and symbols (YOLOv8/DETR) as
+# separate model families in the target stack. app/training/train.py's
+# current Stage-1 model trains all 27 classes (rooms + doors + windows +
+# MEP) together in one YOLOv8m-seg run (app/backend/ai/detection_engine.py
+# loads that single "rooms_doors_windows_v1.pt"), which is a practical
+# simplification already shipped in this repo, not the CLAUDE.md-specified
+# split. This file (and symbols.yaml alongside it) is the data config for
+# training a *dedicated* room-only segmentation model per the CLAUDE.md
+# stack — usable standalone with `ultralytics`/`app/training/train.py`
+# without touching the existing combined model or production pipeline.
+#
+# Class list and ordering match AI_TRAINING_GUIDE.md Feature 1 and the
+# rooms slice (ids 0-8) of train.py's create_data_yaml().
+
+path: /data/rooms
+train: train/images
+val: val/images
+test: test/images
+
+nc: 9
+names:
+  0: living
+  1: bedroom
+  2: kitchen
+  3: bathroom
+  4: dining
+  5: office
+  6: hallway
+  7: closet
+  8: utility
