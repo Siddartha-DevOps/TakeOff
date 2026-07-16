@@ -66,6 +66,17 @@ degrees=0,    # NO rotation — floor plans are always upright
 fliplr=0.3,   # Mirror horizontally (valid for floor plans)
 ```
 
+### Production training: Modal GPU (recommended over a local/Colab box)
+SAM2 zero-shot gives room shapes but no type label. `training/modal_gpu.py`
+fine-tunes YOLOv8-seg for just that — the 9 room classes above — on a Modal
+A10G, with the dataset scaffolding (`rooms.yaml`, class list) in
+`training/rooms_dataset.py`:
+```bash
+cd app/backend
+pip install modal && modal token new     # one-time
+modal run training/modal_gpu.py          # ~2-4h on A10G with CubiCasa5K
+```
+
 ---
 
 ## FEATURE 2: Door Detection & Classification
@@ -307,6 +318,21 @@ def classify_symbol_with_clip(image_crop):
     confidence = probs.max().item()
     return top_class, confidence
 ```
+
+### Production training: Model 2 (SESYD-sourced symbol/object detector)
+For the broader appliance/MEP/circulation class list (`training/objects_dataset.
+SYMBOL_CLASSES` — door, window, sink, toilet, ..., stairs, elevator), convert
+SESYD + CubiCasa icon annotations and train on a Modal A10G rather than a
+local/Colab box:
+```bash
+cd app/backend
+python training/sesyd_to_yolo.py --sesyd-root SESYD/floorplans --output datasets/symbols_yolo
+# split the flat pool into train/val, e.g. ultralytics.data.utils.autosplit
+modal run training/modal_gpu_objects.py    # ~similar order of magnitude as Stage 1 above
+```
+This is a distinct class list from the plumbing/electrical set above and from
+`ai/detect_symbols.SYMBOL_CLASS_NAMES` (the door/window-*type* segmentation
+set) — see `training/objects_dataset.py`'s docstring for how the three relate.
 
 ---
 
