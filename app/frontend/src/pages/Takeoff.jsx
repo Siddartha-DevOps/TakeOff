@@ -283,6 +283,13 @@ export default function Takeoff() {
 
   // Map the backend AUTODETECT response into the detection shape the panels +
   // annotation store expect. Area/Line/Count come from exact vector geometry.
+  // symbol_groups (from geometry.match_symbols) carries per-instance bbox —
+  // it was previously only used for the read-only canvas dots; unpacked here
+  // into real doors/windows/mep so the same detections become Annotation
+  // objects (loadFromDetection -> fromDetection.js) and are accept/reject/
+  // condition-assignable, exactly like rooms already are.
+  const SYMBOL_TYPE_TO_LAYER = { door: 'doors', window: 'windows', fixture: 'mep', symbol: 'mep' };
+
   const mapAutodetect = (data, drawing) => {
     const prim = data.primitives || {};
     const rooms = (data.area || []).map((s) => ({
@@ -294,11 +301,26 @@ export default function Takeoff() {
       geojson: s.geojson,
       centroid: s.centroid,
     }));
+
+    const doors = [], windows = [], mep = [];
+    for (const group of data.symbol_groups || []) {
+      const bucket = { doors, windows, mep }[SYMBOL_TYPE_TO_LAYER[group.symbol_type] || 'mep'];
+      for (const inst of group.instances || []) {
+        bucket.push({
+          id: inst.id,
+          type: group.symbol_type,
+          bbox: inst.bbox,
+          centroid: inst.centroid,
+          confidence: 1,
+        });
+      }
+    }
+
     return {
-      rooms, doors: [], windows: [],
+      rooms, doors, windows, mep,
       quantities: data.quantities || [],
       summary: {
-        rooms: prim.count ?? rooms.length, doors: 0, windows: 0,
+        rooms: prim.count ?? rooms.length, doors: doors.length, windows: windows.length,
         walls: prim.line ?? 0, totalArea: prim.area ?? 0,
       },
       symbol_counts: data.symbol_counts || {},
@@ -612,7 +634,7 @@ export default function Takeoff() {
   const selected = useMemo(() => {
     if (!detection || !selectedId) return null;
     if (annotationsById.get(selectedId)?.meta?.rejected) return null;
-    return [...detection.rooms, ...detection.doors, ...detection.windows, ...(detection.wall_segments ?? [])].find((x) => x.id === selectedId);
+    return [...detection.rooms, ...detection.doors, ...detection.windows, ...(detection.mep ?? []), ...(detection.wall_segments ?? [])].find((x) => x.id === selectedId);
   }, [detection, selectedId, annotationsById]);
 
   const conditionsById = useMemo(() => {
@@ -919,6 +941,7 @@ export default function Takeoff() {
               <DrawingRenderer
                 drawing={selectedDrawing}
                 detection={detection}
+                onSelect={setSelectedId}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}

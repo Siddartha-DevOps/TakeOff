@@ -318,8 +318,8 @@ async def autodetect_drawing(
         geom = room.pop("geometry", None)
         room["geojson"] = to_geojson(geom) if geom is not None else None
 
-    result = autodetect_from_measure(measure)
     symbol_counts = symbols.get("symbol_counts", {}) if symbols else {}
+    result = autodetect_from_measure(measure, symbol_counts)
     result["symbol_counts"] = symbol_counts
     result["symbol_groups"] = symbols.get("groups", []) if symbols else []
     result["drawing_id"] = drawing_id

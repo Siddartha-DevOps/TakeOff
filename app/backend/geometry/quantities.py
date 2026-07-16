@@ -19,8 +19,14 @@ from typing import Any
 WALL_HEIGHT_FT = 9.0
 
 
-def vector_quantities(measure_result: dict[str, Any]) -> list[dict[str, Any]]:
-    """Flat trade-quantity rows (the shape the QuantitiesPanel / export expect)."""
+def vector_quantities(
+    measure_result: dict[str, Any], symbol_counts: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    """Flat trade-quantity rows (the shape the QuantitiesPanel / export expect).
+
+    `symbol_counts` is `match_symbols()`'s per-type count dict (door/window/
+    fixture/...) — optional so existing measure-only callers are unaffected.
+    """
     summary = measure_result.get("summary", {})
     total_area = round(float(summary.get("totalArea", 0.0)), 1)
     walls_lf = round(float(summary.get("walls_lf", 0.0)), 1)
@@ -44,14 +50,22 @@ def vector_quantities(measure_result: dict[str, Any]) -> list[dict[str, Any]]:
             "unit": "sf",
         })
 
-    # Count primitives.
+    # Count primitives: spaces, plus one row per detected symbol type
+    # (door/window/fixture/...) so AUTODETECT's third primitive — Count —
+    # actually reaches the Quantities panel instead of only the API response.
     if n_rooms > 0:
         rows.append({"trade": "Counts", "item": "Spaces", "quantity": n_rooms, "unit": "ea"})
+
+    for symbol_type, qty in sorted((symbol_counts or {}).items()):
+        if qty > 0:
+            rows.append({"trade": "Counts", "item": f"{symbol_type.title()}s", "quantity": int(qty), "unit": "ea"})
 
     return rows
 
 
-def autodetect_from_measure(measure_result: dict[str, Any]) -> dict[str, Any]:
+def autodetect_from_measure(
+    measure_result: dict[str, Any], symbol_counts: dict[str, int] | None = None,
+) -> dict[str, Any]:
     """Assemble the one-click AUTODETECT response from a measurement result.
 
     Returns Togal's three primitives explicitly (``area``/``line``/``count``),
@@ -89,6 +103,6 @@ def autodetect_from_measure(measure_result: dict[str, Any]) -> dict[str, Any]:
         },
         "area": area,
         "summary": summary,
-        "quantities": vector_quantities(measure_result),
+        "quantities": vector_quantities(measure_result, symbol_counts),
         "accuracy_note": measure_result.get("accuracy_note"),
     }

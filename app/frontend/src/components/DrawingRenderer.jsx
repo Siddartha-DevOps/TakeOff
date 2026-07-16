@@ -53,7 +53,7 @@ export default function DrawingRenderer({
   drawing, onLoad, calibrating = false, onCalibrationPoints,
   commentMode = false, onCommentClick, onPointerMove,
   remoteCursors = [], commentPins = [], onPinClick,
-  detection = null,
+  detection = null, onSelect,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -442,7 +442,11 @@ export default function DrawingRenderer({
           if (pts.length < 3) return null;
           const c = room.centroid ? S(room.centroid[0], room.centroid[1]) : pts[0];
           return (
-            <g key={room.id}>
+            <g
+              key={room.id}
+              style={{ pointerEvents: onSelect ? 'auto' : 'none', cursor: onSelect ? 'pointer' : undefined }}
+              onClick={(e) => { if (!onSelect) return; e.stopPropagation(); onSelect(room.id); }}
+            >
               <polygon
                 points={pts.map((p) => `${p.x},${p.y}`).join(' ')}
                 fill="#6366f1" fillOpacity="0.18" stroke="#4f46e5" strokeWidth="1.5"
@@ -462,8 +466,12 @@ export default function DrawingRenderer({
             const p = symCenter(inst);
             if (!p) return null;
             return (
-              <circle key={inst.id} cx={p.x} cy={p.y} r="5"
-                fill={color} fillOpacity="0.85" stroke="#fff" strokeWidth="1.5" />
+              <circle
+                key={inst.id} cx={p.x} cy={p.y} r="5"
+                fill={color} fillOpacity="0.85" stroke="#fff" strokeWidth="1.5"
+                style={{ pointerEvents: onSelect ? 'auto' : 'none', cursor: onSelect ? 'pointer' : undefined }}
+                onClick={(e) => { if (!onSelect) return; e.stopPropagation(); onSelect(inst.id); }}
+              />
             );
           });
         })}
