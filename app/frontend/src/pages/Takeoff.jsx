@@ -88,6 +88,14 @@ export default function Takeoff() {
   const [commentMode, setCommentMode] = useState(false);
   const [pendingCommentPoint, setPendingCommentPoint] = useState(null); // plan [x,y] awaiting body text
   const [activeCommentId, setActiveCommentId] = useState(null); // pin popover currently open
+
+  // AI Image Search (cross-plan-set) — draw a box on the current sheet, CLIP
+  // embeds the patch and pgvector kNN-searches every sheet's index for visual
+  // matches (routes/ai_routes.py POST .../search/image, clip_embeddings.py).
+  const [regionSearchMode, setRegionSearchMode] = useState(false);
+  const [regionSearchResults, setRegionSearchResults] = useState(null);
+  const [regionSearchLoading, setRegionSearchLoading] = useState(false);
+  const [regionSearchError, setRegionSearchError] = useState(null);
   const wsRef = useRef(null);
   const lastCursorSentRef = useRef(0);
   const selfUserId = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}').id; } catch { return null; } })();
@@ -569,6 +577,26 @@ export default function Takeoff() {
     });
   }
 
+  // AI Image Search: bbox is plan-space pixels from DrawingRenderer's
+  // region-select drag — the same space POST /search/image expects.
+  async function runRegionSearch(bbox) {
+    if (!selectedDrawing) return;
+    setRegionSearchMode(false);
+    setRegionSearchLoading(true);
+    setRegionSearchError(null);
+    setRegionSearchResults(null);
+    try {
+      const res = await searchAPI.image(id, selectedDrawing.id, bbox);
+      setRegionSearchResults(res.data.results);
+    } catch (err) {
+      setRegionSearchError(err.response?.status === 503
+        ? "AI Search isn't available yet — the server is missing its CLIP model dependencies."
+        : (err.response?.data?.detail || 'Search failed. Please try again.'));
+    } finally {
+      setRegionSearchLoading(false);
+    }
+  }
+
   async function runAnalysis() {
     setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
     const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
@@ -951,6 +979,8 @@ export default function Takeoff() {
                 remoteCursors={drawingCursors}
                 commentPins={drawingPins}
                 onPinClick={(commentId) => { setActiveCommentId(commentId); setPendingCommentPoint(null); }}
+                regionSelectMode={regionSearchMode}
+                onRegionSelected={runRegionSearch}
               />
               {(pendingCommentPoint || activeCommentId) && (
                 <CommentPopover
@@ -1019,6 +1049,13 @@ export default function Takeoff() {
               <button onClick={() => setCalibrating(false)} className="ml-2 text-slate-400 hover:text-white"><X className="w-3.5 h-3.5" /></button>
             </div>
           )}
+          {regionSearchMode && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
+              <SearchIcon className="w-3.5 h-3.5 text-sky-400" />
+              Draw a box around a symbol or detail to find matches on every sheet
+              <button onClick={() => setRegionSearchMode(false)} className="ml-2 text-slate-400 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+            </div>
+          )}
           {selectedDrawing && scaleInfo?.suggestion && !suggestionDismissed && !calibrating && !pendingCalPoints && (
             <ScaleSuggestionBanner
               suggestion={scaleInfo.suggestion}
@@ -1070,6 +1107,12 @@ export default function Takeoff() {
                 drawings={drawings}
                 selectedDrawing={selectedDrawing}
                 onAddAnnotation={addSearchResultAsAnnotation}
+                regionSearchMode={regionSearchMode}
+                onToggleRegionSearchMode={() => setRegionSearchMode((v) => !v)}
+                regionSearchResults={regionSearchResults}
+                regionSearchLoading={regionSearchLoading}
+                regionSearchError={regionSearchError}
+                onClearRegionSearch={() => { setRegionSearchResults(null); setRegionSearchError(null); }}
               />
             )}
             {tab === 'chat' && <ChatPanel detection={detection} drawing={selectedDrawing} />}
@@ -2241,7 +2284,42 @@ function QuantitiesPanel({ detection }) {
   );
 }
 
-function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) {
+function SearchResultCard({ r, drawingNameById, selectedDrawing, onAddAnnotation }) {
+  const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
+  return (
+    <div className="rounded-lg border border-slate-200 p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-slate-900">{r.label_hint || 'Match'}</div>
+        <div className="text-[11px] mono text-emerald-600 font-semibold">{Math.round(r.similarity * 100)}%</div>
+      </div>
+      <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`}</div>
+      <div className="mt-2 flex gap-1.5">
+        <button
+          disabled={!onCurrentDrawing}
+          onClick={() => onAddAnnotation(r, 'count')}
+          title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
+          className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          Add as Count
+        </button>
+        <button
+          disabled={!onCurrentDrawing}
+          onClick={() => onAddAnnotation(r, 'area')}
+          title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
+          className="flex-1 py-1 text-[11px] font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          Add as Area
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SearchPanel({
+  projectId, drawings, selectedDrawing, onAddAnnotation,
+  regionSearchMode, onToggleRegionSearchMode,
+  regionSearchResults, regionSearchLoading, regionSearchError, onClearRegionSearch,
+}) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -2270,6 +2348,34 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
     }
   }
 
+  // Region (image) search results take over the panel — clearing them
+  // returns to the text-search UI/results underneath.
+  if (regionSearchResults !== null || regionSearchLoading || regionSearchError) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="text-sm font-medium text-slate-900 flex items-center gap-1.5">
+            <Box className="w-3.5 h-3.5 text-sky-600" /> Region search
+          </div>
+          <button onClick={onClearRegionSearch} className="text-xs text-slate-500 hover:text-slate-800">Clear</button>
+        </div>
+        <div className="flex-1 overflow-auto p-4 space-y-2">
+          {regionSearchLoading && (
+            <div className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /> Searching every sheet…</div>
+          )}
+          {regionSearchError && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-3">{regionSearchError}</div>}
+          {regionSearchResults && regionSearchResults.length === 0 && <div className="text-sm text-slate-500">No visual matches found.</div>}
+          {regionSearchResults && regionSearchResults.map((r) => (
+            <SearchResultCard
+              key={`${r.drawing_id}-${r.detection_id}`}
+              r={r} drawingNameById={drawingNameById} selectedDrawing={selectedDrawing} onAddAnnotation={onAddAnnotation}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       <div className="p-4 border-b border-slate-200">
@@ -2285,40 +2391,25 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
           </button>
         </form>
         <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+        <button
+          onClick={onToggleRegionSearchMode}
+          disabled={!selectedDrawing}
+          title={selectedDrawing ? undefined : 'Select a sheet first'}
+          className={`mt-2 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium disabled:opacity-40 disabled:cursor-not-allowed ${regionSearchMode ? 'bg-sky-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+        >
+          <Box className="w-3.5 h-3.5" /> {regionSearchMode ? 'Drawing region… (click to cancel)' : 'Draw region to search'}
+        </button>
+        <p className="mt-1.5 text-[11px] text-slate-500">Or draw a box around a symbol/detail on the sheet — finds every visually similar match across all sheets.</p>
       </div>
       <div className="flex-1 overflow-auto p-4 space-y-2">
         {error && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-3">{error}</div>}
         {results && results.length === 0 && <div className="text-sm text-slate-500">No matches found.</div>}
-        {results && results.map((r) => {
-          const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
-          return (
-            <div key={`${r.drawing_id}-${r.detection_id}`} className="rounded-lg border border-slate-200 p-3">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-slate-900">{r.label_hint || 'Match'}</div>
-                <div className="text-[11px] mono text-emerald-600 font-semibold">{Math.round(r.similarity * 100)}%</div>
-              </div>
-              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`}</div>
-              <div className="mt-2 flex gap-1.5">
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'count')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Count
-                </button>
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'area')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Area
-                </button>
-              </div>
-            </div>
-          );
-        })}
+        {results && results.map((r) => (
+          <SearchResultCard
+            key={`${r.drawing_id}-${r.detection_id}`}
+            r={r} drawingNameById={drawingNameById} selectedDrawing={selectedDrawing} onAddAnnotation={onAddAnnotation}
+          />
+        ))}
         {!results && !error && (
           <p className="text-xs text-slate-500">
             Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project's sheets.

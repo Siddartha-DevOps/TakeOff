@@ -48,12 +48,19 @@ function toPlanSpacePoint(e, rect, nativeWidth, nativeHeight) {
  * @param {Array<{id:number,x:number,y:number,resolved:boolean}>} [props.commentPins]
  *   - persisted comment pins on this drawing, in plan-space.
  * @param {(id:number) => void} [props.onPinClick]
+ * @param {boolean} [props.regionSelectMode] - when true, a click-drag rectangle
+ *   is captured as a plan-space bbox instead of normal interaction (AI Image
+ *   Search: "draw a box, find visually similar patches on every sheet").
+ * @param {(bbox: number[]) => void} [props.onRegionSelected] - [x1,y1,x2,y2]
+ *   in plan-space pixels — the same space toPlanSpacePoint produces, and what
+ *   POST /search/image expects.
  */
 export default function DrawingRenderer({
   drawing, onLoad, calibrating = false, onCalibrationPoints,
   commentMode = false, onCommentClick, onPointerMove,
   remoteCursors = [], commentPins = [], onPinClick,
   detection = null, onSelect,
+  regionSelectMode = false, onRegionSelected,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -70,10 +77,17 @@ export default function DrawingRenderer({
   const osdViewerRef = useRef(null);
   const calibratingRef = useRef(calibrating); // OSD's click handler closes over this once — needs the live value
   const commentModeRef = useRef(commentMode);
+  const regionSelectModeRef = useRef(regionSelectMode); // same reason — OSD's handlers close over this once
+  const regionDragRef = useRef(null); // { startPlan: [x,y] } while a region-search drag is in progress
+  const [regionDragScreen, setRegionDragScreen] = useState(null); // {x1,y1,x2,y2} fixed screen coords, live preview only
 
   useEffect(() => {
     calibratingRef.current = calibrating;
   }, [calibrating]);
+
+  useEffect(() => {
+    regionSelectModeRef.current = regionSelectMode;
+  }, [regionSelectMode]);
 
   useEffect(() => {
     commentModeRef.current = commentMode;
@@ -181,7 +195,7 @@ export default function DrawingRenderer({
     });
 
     viewer.addHandler('canvas-click', (event) => {
-      if (!osdContainerRef.current) return;
+      if (!osdContainerRef.current || regionSelectModeRef.current) return;
       const viewportPoint = viewer.viewport.pointFromPixel(event.position);
       const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
       const point = [imagePoint.x, imagePoint.y];
@@ -202,6 +216,33 @@ export default function DrawingRenderer({
         }
         return next;
       });
+    });
+
+    // Region-search drag (AI Image Search): disable OSD's own pan-on-drag for
+    // the gesture's duration so it draws a selection rectangle instead of
+    // panning the sheet.
+    viewer.addHandler('canvas-press', (event) => {
+      if (!regionSelectModeRef.current || !osdContainerRef.current) return;
+      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
+      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+      const rect = osdContainerRef.current.getBoundingClientRect();
+      viewer.setMouseNavEnabled(false);
+      startRegionDrag(
+        [imagePoint.x, imagePoint.y],
+        { x: rect.left + event.position.x, y: rect.top + event.position.y },
+      );
+    });
+    viewer.addHandler('canvas-drag', (event) => {
+      if (!regionSelectModeRef.current || !osdContainerRef.current) return;
+      const rect = osdContainerRef.current.getBoundingClientRect();
+      updateRegionDrag({ x: rect.left + event.position.x, y: rect.top + event.position.y });
+    });
+    viewer.addHandler('canvas-release', (event) => {
+      if (!regionSelectModeRef.current) return;
+      viewer.setMouseNavEnabled(true);
+      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
+      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+      finishRegionDrag([imagePoint.x, imagePoint.y]);
     });
 
     // Repositions remote-cursor/comment-pin overlays (rendered as plain
@@ -298,8 +339,47 @@ export default function DrawingRenderer({
     setPageNativeSize({ width: page.width, height: page.height });
   };
 
+  // Region-search drag (AI Image Search): press-drag-release captures a
+  // plan-space bbox instead of the click-based calibration/comment gestures.
+  function startRegionDrag(planPoint, screenPoint) {
+    regionDragRef.current = { startPlan: planPoint };
+    setRegionDragScreen({ x1: screenPoint.x, y1: screenPoint.y, x2: screenPoint.x, y2: screenPoint.y });
+  }
+
+  function updateRegionDrag(screenPoint) {
+    if (!regionDragRef.current) return;
+    setRegionDragScreen((prev) => (prev ? { ...prev, x2: screenPoint.x, y2: screenPoint.y } : prev));
+  }
+
+  function finishRegionDrag(planPoint) {
+    const drag = regionDragRef.current;
+    regionDragRef.current = null;
+    setRegionDragScreen(null);
+    if (!drag) return;
+
+    const [sx, sy] = drag.startPlan;
+    const [ex, ey] = planPoint;
+    const bbox = [Math.min(sx, ex), Math.min(sy, ey), Math.max(sx, ex), Math.max(sy, ey)];
+    // Ignore accidental clicks/sub-pixel drags — require a real rectangle.
+    if (bbox[2] - bbox[0] > 2 && bbox[3] - bbox[1] > 2) {
+      onRegionSelected?.(bbox);
+    }
+  }
+
+  function RegionSelectOverlay() {
+    if (!regionDragScreen) return null;
+    const { x1, y1, x2, y2 } = regionDragScreen;
+    const x = Math.min(x1, x2), y = Math.min(y1, y2);
+    const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+    return (
+      <svg className="fixed inset-0 pointer-events-none z-50" width="100%" height="100%">
+        <rect x={x} y={y} width={w} height={h} fill="#0ea5e9" fillOpacity="0.12" stroke="#0ea5e9" strokeWidth="2" strokeDasharray="6 4" />
+      </svg>
+    );
+  }
+
   function handleCalibrationClick(e, rect, nativeWidth, nativeHeight) {
-    if (!nativeWidth || !nativeHeight) return;
+    if (!nativeWidth || !nativeHeight || regionSelectMode) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
 
     if (commentMode) {
@@ -497,10 +577,11 @@ export default function DrawingRenderer({
         <div
           ref={osdContainerRef}
           className="w-full h-full"
-          style={{ cursor: calibrating || commentMode ? 'crosshair' : undefined }}
+          style={{ cursor: calibrating || commentMode || regionSelectMode ? 'crosshair' : undefined }}
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
+        <RegionSelectOverlay />
         {(() => {
           const osdScreenPointFor = (x, y) => {
             if (!osdContainerRef.current) return null;
@@ -595,16 +676,30 @@ export default function DrawingRenderer({
         {/* PDF Document */}
         <div
           ref={pageWrapRef}
-          className={`relative inline-block ${calibrating || commentMode ? 'cursor-crosshair' : ''}`}
+          className={`relative inline-block ${calibrating || commentMode || regionSelectMode ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
             handleCalibrationClick(e, rect, pageNativeSize.width, pageNativeSize.height);
           }}
+          onMouseDown={(e) => {
+            if (!regionSelectMode || !pageWrapRef.current || !pageNativeSize) return;
+            const rect = pageWrapRef.current.getBoundingClientRect();
+            startRegionDrag(toPlanSpacePoint(e, rect, pageNativeSize.width, pageNativeSize.height), { x: e.clientX, y: e.clientY });
+          }}
           onMouseMove={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
+            if (regionSelectMode && regionDragRef.current) {
+              updateRegionDrag({ x: e.clientX, y: e.clientY });
+              return;
+            }
             handlePointerMove(e, rect, pageNativeSize.width, pageNativeSize.height);
+          }}
+          onMouseUp={(e) => {
+            if (!regionSelectMode || !pageWrapRef.current || !pageNativeSize) return;
+            const rect = pageWrapRef.current.getBoundingClientRect();
+            finishRegionDrag(toPlanSpacePoint(e, rect, pageNativeSize.width, pageNativeSize.height));
           }}
         >
           <Document
@@ -620,6 +715,7 @@ export default function DrawingRenderer({
             <Page pageNumber={pageNumber} scale={scale} onLoadSuccess={onPageLoadSuccess} />
           </Document>
           <CalibrationMarkers />
+          <RegionSelectOverlay />
           {(() => {
             const pdfScreenPointFor = (x, y) => {
               if (!pageWrapRef.current || !pageNativeSize) return null;
@@ -644,16 +740,30 @@ export default function DrawingRenderer({
     <div className="w-full h-full overflow-auto flex items-center justify-center bg-slate-800">
       <div
         ref={imageWrapRef}
-        className={`relative inline-block ${calibrating || commentMode ? 'cursor-crosshair' : ''}`}
+        className={`relative inline-block ${calibrating || commentMode || regionSelectMode ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;
           const rect = canvasRef.current.getBoundingClientRect();
           handleCalibrationClick(e, rect, canvasRef.current.width, canvasRef.current.height);
         }}
+        onMouseDown={(e) => {
+          if (!regionSelectMode || !canvasRef.current) return;
+          const rect = canvasRef.current.getBoundingClientRect();
+          startRegionDrag(toPlanSpacePoint(e, rect, canvasRef.current.width, canvasRef.current.height), { x: e.clientX, y: e.clientY });
+        }}
         onMouseMove={(e) => {
           if (!canvasRef.current) return;
           const rect = canvasRef.current.getBoundingClientRect();
+          if (regionSelectMode && regionDragRef.current) {
+            updateRegionDrag({ x: e.clientX, y: e.clientY });
+            return;
+          }
           handlePointerMove(e, rect, canvasRef.current.width, canvasRef.current.height);
+        }}
+        onMouseUp={(e) => {
+          if (!regionSelectMode || !canvasRef.current) return;
+          const rect = canvasRef.current.getBoundingClientRect();
+          finishRegionDrag(toPlanSpacePoint(e, rect, canvasRef.current.width, canvasRef.current.height));
         }}
       >
         <canvas
@@ -662,6 +772,7 @@ export default function DrawingRenderer({
           className="max-w-full"
         />
         <CalibrationMarkers />
+        <RegionSelectOverlay />
         <CollabOverlay
           screenPointFor={(x, y) => {
             if (!canvasRef.current) return null;

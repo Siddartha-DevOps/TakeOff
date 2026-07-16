@@ -106,7 +106,22 @@ async def ai_image_search(
     from preprocessing import load_drawing
 
     img = load_drawing(source_drawing.file_path, page_number=0)
-    x1, y1, x2, y2 = int(query.x1), int(query.y1), int(query.x2), int(query.y2)
+
+    # The query box comes from the frontend's plan-space convention: native PDF
+    # points (scale=1) for a PDF sheet, native image pixels for a raster upload
+    # (DrawingRenderer.jsx's toPlanSpacePoint). load_drawing() above rasterizes
+    # PDFs at REFERENCE_DPI (300), so a PDF's points must be scaled up first —
+    # the same points->pixels step routes/scale_routes.py's calibration and
+    # takeoff_routes.py's vector-AUTODETECT persistence both already apply
+    # (see geometry/coords.py). Without it, every crop on a PDF sheet would be
+    # ~4x too small and shifted toward the origin.
+    bbox = [query.x1, query.y1, query.x2, query.y2]
+    if (source_drawing.file_type or "").upper() == "PDF":
+        from geometry.coords import bbox_to_pixels
+
+        bbox = bbox_to_pixels(bbox)
+
+    x1, y1, x2, y2 = (int(v) for v in bbox)
     patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
     if patch.size == 0:
         raise HTTPException(status_code=400, detail="Query region is empty")
