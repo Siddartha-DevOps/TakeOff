@@ -56,6 +56,9 @@ jobs:
       - name: End-to-end smoke test (classification libraries)
         run: python scripts/smoke_test_templates.py
 
+      - name: End-to-end smoke test (quantities breakdown)
+        run: python scripts/smoke_test_breakdown.py
+
   frontend-build:
     name: Frontend build
     runs-on: ubuntu-latest

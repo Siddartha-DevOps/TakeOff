@@ -1289,6 +1289,7 @@ export default function Takeoff() {
           <div className="flex border-b border-slate-200">
             {[
               { key: 'quantities', label: 'Quantities' },
+              { key: 'breakdown', label: 'Breakdown' },
               { key: 'search', label: 'Search' },
               { key: 'chat', label: 'Chat' },
               { key: 'summary', label: 'Summary' },
@@ -1298,6 +1299,7 @@ export default function Takeoff() {
           </div>
           <div className="flex-1 overflow-auto">
             {tab === 'quantities' && <QuantitiesPanel detection={detection} />}
+            {tab === 'breakdown' && <BreakdownPanel projectId={id} />}
             {tab === 'search' && (
               <SearchPanel
                 projectId={id}
@@ -2650,6 +2652,136 @@ function QuantitiesPanel({ detection }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Togal parity: "Breakdowns / multipliers — phase/floor/unit breakdowns".
+// Backed by routes/export_routes.py's /breakdown endpoint, which reuses
+// export_engine's grouping (same machinery Rich Export uses) plus
+// DrawingFolder as the phase/floor dimension and Repeating Groups'
+// per-drawing multiplier — both already-shipped features, tied together
+// here rather than duplicated.
+const BREAKDOWN_DIMENSIONS = [
+  { key: 'folder', label: 'Phase / Floor' },
+  { key: 'trade', label: 'Trade' },
+  { key: 'drawing', label: 'Sheet' },
+  { key: 'item', label: 'Item' },
+];
+
+function BreakdownSection({ section, depth = 0 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (section.label === null && section.children.length === 0) {
+    // Root with no group_by, or a leaf with rows directly.
+    return (
+      <div className="space-y-1">
+        {section.rows.map((r) => (
+          <div key={r.row_id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
+            <span className="text-slate-600 truncate">{r.item}</span>
+            <span className="mono text-slate-900 flex-shrink-0">{r.quantity.toLocaleString()} {r.unit}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div>
+      {section.children.map((child) => {
+        const childTotal = sectionTotal(child);
+        return (
+          <div key={child.label}>
+            <button
+              onClick={() => setCollapsed((c) => !c)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-slate-50 text-left"
+              style={{ paddingLeft: 12 + depth * 14 }}
+            >
+              <span className="flex items-center gap-1.5 min-w-0 text-sm font-medium text-slate-800">
+                <ChevronRight className={`w-3.5 h-3.5 text-slate-400 flex-shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                <span className="truncate">{child.label}</span>
+              </span>
+              <span className="mono text-xs text-slate-500 flex-shrink-0">{formatTotals(childTotal)}</span>
+            </button>
+            {!collapsed && <BreakdownSection section={child} depth={depth + 1} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function sectionTotal(section) {
+  const totals = {};
+  const add = (rows) => rows.forEach((r) => { totals[r.unit] = (totals[r.unit] || 0) + r.quantity; });
+  if (section.rows?.length) add(section.rows);
+  (section.children || []).forEach((c) => {
+    const childTotals = sectionTotal(c);
+    Object.entries(childTotals).forEach(([unit, v]) => { totals[unit] = (totals[unit] || 0) + v; });
+  });
+  return totals;
+}
+
+function formatTotals(totals) {
+  const entries = Object.entries(totals).filter(([, v]) => v);
+  if (entries.length === 0) return '—';
+  return entries.map(([unit, v]) => `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`).join(' · ');
+}
+
+function BreakdownPanel({ projectId }) {
+  const [dims, setDims] = useState(['folder', 'trade']);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    exportAPI.getBreakdown(projectId, { groupBy: dims })
+      .then((res) => { if (!cancelled) setData(res.data); })
+      .catch(() => { if (!cancelled) setError('Failed to load breakdown'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId, dims]);
+
+  function toggleDim(key) {
+    setDims((prev) => {
+      if (prev.includes(key)) return prev.filter((d) => d !== key);
+      if (prev.length >= 3) return prev; // build_grouped_sections caps at 3 levels
+      return [...prev, key];
+    });
+  }
+
+  return (
+    <div className="p-4">
+      <h3 className="text-sm font-semibold text-slate-900">Breakdown</h3>
+      <p className="text-xs text-slate-500 mt-0.5">Quantities by phase/floor and trade — includes Repeating Groups multipliers</p>
+
+      <div className="mt-3 flex flex-wrap gap-1">
+        {BREAKDOWN_DIMENSIONS.map((d) => (
+          <button
+            key={d.key}
+            onClick={() => toggleDim(d.key)}
+            className={`px-2.5 py-1 text-[11px] font-medium rounded-md ${dims.includes(d.key) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+          >
+            {dims.includes(d.key) ? `${dims.indexOf(d.key) + 1}. ` : ''}{d.label}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div className="mt-6 text-xs text-slate-500">Loading…</div>}
+      {error && <div className="mt-6 text-xs text-rose-600">{error}</div>}
+      {!loading && !error && data && (
+        <>
+          <div className="mt-4 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 text-xs text-slate-700">
+            <span className="font-medium">Project total:</span> {formatTotals(data.total_quantity_by_unit)}
+          </div>
+          <div className="mt-3 border border-slate-100 rounded-lg divide-y divide-slate-100 overflow-hidden">
+            {data.sections.children.length === 0
+              ? <div className="p-4 text-xs text-slate-500">No quantities yet — run AI analysis on a sheet first.</div>
+              : <BreakdownSection section={data.sections} />}
+          </div>
+        </>
+      )}
     </div>
   );
 }

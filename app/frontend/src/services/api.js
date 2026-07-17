@@ -245,6 +245,15 @@ export const exportAPI = {
   generateProjectExport: (projectId, payload) => api.post(`/api/export/projects/${projectId}/generate`, payload, {
     responseType: 'blob'
   }),
+  // Breakdowns — Togal parity "phase/floor/unit breakdowns". groupBy is an
+  // ordered array of up to 3: 'folder' | 'trade' | 'item' | 'drawing'.
+  getBreakdown: (projectId, { groupBy, drawingIds, trades } = {}) => api.get(`/api/export/projects/${projectId}/breakdown`, {
+    params: {
+      group_by: (groupBy?.length ? groupBy : ['folder', 'trade']).join(','),
+      drawing_ids: drawingIds?.length ? drawingIds.join(',') : undefined,
+      trades: trades?.length ? trades.join(',') : undefined,
+    },
+  }),
 };
 
 // Estimating handoff — quantities -> UPC/WBS map + audit trail, Procore/
