@@ -38,7 +38,8 @@ jobs:
           python -m pip install -q \
             pymupdf shapely numpy pytest \
             sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
-            "passlib[bcrypt]" "bcrypt==4.0.1"
+            "passlib[bcrypt]" "bcrypt==4.0.1" \
+            openpyxl reportlab
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head
