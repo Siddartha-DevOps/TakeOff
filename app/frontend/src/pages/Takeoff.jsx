@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -34,11 +34,21 @@ const LAYER_CONFIG = [
   { key: 'walls', label: 'Walls', color: '#eab308' },
 ];
 
+// Same palette CreateProjectModal.jsx's ORG_COLORS uses — one shared set of
+// organization colors for folders too (Togal parity: "color-coded, folders, sets").
+const FOLDER_COLORS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#ec4899', '#64748b'];
+
 export default function Takeoff() {
   const { id } = useParams();
   const nav = useNavigate();
   const [project, setProject] = useState(null);
   const [drawings, setDrawings] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderColor, setNewFolderColor] = useState(FOLDER_COLORS[0]);
+  const [movingDrawingId, setMovingDrawingId] = useState(null);
   const [loadingProject, setLoadingProject] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
   const [status, setStatus] = useState('idle');
@@ -100,6 +110,7 @@ export default function Takeoff() {
   useEffect(() => {
     if (project) {
       fetchDrawings();
+      fetchFolders();
       fetchConditions();
       runAnalysis();
     }
@@ -128,6 +139,147 @@ export default function Takeoff() {
       console.error('Failed to fetch drawings:', error);
       setDrawings([]);
     }
+  }
+
+  // Drawing folders — Togal parity "Project folders & organization"
+  // (color-coded, folders, sets). Folders are a manual, project-scoped
+  // grouping (routes/folder_routes.py); "sets" are the automatic grouping
+  // sheets that arrived together in one multi-page PDF upload already carry
+  // (Drawing.upload_batch_id) — surfaced below, not a separate fetch.
+  async function fetchFolders() {
+    try {
+      const response = await foldersAPI.list(id);
+      setFolders(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+      setFolders([]);
+    }
+  }
+
+  async function createFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    try {
+      const response = await foldersAPI.create(id, { name, color: newFolderColor });
+      setFolders((prev) => [...prev, response.data]);
+      setNewFolderName('');
+      setNewFolderColor(FOLDER_COLORS[0]);
+      setShowNewFolder(false);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+    }
+  }
+
+  async function deleteFolder(folderId) {
+    try {
+      await foldersAPI.delete(folderId);
+      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      // Un-file client-side too — the backend already SET NULLs it (ON
+      // DELETE SET NULL), this just keeps the sidebar in sync without a refetch.
+      setDrawings((prev) => prev.map((d) => (d.folder_id === folderId ? { ...d, folder_id: null } : d)));
+    } catch (error) {
+      console.error('Failed to delete folder:', error);
+    }
+  }
+
+  async function assignDrawingFolder(drawingId, folderId) {
+    try {
+      const response = await foldersAPI.assignDrawing(drawingId, folderId);
+      setDrawings((prev) => prev.map((d) => (d.id === drawingId ? response.data : d)));
+    } catch (error) {
+      console.error('Failed to move drawing:', error);
+    } finally {
+      setMovingDrawingId(null);
+    }
+  }
+
+  function toggleFolderCollapsed(folderId) {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  }
+
+  // Folders (manual) + sets (automatic, from upload_batch_id) grouping for
+  // the Drawings sidebar. Unfiled drawings that share a batch_id with at
+  // least one sibling render under a "Set" sub-heading; everything else
+  // (single-page uploads, or already-foldered sheets) is flat.
+  const drawingGroups = useMemo(() => {
+    const byFolder = new Map(folders.map((f) => [f.id, []]));
+    const unfiled = [];
+    for (const d of drawings) {
+      if (d.folder_id != null && byFolder.has(d.folder_id)) byFolder.get(d.folder_id).push(d);
+      else unfiled.push(d);
+    }
+    const batchCounts = new Map();
+    for (const d of unfiled) {
+      if (d.upload_batch_id) batchCounts.set(d.upload_batch_id, (batchCounts.get(d.upload_batch_id) || 0) + 1);
+    }
+    const sets = new Map(); // batch_id -> drawings[]
+    const unfiledFlat = [];
+    for (const d of unfiled) {
+      if (d.upload_batch_id && batchCounts.get(d.upload_batch_id) > 1) {
+        if (!sets.has(d.upload_batch_id)) sets.set(d.upload_batch_id, []);
+        sets.get(d.upload_batch_id).push(d);
+      } else {
+        unfiledFlat.push(d);
+      }
+    }
+    return { byFolder, sets, unfiledFlat };
+  }, [drawings, folders]);
+
+  function renderDrawingRow(drawing) {
+    return (
+      <div key={drawing.id} className="group relative flex items-center gap-1">
+        <button
+          onClick={() => selectDrawing(drawing)}
+          className={`flex-1 min-w-0 text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            {drawing.discipline && (
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
+            )}
+            {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
+            <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
+          </div>
+          <div className="text-[10px] text-slate-500">
+            {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
+            {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
+          </div>
+        </button>
+        <div className="relative flex-shrink-0">
+          <button
+            onClick={() => setMovingDrawingId(movingDrawingId === drawing.id ? null : drawing.id)}
+            title="Move to folder"
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
+          >
+            <Folder className="w-3 h-3" />
+          </button>
+          {movingDrawingId === drawing.id && (
+            <div className="absolute right-0 top-6 z-10 w-40 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1">
+              <button
+                onClick={() => assignDrawingFolder(drawing.id, null)}
+                className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700"
+              >
+                Unfiled
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => assignDrawingFolder(drawing.id, f.id)}
+                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 flex items-center gap-1.5"
+                >
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: f.color }} />
+                  <span className="truncate">{f.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   // Real-time collaboration socket — one connection per project ("room"),
@@ -798,29 +950,90 @@ export default function Takeoff() {
               <FileUploadZone projectId={id} onUploadComplete={handleUploadComplete} />
             </div>
           )}
-          {drawings.length > 0 && (
+          {(drawings.length > 0 || folders.length > 0) && (
             <>
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Drawings</div>
-              <div className="space-y-0.5 mb-4">
-                {drawings.map((drawing) => (
-                  <button
-                    key={drawing.id}
-                    onClick={() => selectDrawing(drawing)}
-                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {drawing.discipline && (
-                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drawings</div>
+                <button
+                  onClick={() => setShowNewFolder((v) => !v)}
+                  title="New folder"
+                  className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {showNewFolder && (
+                <div className="mb-3 p-2 rounded-lg bg-slate-800 border border-slate-700 space-y-2">
+                  <input
+                    autoFocus
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
+                    placeholder="Folder name"
+                    className="w-full px-2 py-1 text-xs rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    {FOLDER_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setNewFolderColor(c)}
+                        className="w-4 h-4 rounded-full flex-shrink-0"
+                        style={{ background: c, boxShadow: newFolderColor === c ? `0 0 0 2px #0f172a, 0 0 0 3.5px ${c}` : 'none' }}
+                        aria-label={`Color ${c}`}
+                      />
+                    ))}
+                    <div className="flex-1" />
+                    <button onClick={createFolder} className="px-2 py-0.5 text-[11px] rounded bg-indigo-500 text-white hover:bg-indigo-400">Create</button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3 mb-4">
+                {folders.map((folder) => {
+                  const folderDrawings = drawingGroups.byFolder.get(folder.id) || [];
+                  const collapsed = collapsedFolders.has(folder.id);
+                  return (
+                    <div key={folder.id}>
+                      <div className="group flex items-center gap-1 px-1">
+                        <button onClick={() => toggleFolderCollapsed(folder.id)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+                          <ChevronRight className={`w-3 h-3 flex-shrink-0 text-slate-500 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: folder.color }} />
+                          <span className="text-[11px] font-semibold text-slate-300 truncate">{folder.name}</span>
+                          <span className="text-[10px] text-slate-500">({folderDrawings.length})</span>
+                        </button>
+                        <button
+                          onClick={() => deleteFolder(folder.id)}
+                          title="Delete folder"
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-rose-400"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {!collapsed && (
+                        <div className="mt-0.5 ml-4 space-y-0.5">
+                          {folderDrawings.length === 0
+                            ? <div className="text-[10px] text-slate-600 px-2 py-1">Empty</div>
+                            : folderDrawings.map(renderDrawingRow)}
+                        </div>
                       )}
-                      {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
-                      <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
                     </div>
-                    <div className="text-[10px] text-slate-500">
-                      {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
-                      {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
+                  );
+                })}
+
+                {[...drawingGroups.sets.entries()].map(([batchId, setDrawings]) => (
+                  <div key={batchId}>
+                    <div className="flex items-center gap-1.5 px-1 mb-0.5">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500">Set</span>
+                      <span className="text-[10px] text-slate-600">· {setDrawings.length} sheets</span>
                     </div>
-                  </button>
+                    <div className="space-y-0.5">{setDrawings.map(renderDrawingRow)}</div>
+                  </div>
                 ))}
+
+                {drawingGroups.unfiledFlat.length > 0 && (
+                  <div className="space-y-0.5">{drawingGroups.unfiledFlat.map(renderDrawingRow)}</div>
+                )}
               </div>
             </>
           )}

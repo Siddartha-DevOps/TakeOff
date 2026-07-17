@@ -50,6 +50,7 @@ class ProjectBase(BaseModel):
     name: str
     description: Optional[str] = None
     project_type: Optional[str] = None
+    color: str = "#6366f1"
 
 class ProjectCreate(ProjectBase):
     pass
@@ -59,6 +60,7 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     project_type: Optional[str] = None
     status: Optional[str] = None
+    color: Optional[str] = None
 
 class Project(ProjectBase):
     id: int
@@ -67,7 +69,7 @@ class Project(ProjectBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -77,6 +79,32 @@ class ProjectList(Project):
     
     class Config:
         from_attributes = True
+
+# Drawing Folder Schemas — Togal parity "Project folders & organization"
+class DrawingFolderBase(BaseModel):
+    name: str
+    color: str = "#6366f1"
+    sort_order: int = 0
+
+class DrawingFolderCreate(DrawingFolderBase):
+    pass
+
+class DrawingFolderUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+class DrawingFolder(DrawingFolderBase):
+    id: int
+    project_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DrawingFolderAssign(BaseModel):
+    folder_id: Optional[int] = None  # None un-files the drawing
 
 # Drawing Schemas
 class DrawingBase(BaseModel):
@@ -104,6 +132,7 @@ class Drawing(DrawingBase):
     sheet_number: Optional[str] = None
     discipline: Optional[str] = None
     upload_batch_id: Optional[str] = None
+    folder_id: Optional[int] = None
 
     class Config:
         from_attributes = True

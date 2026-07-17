@@ -42,6 +42,7 @@ async def create_project(
         name=project_data.name,
         description=project_data.description,
         project_type=project_data.project_type,
+        color=project_data.color,
         owner_id=current_user.id,
         organization_id=current_user.organization_id,
         status="active"
@@ -68,6 +69,7 @@ async def list_projects(
             "name": p.name,
             "description": p.description,
             "project_type": p.project_type,
+            "color": p.color,
             "owner_id": p.owner_id,
             "organization_id": p.organization_id,
             "status": p.status,
@@ -128,7 +130,9 @@ async def update_project(
         project.project_type = project_data.project_type
     if project_data.status is not None:
         project.status = project_data.status
-    
+    if project_data.color is not None:
+        project.color = project_data.color
+
     db.commit()
     db.refresh(project)
     return project

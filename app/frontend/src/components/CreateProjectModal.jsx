@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { X, Loader2, ArrowUpRight } from 'lucide-react';
+import { X, Loader2, ArrowUpRight, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { projectsAPI } from '../services/api';
+
+// Same palette DrawingFolder/Condition color pickers use (see Takeoff.jsx) —
+// one shared set of project-organization colors across the app.
+export const ORG_COLORS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#ec4899', '#64748b'];
 
 export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
   const [loading, setLoading] = useState(false);
@@ -12,6 +16,7 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
     name: '',
     description: '',
     project_type: 'High-rise residential',
+    color: ORG_COLORS[0],
   });
 
   const projectTypes = [
@@ -41,6 +46,7 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
         name: '',
         description: '',
         project_type: 'High-rise residential',
+        color: ORG_COLORS[0],
       });
     } catch (err) {
       // Entitlements (memory/TOGAL_PARITY_REAUDIT.md #18) — a 402 sends
@@ -133,6 +139,29 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    Color
+                  </label>
+                  <div className="flex items-center gap-2">
+                    {ORG_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, color: c })}
+                        className="w-7 h-7 rounded-full flex items-center justify-center transition-shadow"
+                        style={{
+                          background: c,
+                          boxShadow: formData.color === c ? `0 0 0 2px white, 0 0 0 4px ${c}` : 'none',
+                        }}
+                        aria-label={`Color ${c}`}
+                      >
+                        {formData.color === c && <Check className="w-3.5 h-3.5 text-white" />}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div>

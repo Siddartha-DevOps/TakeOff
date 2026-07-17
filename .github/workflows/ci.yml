@@ -38,7 +38,8 @@ jobs:
           python -m pip install -q \
             pymupdf shapely numpy pytest \
             sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
-            "passlib[bcrypt]" "bcrypt==4.0.1"
+            "passlib[bcrypt]" "bcrypt==4.0.1" \
+            fastapi "python-jose[cryptography]" email-validator
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head
@@ -48,6 +49,9 @@ jobs:
 
       - name: End-to-end smoke test (vector -> PostGIS -> ST_Area)
         run: python scripts/smoke_test.py
+
+      - name: End-to-end smoke test (drawing folders & organization)
+        run: python scripts/smoke_test_folders.py
 
   frontend-build:
     name: Frontend build

@@ -151,7 +151,12 @@ export default function Dashboard() {
                       onClick={() => nav(`/app/projects/${p.id}`)}
                       className="grid grid-cols-[1fr_auto] gap-4 px-5 py-4 items-center border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
                     >
-                      <div className="text-sm font-semibold text-slate-900">
+                      <div className="flex items-center gap-2.5 text-sm font-semibold text-slate-900">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          style={{ background: p.color || '#6366f1' }}
+                          title="Project color"
+                        />
                         {p.name}
                       </div>
                     </div>

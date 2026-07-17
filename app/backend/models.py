@@ -68,14 +68,18 @@ class Project(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     status = Column(String(50), default="active")  # active, archived, draft
+    # Color-coded project list (Togal parity: "Project folders & organization —
+    # color-coded, folders, sets"). Same hex-string convention as Condition.color.
+    color = Column(String(20), default="#6366f1")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     owner = relationship("User", back_populates="projects")
     organization = relationship("Organization", back_populates="projects")
     drawings = relationship("Drawing", back_populates="project", cascade="all, delete-orphan")
     conditions = relationship("Condition", back_populates="project", cascade="all, delete-orphan")
+    folders = relationship("DrawingFolder", back_populates="project", cascade="all, delete-orphan")
 
 class Condition(Base):
     """
@@ -109,11 +113,44 @@ class Condition(Base):
     # Relationships
     project = relationship("Project", back_populates="conditions")
 
-class Drawing(Base):
-    __tablename__ = "drawings"
-    
+class DrawingFolder(Base):
+    """
+    Manual, color-coded grouping of sheets within a project (Togal parity:
+    "Project folders & organization — color-coded, folders, sets"). Flat,
+    not nested — a project's folders are a single list, not a tree; nesting
+    can be added later if it turns out to matter, but a flat list already
+    closes the actual gap (Togal's own screenshots show a flat folder list
+    per project, not deep hierarchies).
+
+    Distinct from the automatic "set" grouping Drawing.upload_batch_id
+    already provides (all pages split from one multi-page PDF upload) --
+    folders are a user's manual choice, sets are what the app inferred from
+    how sheets arrived. Both are surfaced side by side in the UI.
+    """
+    __tablename__ = "drawing_folders"
+
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    color = Column(String(20), default="#6366f1")
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    project = relationship("Project", back_populates="folders")
+    drawings = relationship("Drawing", back_populates="folder")
+
+
+class Drawing(Base):
+    __tablename__ = "drawings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # Manual folder assignment (see DrawingFolder above) -- nullable/SET NULL
+    # on folder delete so removing a folder never deletes or orphans a
+    # drawing, it just un-files it back to the project's root list.
+    folder_id = Column(Integer, ForeignKey("drawing_folders.id", ondelete="SET NULL"), nullable=True)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)  # Local path or S3 URL
@@ -153,6 +190,7 @@ class Drawing(Base):
     
     # Relationships
     project = relationship("Project", back_populates="drawings")
+    folder = relationship("DrawingFolder", back_populates="drawings")
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
 

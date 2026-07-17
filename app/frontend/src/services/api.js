@@ -119,6 +119,15 @@ export const uploadsAPI = {
   regenerateTiles: (drawingId) => api.post(`/api/uploads/drawings/${drawingId}/tiles/generate`),
 };
 
+// Drawing folders — Togal parity "Project folders & organization" (color-coded, folders, sets)
+export const foldersAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/folders`),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/folders`, data),
+  update: (folderId, data) => api.put(`/api/folders/${folderId}`, data),
+  delete: (folderId) => api.delete(`/api/folders/${folderId}`),
+  assignDrawing: (drawingId, folderId) => api.put(`/api/drawings/${drawingId}/folder`, { folder_id: folderId }),
+};
+
 // Takeoff/AI API
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
