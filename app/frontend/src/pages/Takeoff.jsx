@@ -2130,6 +2130,7 @@ function ExportModal({ projectId, drawings, projectName, onClose }) {
                   className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
                 >
                   <option value="">None</option>
+                  <option value="folder">Phase / Floor</option>
                   <option value="trade">Trade</option>
                   <option value="drawing">Sheet</option>
                   <option value="item">Item</option>
