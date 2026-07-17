@@ -15,6 +15,7 @@ from .ratebook import RateItem, RateBook
 from .boq import BOQItem, build_boq, rate_analysis, abstract, DEFAULT_ITEM_MAP
 from .tax import gst_breakdown, finalize_estimate, DEFAULT_GST_RATE
 from .estimate import full_estimate
+from .export import boq_to_excel, boq_to_pdf
 
 __all__ = [
     "RateItem",
@@ -28,4 +29,6 @@ __all__ = [
     "finalize_estimate",
     "DEFAULT_GST_RATE",
     "full_estimate",
+    "boq_to_excel",
+    "boq_to_pdf",
 ]

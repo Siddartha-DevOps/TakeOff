@@ -12,14 +12,17 @@ See memory/INDIA_GTM_AND_GAP.md.
 """
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 import models
 from auth import get_current_user
 from database import get_db
 from estimating import RateBook, full_estimate
+from estimating.export import boq_to_excel, boq_to_pdf
 
 router = APIRouter(prefix="/india", tags=["India BOQ"])
 
@@ -52,21 +55,16 @@ def _latest_detection(drawing_id: int, db: Session) -> dict:
         raise HTTPException(status_code=500, detail="Stored detection data is not valid JSON")
 
 
-@router.get("/drawings/{drawing_id}/boq")
-async def drawing_boq(
+def _estimate_for_drawing(
     drawing_id: int,
-    overhead_profit_pct: float = 15.0,
-    contingency_pct: float = 3.0,
-    gst_rate: float = 0.18,
-    inter_state: bool = False,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Return the priced Indian BOQ + GST-finalized tender summary for a drawing.
-
-    Query params tune the tender waterfall (overheads&profit %, contingency %,
-    GST rate, intra/inter-state). Amounts in INR.
-    """
+    overhead_profit_pct: float,
+    contingency_pct: float,
+    gst_rate: float,
+    inter_state: bool,
+    current_user: models.User,
+    db: Session,
+) -> dict:
+    """Shared: build the full India estimate for a drawing (JSON + exports use it)."""
     _get_drawing(drawing_id, current_user, db)
     detection = _latest_detection(drawing_id, db)
 
@@ -91,3 +89,61 @@ async def drawing_boq(
         "for production estimates."
     )
     return estimate
+
+
+@router.get("/drawings/{drawing_id}/boq")
+async def drawing_boq(
+    drawing_id: int,
+    overhead_profit_pct: float = 15.0,
+    contingency_pct: float = 3.0,
+    gst_rate: float = 0.18,
+    inter_state: bool = False,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the priced Indian BOQ + GST-finalized tender summary for a drawing.
+
+    Query params tune the tender waterfall (overheads&profit %, contingency %,
+    GST rate, intra/inter-state). Amounts in INR.
+    """
+    return _estimate_for_drawing(
+        drawing_id, overhead_profit_pct, contingency_pct, gst_rate, inter_state,
+        current_user, db,
+    )
+
+
+@router.get("/drawings/{drawing_id}/boq.{fmt}")
+async def drawing_boq_export(
+    drawing_id: int,
+    fmt: str,
+    overhead_profit_pct: float = 15.0,
+    contingency_pct: float = 3.0,
+    gst_rate: float = 0.18,
+    inter_state: bool = False,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download the BOQ as Excel (``xlsx``) or PDF (``pdf``)."""
+    fmt = fmt.lower()
+    if fmt not in ("xlsx", "pdf"):
+        raise HTTPException(status_code=400, detail="format must be 'xlsx' or 'pdf'")
+
+    estimate = _estimate_for_drawing(
+        drawing_id, overhead_profit_pct, contingency_pct, gst_rate, inter_state,
+        current_user, db,
+    )
+
+    if fmt == "xlsx":
+        content = boq_to_excel(estimate)
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        content = boq_to_pdf(estimate)
+        media = "application/pdf"
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"boq_drawing_{drawing_id}_{ts}.{fmt}"
+    return StreamingResponse(
+        iter([content]),
+        media_type=media,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
