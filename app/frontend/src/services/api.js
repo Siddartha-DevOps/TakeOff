@@ -42,6 +42,18 @@ api.interceptors.response.use(
 
 export default api;
 
+// Guest client — deliberately separate from `api` above: no auth-token
+// interceptor (a guest viewing a share link has no account, and must
+// never have a logged-in user's token silently attached to their
+// requests) and no 401/403 -> redirect-to-/login interceptor (a guest
+// hitting a 403 on a view-only link trying to comment should see an
+// inline message, not get bounced to a login page they have no account
+// for). See routes/share_routes.py's guest_router.
+const guestApi = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+});
+
 // Auth API
 export const authAPI = {
   login: (email, password) => api.post('/api/auth/login', { email, password }),
@@ -119,6 +131,15 @@ export const uploadsAPI = {
   regenerateTiles: (drawingId) => api.post(`/api/uploads/drawings/${drawingId}/tiles/generate`),
 };
 
+// Drawing folders — Togal parity "Project folders & organization" (color-coded, folders, sets)
+export const foldersAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/folders`),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/folders`, data),
+  update: (folderId, data) => api.put(`/api/folders/${folderId}`, data),
+  delete: (folderId) => api.delete(`/api/folders/${folderId}`),
+  assignDrawing: (drawingId, folderId) => api.put(`/api/drawings/${drawingId}/folder`, { folder_id: folderId }),
+};
+
 // Takeoff/AI API
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
@@ -159,6 +180,17 @@ export const conditionsAPI = {
   create: (projectId, data) => api.post(`/api/projects/${projectId}/conditions`, data),
   update: (conditionId, data) => api.put(`/api/conditions/${conditionId}`, data),
   delete: (conditionId) => api.delete(`/api/conditions/${conditionId}`),
+};
+
+// Classification libraries — Togal parity "reusable templates, import/export"
+export const templatesAPI = {
+  list: () => api.get('/api/condition-templates'),
+  saveFromProject: (projectId, data) => api.post(`/api/projects/${projectId}/conditions/save-as-template`, data),
+  apply: (projectId, templateId) => api.post(`/api/projects/${projectId}/conditions/apply-template/${templateId}`),
+  rename: (templateId, data) => api.put(`/api/condition-templates/${templateId}`, data),
+  delete: (templateId) => api.delete(`/api/condition-templates/${templateId}`),
+  exportProject: (projectId) => api.get(`/api/projects/${projectId}/conditions/export`),
+  importJson: (projectId, payload) => api.post(`/api/projects/${projectId}/conditions/import`, payload),
 };
 
 // Correction events API — the training-data flywheel (CLAUDE.md §2/§5)
@@ -225,6 +257,15 @@ export const exportAPI = {
   generateProjectExport: (projectId, payload) => api.post(`/api/export/projects/${projectId}/generate`, payload, {
     responseType: 'blob'
   }),
+  // Breakdowns — Togal parity "phase/floor/unit breakdowns". groupBy is an
+  // ordered array of up to 3: 'folder' | 'trade' | 'item' | 'drawing'.
+  getBreakdown: (projectId, { groupBy, drawingIds, trades } = {}) => api.get(`/api/export/projects/${projectId}/breakdown`, {
+    params: {
+      group_by: (groupBy?.length ? groupBy : ['folder', 'trade']).join(','),
+      drawing_ids: drawingIds?.length ? drawingIds.join(',') : undefined,
+      trades: trades?.length ? trades.join(',') : undefined,
+    },
+  }),
 };
 
 // Estimating handoff — quantities -> UPC/WBS map + audit trail, Procore/
@@ -254,6 +295,29 @@ export const collabAPI = {
   createComment: (projectId, comment) => api.post(`/api/collab/projects/${projectId}/comments`, comment),
   resolveComment: (commentId, resolved = true) => api.patch(`/api/collab/comments/${commentId}/resolve`, { resolved }),
   deleteComment: (commentId) => api.delete(`/api/collab/comments/${commentId}`),
+};
+
+// External collaboration without an account — Togal parity. Authenticated
+// side (create/list/revoke a project's share links) uses the normal `api`
+// client; guestAPI below is what the /share/:token page itself uses.
+export const shareAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/share-links`),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/share-links`, data),
+  revoke: (linkId) => api.delete(`/api/share-links/${linkId}`),
+  guestUrl: (token) => `${window.location.origin}/share/${token}`,
+};
+
+// The guest-facing surface itself — no Authorization header, ever (see
+// guestApi's definition above). token is a path segment, not a header, so
+// these also work as plain <img src>/tile-source URLs for the drawing viewer.
+export const guestAPI = {
+  fileUrl: (token, drawingId) => `${API_BASE_URL}/api/guest/${token}/drawings/${drawingId}/file`,
+  tileUrl: (token, drawingId, level, x, y) => `${API_BASE_URL}/api/guest/${token}/drawings/${drawingId}/tiles/${level}/${x}_${y}.jpg`,
+  resolve: (token) => guestApi.get(`/api/guest/${token}`),
+  getTileStatus: (token, drawingId) => guestApi.get(`/api/guest/${token}/drawings/${drawingId}/tiles/status`),
+  getResults: (token, drawingId) => guestApi.get(`/api/guest/${token}/drawings/${drawingId}/results`),
+  listComments: (token, drawingId) => guestApi.get(`/api/guest/${token}/comments`, { params: { drawing_id: drawingId } }),
+  createComment: (token, comment) => guestApi.post(`/api/guest/${token}/comments`, comment),
 };
 
 // Teams/roles/permissions + invites — routes/team_routes.py, permissions.py

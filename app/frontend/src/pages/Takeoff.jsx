@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight, Combine, Scissors, SquareMinus, Link2, Copy } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI, templatesAPI, shareAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -34,11 +34,21 @@ const LAYER_CONFIG = [
   { key: 'walls', label: 'Walls', color: '#eab308' },
 ];
 
+// Same palette CreateProjectModal.jsx's ORG_COLORS uses — one shared set of
+// organization colors for folders too (Togal parity: "color-coded, folders, sets").
+const FOLDER_COLORS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#ec4899', '#64748b'];
+
 export default function Takeoff() {
   const { id } = useParams();
   const nav = useNavigate();
   const [project, setProject] = useState(null);
   const [drawings, setDrawings] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderColor, setNewFolderColor] = useState(FOLDER_COLORS[0]);
+  const [movingDrawingId, setMovingDrawingId] = useState(null);
   const [loadingProject, setLoadingProject] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
   const [status, setStatus] = useState('idle');
@@ -55,6 +65,7 @@ export default function Takeoff() {
   const [exporting, setExporting] = useState(false);
   const [showAdvancedExport, setShowAdvancedExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [showRepeatingGroups, setShowRepeatingGroups] = useState(false);
   const [show3DView, setShow3DView] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
@@ -73,6 +84,7 @@ export default function Takeoff() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
+  const [shapeOpError, setShapeOpError] = useState(null); // last merge/split/backout failure message
   const [editingCondition, setEditingCondition] = useState(null); // Condition object being edited, or null
 
   const [revisions, setRevisions] = useState([]);
@@ -100,6 +112,7 @@ export default function Takeoff() {
   useEffect(() => {
     if (project) {
       fetchDrawings();
+      fetchFolders();
       fetchConditions();
       runAnalysis();
     }
@@ -128,6 +141,147 @@ export default function Takeoff() {
       console.error('Failed to fetch drawings:', error);
       setDrawings([]);
     }
+  }
+
+  // Drawing folders — Togal parity "Project folders & organization"
+  // (color-coded, folders, sets). Folders are a manual, project-scoped
+  // grouping (routes/folder_routes.py); "sets" are the automatic grouping
+  // sheets that arrived together in one multi-page PDF upload already carry
+  // (Drawing.upload_batch_id) — surfaced below, not a separate fetch.
+  async function fetchFolders() {
+    try {
+      const response = await foldersAPI.list(id);
+      setFolders(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch folders:', error);
+      setFolders([]);
+    }
+  }
+
+  async function createFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    try {
+      const response = await foldersAPI.create(id, { name, color: newFolderColor });
+      setFolders((prev) => [...prev, response.data]);
+      setNewFolderName('');
+      setNewFolderColor(FOLDER_COLORS[0]);
+      setShowNewFolder(false);
+    } catch (error) {
+      console.error('Failed to create folder:', error);
+    }
+  }
+
+  async function deleteFolder(folderId) {
+    try {
+      await foldersAPI.delete(folderId);
+      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      // Un-file client-side too — the backend already SET NULLs it (ON
+      // DELETE SET NULL), this just keeps the sidebar in sync without a refetch.
+      setDrawings((prev) => prev.map((d) => (d.folder_id === folderId ? { ...d, folder_id: null } : d)));
+    } catch (error) {
+      console.error('Failed to delete folder:', error);
+    }
+  }
+
+  async function assignDrawingFolder(drawingId, folderId) {
+    try {
+      const response = await foldersAPI.assignDrawing(drawingId, folderId);
+      setDrawings((prev) => prev.map((d) => (d.id === drawingId ? response.data : d)));
+    } catch (error) {
+      console.error('Failed to move drawing:', error);
+    } finally {
+      setMovingDrawingId(null);
+    }
+  }
+
+  function toggleFolderCollapsed(folderId) {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) next.delete(folderId);
+      else next.add(folderId);
+      return next;
+    });
+  }
+
+  // Folders (manual) + sets (automatic, from upload_batch_id) grouping for
+  // the Drawings sidebar. Unfiled drawings that share a batch_id with at
+  // least one sibling render under a "Set" sub-heading; everything else
+  // (single-page uploads, or already-foldered sheets) is flat.
+  const drawingGroups = useMemo(() => {
+    const byFolder = new Map(folders.map((f) => [f.id, []]));
+    const unfiled = [];
+    for (const d of drawings) {
+      if (d.folder_id != null && byFolder.has(d.folder_id)) byFolder.get(d.folder_id).push(d);
+      else unfiled.push(d);
+    }
+    const batchCounts = new Map();
+    for (const d of unfiled) {
+      if (d.upload_batch_id) batchCounts.set(d.upload_batch_id, (batchCounts.get(d.upload_batch_id) || 0) + 1);
+    }
+    const sets = new Map(); // batch_id -> drawings[]
+    const unfiledFlat = [];
+    for (const d of unfiled) {
+      if (d.upload_batch_id && batchCounts.get(d.upload_batch_id) > 1) {
+        if (!sets.has(d.upload_batch_id)) sets.set(d.upload_batch_id, []);
+        sets.get(d.upload_batch_id).push(d);
+      } else {
+        unfiledFlat.push(d);
+      }
+    }
+    return { byFolder, sets, unfiledFlat };
+  }, [drawings, folders]);
+
+  function renderDrawingRow(drawing) {
+    return (
+      <div key={drawing.id} className="group relative flex items-center gap-1">
+        <button
+          onClick={() => selectDrawing(drawing)}
+          className={`flex-1 min-w-0 text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            {drawing.discipline && (
+              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
+            )}
+            {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
+            <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
+          </div>
+          <div className="text-[10px] text-slate-500">
+            {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
+            {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
+          </div>
+        </button>
+        <div className="relative flex-shrink-0">
+          <button
+            onClick={() => setMovingDrawingId(movingDrawingId === drawing.id ? null : drawing.id)}
+            title="Move to folder"
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
+          >
+            <Folder className="w-3 h-3" />
+          </button>
+          {movingDrawingId === drawing.id && (
+            <div className="absolute right-0 top-6 z-10 w-40 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1">
+              <button
+                onClick={() => assignDrawingFolder(drawing.id, null)}
+                className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700"
+              >
+                Unfiled
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => assignDrawingFolder(drawing.id, f.id)}
+                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 flex items-center gap-1.5"
+                >
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: f.color }} />
+                  <span className="truncate">{f.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   // Real-time collaboration socket — one connection per project ("room"),
@@ -609,6 +763,34 @@ export default function Takeoff() {
     return map;
   }, [annotationStore.annotations]);
 
+  // Advanced tools (Togal parity: split/merge/cut/backout) — see
+  // useAnnotationStore.js's mergeSelection/backoutSelection/splitSelection
+  // for the actual geometry. These wrappers just turn a thrown validation
+  // error into a visible message instead of an uncaught exception, and
+  // clear the selection/menu on success.
+  function runShapeOp(op) {
+    try {
+      op();
+      setShapeOpError(null);
+      setContextMenu(null);
+      setSelectedIds([]);
+    } catch (error) {
+      setShapeOpError(error.message);
+      setContextMenu(null);
+    }
+  }
+  const handleMergeSelection = () => runShapeOp(() => annotationStore.mergeSelection(selectedIds));
+  const handleBackoutSelection = () => runShapeOp(() => annotationStore.backoutSelection(selectedIds));
+  const handleSplitSelection = () => runShapeOp(() => annotationStore.splitSelection(selectedIds));
+
+  const selectedShapeTypes = useMemo(
+    () => selectedIds.map((sid) => annotationsById.get(sid)?.type).filter(Boolean),
+    [selectedIds, annotationsById],
+  );
+  const canMerge = selectedShapeTypes.length >= 2 && selectedShapeTypes.every((t) => t === selectedShapeTypes[0]) && selectedShapeTypes[0] !== 'count';
+  const canBackout = selectedShapeTypes.length === 2 && selectedShapeTypes.every((t) => t === 'area');
+  const canSplit = selectedShapeTypes.length === 2 && selectedShapeTypes.includes('area') && selectedShapeTypes.includes('line');
+
   const selected = useMemo(() => {
     if (!detection || !selectedId) return null;
     if (annotationsById.get(selectedId)?.meta?.rejected) return null;
@@ -718,6 +900,13 @@ export default function Takeoff() {
             ))}
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
+          <button
+            onClick={() => setShowShareModal(true)}
+            title="External collaboration — share a view/comment link, no account needed"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
+          >
+            <Link2 className="w-3.5 h-3.5" /> Share
+          </button>
           <div className="w-px h-5 bg-slate-700" />
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
@@ -774,6 +963,12 @@ export default function Takeoff() {
           onClose={() => setShowHandoff(false)}
         />
       )}
+      {showShareModal && (
+        <ShareLinksModal
+          projectId={id}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
       {showRepeatingGroups && (
         <RepeatingGroupsModal
           projectId={id}
@@ -798,29 +993,90 @@ export default function Takeoff() {
               <FileUploadZone projectId={id} onUploadComplete={handleUploadComplete} />
             </div>
           )}
-          {drawings.length > 0 && (
+          {(drawings.length > 0 || folders.length > 0) && (
             <>
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Drawings</div>
-              <div className="space-y-0.5 mb-4">
-                {drawings.map((drawing) => (
-                  <button
-                    key={drawing.id}
-                    onClick={() => selectDrawing(drawing)}
-                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
-                  >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      {drawing.discipline && (
-                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drawings</div>
+                <button
+                  onClick={() => setShowNewFolder((v) => !v)}
+                  title="New folder"
+                  className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {showNewFolder && (
+                <div className="mb-3 p-2 rounded-lg bg-slate-800 border border-slate-700 space-y-2">
+                  <input
+                    autoFocus
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
+                    placeholder="Folder name"
+                    className="w-full px-2 py-1 text-xs rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    {FOLDER_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => setNewFolderColor(c)}
+                        className="w-4 h-4 rounded-full flex-shrink-0"
+                        style={{ background: c, boxShadow: newFolderColor === c ? `0 0 0 2px #0f172a, 0 0 0 3.5px ${c}` : 'none' }}
+                        aria-label={`Color ${c}`}
+                      />
+                    ))}
+                    <div className="flex-1" />
+                    <button onClick={createFolder} className="px-2 py-0.5 text-[11px] rounded bg-indigo-500 text-white hover:bg-indigo-400">Create</button>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3 mb-4">
+                {folders.map((folder) => {
+                  const folderDrawings = drawingGroups.byFolder.get(folder.id) || [];
+                  const collapsed = collapsedFolders.has(folder.id);
+                  return (
+                    <div key={folder.id}>
+                      <div className="group flex items-center gap-1 px-1">
+                        <button onClick={() => toggleFolderCollapsed(folder.id)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+                          <ChevronRight className={`w-3 h-3 flex-shrink-0 text-slate-500 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: folder.color }} />
+                          <span className="text-[11px] font-semibold text-slate-300 truncate">{folder.name}</span>
+                          <span className="text-[10px] text-slate-500">({folderDrawings.length})</span>
+                        </button>
+                        <button
+                          onClick={() => deleteFolder(folder.id)}
+                          title="Delete folder"
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-rose-400"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {!collapsed && (
+                        <div className="mt-0.5 ml-4 space-y-0.5">
+                          {folderDrawings.length === 0
+                            ? <div className="text-[10px] text-slate-600 px-2 py-1">Empty</div>
+                            : folderDrawings.map(renderDrawingRow)}
+                        </div>
                       )}
-                      {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
-                      <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
                     </div>
-                    <div className="text-[10px] text-slate-500">
-                      {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
-                      {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
+                  );
+                })}
+
+                {[...drawingGroups.sets.entries()].map(([batchId, setDrawings]) => (
+                  <div key={batchId}>
+                    <div className="flex items-center gap-1.5 px-1 mb-0.5">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500">Set</span>
+                      <span className="text-[10px] text-slate-600">· {setDrawings.length} sheets</span>
                     </div>
-                  </button>
+                    <div className="space-y-0.5">{setDrawings.map(renderDrawingRow)}</div>
+                  </div>
                 ))}
+
+                {drawingGroups.unfiledFlat.length > 0 && (
+                  <div className="space-y-0.5">{drawingGroups.unfiledFlat.map(renderDrawingRow)}</div>
+                )}
               </div>
             </>
           )}
@@ -848,7 +1104,10 @@ export default function Takeoff() {
           </div>
           <div className="mt-6 mb-2 flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5"><Tag className="w-3 h-3" /> Conditions</div>
-            <ConditionCreateButton onCreate={createCondition} />
+            <div className="flex items-center gap-1">
+              <ConditionLibraryMenu projectId={id} projectName={project?.name} conditions={conditions} onChanged={fetchConditions} />
+              <ConditionCreateButton onCreate={createCondition} />
+            </div>
           </div>
           <div className="space-y-1">
             {conditions.length === 0 && (
@@ -1013,7 +1272,13 @@ export default function Takeoff() {
           {selectMode && selectedIds.length > 0 && !contextMenu && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
               <MousePointer2 className="w-3.5 h-3.5 text-indigo-400" />
-              {selectedIds.length} selected · right-click to assign a condition
+              {selectedIds.length} selected · right-click for actions
+            </div>
+          )}
+          {shapeOpError && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-600 text-white shadow-lg text-xs font-medium max-w-md">
+              {shapeOpError}
+              <button onClick={() => setShapeOpError(null)} className="ml-1 opacity-80 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
             </div>
           )}
           {contextMenu && (
@@ -1024,6 +1289,12 @@ export default function Takeoff() {
               onAssign={assignSelectionToCondition}
               onCreateAndAssign={createConditionAndAssign}
               onClose={() => setContextMenu(null)}
+              canMerge={canMerge}
+              canBackout={canBackout}
+              canSplit={canSplit}
+              onMerge={handleMergeSelection}
+              onBackout={handleBackoutSelection}
+              onSplit={handleSplitSelection}
             />
           )}
         </main>
@@ -1032,6 +1303,7 @@ export default function Takeoff() {
           <div className="flex border-b border-slate-200">
             {[
               { key: 'quantities', label: 'Quantities' },
+              { key: 'breakdown', label: 'Breakdown' },
               { key: 'search', label: 'Search' },
               { key: 'chat', label: 'Chat' },
               { key: 'summary', label: 'Summary' },
@@ -1041,6 +1313,7 @@ export default function Takeoff() {
           </div>
           <div className="flex-1 overflow-auto">
             {tab === 'quantities' && <QuantitiesPanel detection={detection} />}
+            {tab === 'breakdown' && <BreakdownPanel projectId={id} />}
             {tab === 'search' && (
               <SearchPanel
                 projectId={id}
@@ -1452,6 +1725,161 @@ function ConditionForm({ initial, initialType = 'area', onSubmit, onCancel, subm
   );
 }
 
+// Classification libraries (Togal parity: "Reusable templates, import/export").
+// Org-scoped templates (routes/template_routes.py) plus raw JSON
+// download/upload for exchanging condition sets outside the app entirely.
+function ConditionLibraryMenu({ projectId, projectName, conditions, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [templates, setTemplates] = useState(null); // null = not loaded yet
+  const [saving, setSaving] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const fileInputRef = useRef(null);
+
+  async function loadTemplates() {
+    try {
+      const res = await templatesAPI.list();
+      setTemplates(res.data || []);
+    } catch (error) {
+      console.error('Failed to load templates:', error);
+      setTemplates([]);
+    }
+  }
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && templates === null) loadTemplates();
+  }
+
+  async function saveAsTemplate() {
+    const name = newTemplateName.trim();
+    if (!name || conditions.length === 0) return;
+    setSaving(true);
+    try {
+      const res = await templatesAPI.saveFromProject(projectId, { name });
+      setTemplates((prev) => [...(prev || []), res.data]);
+      setNewTemplateName('');
+    } catch (error) {
+      console.error('Failed to save template:', error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function applyTemplate(templateId) {
+    try {
+      await templatesAPI.apply(projectId, templateId);
+      onChanged();
+      setOpen(false);
+    } catch (error) {
+      console.error('Failed to apply template:', error);
+    }
+  }
+
+  async function deleteTemplate(templateId) {
+    try {
+      await templatesAPI.delete(templateId);
+      setTemplates((prev) => prev.filter((t) => t.id !== templateId));
+    } catch (error) {
+      console.error('Failed to delete template:', error);
+    }
+  }
+
+  async function exportJson() {
+    try {
+      const res = await templatesAPI.exportProject(projectId);
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(projectName || 'conditions').replace(/[^a-z0-9]+/gi, '-')}-conditions.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to export conditions:', error);
+    }
+  }
+
+  async function importJsonFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      await templatesAPI.importJson(projectId, payload);
+      onChanged();
+      setOpen(false);
+    } catch (error) {
+      console.error('Failed to import conditions JSON:', error);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button onClick={toggle} title="Classification library" className="text-slate-500 hover:text-slate-200">
+        <Folder className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-30" onClick={() => setOpen(false)}>
+          <div
+            className="absolute right-4 top-32 w-72 rounded-xl bg-slate-800 border border-slate-700 shadow-2xl p-3 text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Classification library</div>
+
+            <div className="space-y-1 mb-3 max-h-40 overflow-auto">
+              {templates === null && <div className="text-slate-500 px-1 py-1">Loading…</div>}
+              {templates?.length === 0 && <div className="text-slate-500 px-1 py-1">No saved templates yet.</div>}
+              {templates?.map((t) => (
+                <div key={t.id} className="flex items-center gap-1.5 group">
+                  <button
+                    onClick={() => applyTemplate(t.id)}
+                    className="flex-1 min-w-0 text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300"
+                  >
+                    <span className="truncate block">{t.name}</span>
+                    <span className="text-[10px] text-slate-500">{t.items.length} condition{t.items.length === 1 ? '' : 's'}</span>
+                  </button>
+                  <button
+                    onClick={() => deleteTemplate(t.id)}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-700 text-slate-500 hover:text-rose-400"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1.5 mb-2">
+              <input
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="Save current conditions as…"
+                disabled={conditions.length === 0}
+                className="flex-1 min-w-0 px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+              <button
+                onClick={saveAsTemplate}
+                disabled={saving || !newTemplateName.trim() || conditions.length === 0}
+                className="px-2 py-1 rounded bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50 flex-shrink-0"
+              >
+                Save
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
+              <button onClick={exportJson} disabled={conditions.length === 0} className="text-slate-400 hover:text-slate-200 disabled:opacity-50">Export JSON</button>
+              <span className="text-slate-600">·</span>
+              <button onClick={() => fileInputRef.current?.click()} className="text-slate-400 hover:text-slate-200">Import JSON</button>
+              <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={importJsonFile} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConditionCreateButton({ onCreate }) {
   const [open, setOpen] = useState(false);
   if (!open) {
@@ -1702,6 +2130,7 @@ function ExportModal({ projectId, drawings, projectName, onClose }) {
                   className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
                 >
                   <option value="">None</option>
+                  <option value="folder">Phase / Floor</option>
                   <option value="trade">Trade</option>
                   <option value="drawing">Sheet</option>
                   <option value="item">Item</option>
@@ -1800,6 +2229,125 @@ const HANDOFF_TARGET_SYSTEMS = [
 // (routes/handoff_routes.py, handoff_engine.py). Not an estimating engine:
 // this maps the AI's trade/item quantities to the cost codes a partner tool
 // imports, and logs every mapping edit + every export for accountability.
+// External collaboration without an account (Togal parity: "External
+// collaboration — unlimited, no account needed"). A link is view-only or
+// view+comment (see models.ShareLink) — never edit; guests hit it at
+// /share/:token (pages/GuestView.jsx), which never touches the
+// authenticated `api` client.
+function ShareLinksModal({ projectId, onClose }) {
+  const [links, setLinks] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [permission, setPermission] = useState('view');
+  const [label, setLabel] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
+
+  useEffect(() => {
+    shareAPI.list(projectId).then((res) => setLinks(res.data)).catch(() => setLinks([]));
+  }, [projectId]);
+
+  async function create() {
+    setCreating(true);
+    try {
+      const res = await shareAPI.create(projectId, { permission, label: label.trim() || undefined });
+      setLinks((prev) => [res.data, ...(prev || [])]);
+      setLabel('');
+    } catch (error) {
+      console.error('Failed to create share link:', error);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function revoke(linkId) {
+    try {
+      await shareAPI.revoke(linkId);
+      setLinks((prev) => prev.map((l) => (l.id === linkId ? { ...l, revoked_at: new Date().toISOString() } : l)));
+    } catch (error) {
+      console.error('Failed to revoke share link:', error);
+    }
+  }
+
+  function copy(link) {
+    navigator.clipboard.writeText(shareAPI.guestUrl(link.token));
+    setCopiedId(link.id);
+    setTimeout(() => setCopiedId((c) => (c === link.id ? null : c)), 1500);
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40" onClick={onClose}>
+      <div className="w-[420px] max-h-[80vh] flex flex-col rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-slate-500" />
+            <h2 className="text-sm font-semibold text-slate-900">Share this project</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="px-5 py-4 border-b border-slate-100 space-y-2.5">
+          <p className="text-xs text-slate-500">Anyone with the link can view — no TakeOff account needed.</p>
+          <div className="flex items-center gap-2">
+            <select
+              value={permission}
+              onChange={(e) => setPermission(e.target.value)}
+              className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 bg-white outline-none focus:border-indigo-500"
+            >
+              <option value="view">View only</option>
+              <option value="comment">View &amp; comment</option>
+            </select>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Label (optional) — e.g. For GC review"
+              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={create}
+              disabled={creating}
+              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50 flex-shrink-0"
+            >
+              Create link
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto px-5 py-3">
+          {links === null && <div className="text-xs text-slate-500 py-4 text-center">Loading…</div>}
+          {links?.length === 0 && <div className="text-xs text-slate-500 py-4 text-center">No share links yet.</div>}
+          <div className="space-y-2">
+            {links?.map((link) => {
+              const isRevoked = !!link.revoked_at;
+              return (
+                <div key={link.id} className={`p-3 rounded-lg border ${isRevoked ? 'border-slate-100 bg-slate-50 opacity-60' : 'border-slate-200'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-slate-800 truncate">{link.label || 'Untitled link'}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        {link.permission === 'comment' ? 'View & comment' : 'View only'}
+                        {isRevoked && ' · Revoked'}
+                      </div>
+                    </div>
+                    {!isRevoked && (
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button onClick={() => copy(link)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500" title="Copy link">
+                          {copiedId === link.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                        <button onClick={() => revoke(link.id)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-rose-600" title="Revoke">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HandoffModal({ projectId, projectName, onClose }) {
   const [tab, setTab] = useState('mapping'); // 'mapping' | 'audit'
   const [rows, setRows] = useState(null);
@@ -2142,13 +2690,37 @@ function CommentPopover({ point, comment, replies, currentUserId, onSubmitNew, o
   );
 }
 
-function ConditionAssignMenu({ position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose }) {
+function ConditionAssignMenu({
+  position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose,
+  canMerge, canBackout, canSplit, onMerge, onBackout, onSplit,
+}) {
   const [creating, setCreating] = useState(false);
   const menuStyle = { left: Math.min(position.x, window.innerWidth - 260), top: Math.min(position.y, window.innerHeight - 320) };
+  const showAdvancedTools = !creating && (canMerge || canBackout || canSplit);
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
       <div className="fixed w-64 rounded-xl bg-white border border-slate-200 shadow-2xl py-2" style={menuStyle} onClick={(e) => e.stopPropagation()}>
+        {showAdvancedTools && (
+          <div className="pb-1 mb-1 border-b border-slate-100">
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Advanced tools</div>
+            {canMerge && (
+              <button onClick={onMerge} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <Combine className="w-3.5 h-3.5 text-slate-400" /> Merge shapes
+              </button>
+            )}
+            {canBackout && (
+              <button onClick={onBackout} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <SquareMinus className="w-3.5 h-3.5 text-slate-400" /> Backout (deduct)
+              </button>
+            )}
+            {canSplit && (
+              <button onClick={onSplit} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <Scissors className="w-3.5 h-3.5 text-slate-400" /> Split along line
+              </button>
+            )}
+          </div>
+        )}
         {!creating ? (
           <>
             <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
@@ -2214,6 +2786,136 @@ function QuantitiesPanel({ detection }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Togal parity: "Breakdowns / multipliers — phase/floor/unit breakdowns".
+// Backed by routes/export_routes.py's /breakdown endpoint, which reuses
+// export_engine's grouping (same machinery Rich Export uses) plus
+// DrawingFolder as the phase/floor dimension and Repeating Groups'
+// per-drawing multiplier — both already-shipped features, tied together
+// here rather than duplicated.
+const BREAKDOWN_DIMENSIONS = [
+  { key: 'folder', label: 'Phase / Floor' },
+  { key: 'trade', label: 'Trade' },
+  { key: 'drawing', label: 'Sheet' },
+  { key: 'item', label: 'Item' },
+];
+
+function BreakdownSection({ section, depth = 0 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  if (section.label === null && section.children.length === 0) {
+    // Root with no group_by, or a leaf with rows directly.
+    return (
+      <div className="space-y-1">
+        {section.rows.map((r) => (
+          <div key={r.row_id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
+            <span className="text-slate-600 truncate">{r.item}</span>
+            <span className="mono text-slate-900 flex-shrink-0">{r.quantity.toLocaleString()} {r.unit}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div>
+      {section.children.map((child) => {
+        const childTotal = sectionTotal(child);
+        return (
+          <div key={child.label}>
+            <button
+              onClick={() => setCollapsed((c) => !c)}
+              className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-slate-50 text-left"
+              style={{ paddingLeft: 12 + depth * 14 }}
+            >
+              <span className="flex items-center gap-1.5 min-w-0 text-sm font-medium text-slate-800">
+                <ChevronRight className={`w-3.5 h-3.5 text-slate-400 flex-shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                <span className="truncate">{child.label}</span>
+              </span>
+              <span className="mono text-xs text-slate-500 flex-shrink-0">{formatTotals(childTotal)}</span>
+            </button>
+            {!collapsed && <BreakdownSection section={child} depth={depth + 1} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function sectionTotal(section) {
+  const totals = {};
+  const add = (rows) => rows.forEach((r) => { totals[r.unit] = (totals[r.unit] || 0) + r.quantity; });
+  if (section.rows?.length) add(section.rows);
+  (section.children || []).forEach((c) => {
+    const childTotals = sectionTotal(c);
+    Object.entries(childTotals).forEach(([unit, v]) => { totals[unit] = (totals[unit] || 0) + v; });
+  });
+  return totals;
+}
+
+function formatTotals(totals) {
+  const entries = Object.entries(totals).filter(([, v]) => v);
+  if (entries.length === 0) return '—';
+  return entries.map(([unit, v]) => `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`).join(' · ');
+}
+
+function BreakdownPanel({ projectId }) {
+  const [dims, setDims] = useState(['folder', 'trade']);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    exportAPI.getBreakdown(projectId, { groupBy: dims })
+      .then((res) => { if (!cancelled) setData(res.data); })
+      .catch(() => { if (!cancelled) setError('Failed to load breakdown'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId, dims]);
+
+  function toggleDim(key) {
+    setDims((prev) => {
+      if (prev.includes(key)) return prev.filter((d) => d !== key);
+      if (prev.length >= 3) return prev; // build_grouped_sections caps at 3 levels
+      return [...prev, key];
+    });
+  }
+
+  return (
+    <div className="p-4">
+      <h3 className="text-sm font-semibold text-slate-900">Breakdown</h3>
+      <p className="text-xs text-slate-500 mt-0.5">Quantities by phase/floor and trade — includes Repeating Groups multipliers</p>
+
+      <div className="mt-3 flex flex-wrap gap-1">
+        {BREAKDOWN_DIMENSIONS.map((d) => (
+          <button
+            key={d.key}
+            onClick={() => toggleDim(d.key)}
+            className={`px-2.5 py-1 text-[11px] font-medium rounded-md ${dims.includes(d.key) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+          >
+            {dims.includes(d.key) ? `${dims.indexOf(d.key) + 1}. ` : ''}{d.label}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div className="mt-6 text-xs text-slate-500">Loading…</div>}
+      {error && <div className="mt-6 text-xs text-rose-600">{error}</div>}
+      {!loading && !error && data && (
+        <>
+          <div className="mt-4 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 text-xs text-slate-700">
+            <span className="font-medium">Project total:</span> {formatTotals(data.total_quantity_by_unit)}
+          </div>
+          <div className="mt-3 border border-slate-100 rounded-lg divide-y divide-slate-100 overflow-hidden">
+            {data.sections.children.length === 0
+              ? <div className="p-4 text-xs text-slate-500">No quantities yet — run AI analysis on a sheet first.</div>
+              : <BreakdownSection section={data.sections} />}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -86,6 +86,69 @@ async def preview_project_export(
     }
 
 
+@router.get("/projects/{project_id}/breakdown")
+async def project_breakdown(
+    project_id: int,
+    group_by: str = "folder,trade",  # comma-separated, up to 3: drawing | trade | item | folder
+    drawing_ids: Optional[str] = None,
+    trades: Optional[str] = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Togal parity: "Breakdowns / multipliers — phase/floor/unit breakdowns."
+    Same row-building pipeline as preview_project_export() above (same
+    quantities_data source, same repeating-groups multiplier application),
+    nested into a group_by tree via export_engine.build_grouped_sections()
+    instead of a flat table. "folder" is the phase/floor dimension — see
+    export_engine.extract_rows()'s docstring for why DrawingFolder is reused
+    for this rather than adding a separate phase/floor field.
+    """
+    _get_project_for_export(project_id, current_user, db)
+
+    drawings_query = db.query(models.Drawing).filter(models.Drawing.project_id == project_id)
+    if drawing_ids:
+        try:
+            id_filter = [int(x) for x in drawing_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="drawing_ids must be a comma-separated list of integers")
+        drawings_query = drawings_query.filter(models.Drawing.id.in_(id_filter))
+    drawings = drawings_query.all()
+
+    all_rows = []
+    for drawing in drawings:
+        # Repeating Groups multiplier applied here too, same as export —
+        # a breakdown that ignored master-unit multipliers would understate
+        # every phase/floor that contains one.
+        rows = repeating_groups.apply_multiplier(db, drawing, export_engine.extract_rows(db, drawing))
+        all_rows.extend(rows)
+
+    trade_filter = [t.strip() for t in trades.split(",") if t.strip()] if trades else None
+    filtered_rows = export_engine.filter_rows(all_rows, trades=trade_filter)
+
+    dims = [d.strip() for d in group_by.split(",") if d.strip()]
+    sections = export_engine.build_grouped_sections(filtered_rows, group_by=dims)
+
+    return {
+        "sections": sections,
+        "group_by": [d for d in dims if d in export_engine.GROUP_DIMENSIONS][:3],
+        "total_quantity_by_unit": _totals_by_unit(filtered_rows),
+        "folders": [
+            {"id": f.id, "name": f.name, "color": f.color}
+            for f in db.query(models.DrawingFolder).filter(models.DrawingFolder.project_id == project_id).all()
+        ],
+    }
+
+
+def _totals_by_unit(rows: list[dict]) -> dict:
+    """Rows can mix units even within one group (see export_engine.py's own note on this) — total per unit, never a meaningless cross-unit sum."""
+    totals: dict[str, float] = {}
+    for r in rows:
+        unit = r.get("unit") or ""
+        totals[unit] = round(totals.get(unit, 0) + r["quantity"], 4)
+    return totals
+
+
 class GenerateExportRow(BaseModel):
     row_id: str
     drawing_id: int

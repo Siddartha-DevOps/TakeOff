@@ -68,14 +68,18 @@ class Project(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
     status = Column(String(50), default="active")  # active, archived, draft
+    # Color-coded project list (Togal parity: "Project folders & organization —
+    # color-coded, folders, sets"). Same hex-string convention as Condition.color.
+    color = Column(String(20), default="#6366f1")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     owner = relationship("User", back_populates="projects")
     organization = relationship("Organization", back_populates="projects")
     drawings = relationship("Drawing", back_populates="project", cascade="all, delete-orphan")
     conditions = relationship("Condition", back_populates="project", cascade="all, delete-orphan")
+    folders = relationship("DrawingFolder", back_populates="project", cascade="all, delete-orphan")
 
 class Condition(Base):
     """
@@ -109,11 +113,95 @@ class Condition(Base):
     # Relationships
     project = relationship("Project", back_populates="conditions")
 
-class Drawing(Base):
-    __tablename__ = "drawings"
-    
+class ConditionTemplate(Base):
+    """
+    Reusable classification library (Togal parity: "Classification
+    libraries — reusable templates, import/export"; previously only a
+    pricing-page bullet — "Personal library" / "Classification library
+    template" in mockData.js's PRICING_PLANS — with nothing behind it,
+    confirmed by grepping the whole backend for template/library: zero hits
+    before this).
+
+    Org-scoped, not project-scoped or per-user: a template captures a named,
+    reusable set of Condition definitions (trade/unit/formula, no
+    project-specific data) that any project in the org can import from, and
+    any project's current condition set can be saved back into. Items are a
+    child table (ConditionTemplateItem) rather than a JSON blob so each
+    item's fields stay typed/validated the same way Condition's already are.
+    """
+    __tablename__ = "condition_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    organization = relationship("Organization")
+    creator = relationship("User")
+    items = relationship("ConditionTemplateItem", back_populates="template", cascade="all, delete-orphan")
+
+
+class ConditionTemplateItem(Base):
+    """One reusable condition definition within a ConditionTemplate — same fields as Condition, minus anything project-specific (no project_id)."""
+    __tablename__ = "condition_template_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("condition_templates.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    trade = Column(String(100), nullable=False)
+    space_type = Column(String(100), nullable=True)
+    annotation_type = Column(String(20), nullable=False)
+    unit = Column(String(20), nullable=False)
+    color = Column(String(20), default="#6366f1")
+    waste_percent = Column(Float, default=0)
+    unit_cost = Column(Float, default=0)
+
+    # Relationships
+    template = relationship("ConditionTemplate", back_populates="items")
+
+
+class DrawingFolder(Base):
+    """
+    Manual, color-coded grouping of sheets within a project (Togal parity:
+    "Project folders & organization — color-coded, folders, sets"). Flat,
+    not nested — a project's folders are a single list, not a tree; nesting
+    can be added later if it turns out to matter, but a flat list already
+    closes the actual gap (Togal's own screenshots show a flat folder list
+    per project, not deep hierarchies).
+
+    Distinct from the automatic "set" grouping Drawing.upload_batch_id
+    already provides (all pages split from one multi-page PDF upload) --
+    folders are a user's manual choice, sets are what the app inferred from
+    how sheets arrived. Both are surfaced side by side in the UI.
+    """
+    __tablename__ = "drawing_folders"
+
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    color = Column(String(20), default="#6366f1")
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    project = relationship("Project", back_populates="folders")
+    drawings = relationship("Drawing", back_populates="folder")
+
+
+class Drawing(Base):
+    __tablename__ = "drawings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # Manual folder assignment (see DrawingFolder above) -- nullable/SET NULL
+    # on folder delete so removing a folder never deletes or orphans a
+    # drawing, it just un-files it back to the project's root list.
+    folder_id = Column(Integer, ForeignKey("drawing_folders.id", ondelete="SET NULL"), nullable=True)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)  # Local path or S3 URL
@@ -153,6 +241,7 @@ class Drawing(Base):
     
     # Relationships
     project = relationship("Project", back_populates="drawings")
+    folder = relationship("DrawingFolder", back_populates="drawings")
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
 
@@ -467,6 +556,49 @@ class HandoffAuditEvent(Base):
     user = relationship("User")
 
 
+class ShareLinkPermission(enum.Enum):
+    VIEW = "view"        # read-only: drawing image, quantities, comments
+    COMMENT = "comment"  # view + can post pinned comments as a named guest
+
+
+class ShareLink(Base):
+    """
+    External collaboration without a TakeOff account (Togal parity:
+    "External collaboration — unlimited, no account needed"). Before this,
+    every single route in the backend except blog/webhook required a real
+    authenticated User (confirmed by grepping every routes/*.py file for
+    get_current_user) — the marketing copy in mockData.js's pricing FAQ
+    claimed "no TakeOff account required to view," but nothing backed it;
+    this closes that gap for real rather than just relabeling it.
+
+    `token` is the bearer credential — an unguessable secrets.token_urlsafe(32)
+    string, same generation as Invite.token, but unlike an Invite it never
+    becomes a User; the routes/share_routes.py guest endpoints resolve
+    straight from token -> Project, with no login step at all. Scope is
+    deliberately view + comment only, not edit — a guest can see the real
+    drawing and pin comments on it, but can't touch conditions, upload
+    files, or edit annotations. That's a real, stated boundary (not yet
+    "granular permissions" in the fuller sense Togal's copy implies), kept
+    narrow because unauthenticated write access to anything beyond a
+    comment is a materially bigger security surface than this gap asked
+    for closing.
+    """
+    __tablename__ = "share_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    permission = Column(SQLEnum(ShareLinkPermission), default=ShareLinkPermission.VIEW, nullable=False)
+    label = Column(String(255), nullable=True)  # e.g. "For GC review" — the creator's own note, not shown to guests
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # None = no expiry
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+    creator = relationship("User")
+
+
 class Comment(Base):
     """
     Real-time collaboration — memory/TOGAL_PARITY_REAUDIT.md #16: "No
@@ -499,7 +631,15 @@ class Comment(Base):
     x = Column(Float, nullable=False)
     y = Column(Float, nullable=False)
     body = Column(Text, nullable=False)
-    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # Exactly one of (author_id, guest_name) is set — a real org member, or
+    # an external guest commenting through a ShareLink with no account of
+    # their own (see ShareLink below; Togal parity: "External collaboration
+    # — no account needed"). author_id went from NOT NULL to nullable for
+    # this; every existing authenticated comment path is unaffected, it
+    # just always sets author_id and leaves guest_name/share_link_id null.
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    guest_name = Column(String(100), nullable=True)
+    share_link_id = Column(Integer, ForeignKey("share_links.id"), nullable=True)
     resolved = Column(Boolean, default=False, nullable=False)
     resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
@@ -508,6 +648,7 @@ class Comment(Base):
     project = relationship("Project")
     drawing = relationship("Drawing")
     author = relationship("User", foreign_keys=[author_id])
+    share_link = relationship("ShareLink")
 
 
 class InviteStatus(enum.Enum):

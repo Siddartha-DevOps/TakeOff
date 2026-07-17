@@ -37,3 +37,4 @@ reportlab==5.0.0
 websockets==12.0
 redis==5.3.1
 celery==5.4.0
+pytesseract==0.3.13  # ai/title_block_ocr.py — sheet auto-naming OCR; requires the tesseract-ocr system binary

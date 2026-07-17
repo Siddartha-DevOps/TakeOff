@@ -4,7 +4,7 @@ from starlette.middleware.cors import CORSMiddleware
 import os
 import logging
 from pathlib import Path
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes, folder_routes, template_routes, share_routes
 
 # Import models so every relationship("ClassName") string reference across
 # the ORM mapper registry resolves before the app starts handling requests.
@@ -69,6 +69,10 @@ app.include_router(realtime_routes.collab_router, prefix="/api")
 app.include_router(team_routes.router, prefix="/api")
 app.include_router(repeating_routes.router, prefix="/api")
 app.include_router(webhook_routes.router, prefix="/api")
+app.include_router(folder_routes.router, prefix="/api")
+app.include_router(template_routes.router, prefix="/api")
+app.include_router(share_routes.router, prefix="/api")
+app.include_router(share_routes.guest_router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 app.post("/api/webhook/stripe")(stripe_webhook)

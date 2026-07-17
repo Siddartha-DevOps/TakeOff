@@ -1,7 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
-from models import ProcessingStatus
+from models import ProcessingStatus, ShareLinkPermission
 
 # User Schemas
 class UserBase(BaseModel):
@@ -50,6 +50,7 @@ class ProjectBase(BaseModel):
     name: str
     description: Optional[str] = None
     project_type: Optional[str] = None
+    color: str = "#6366f1"
 
 class ProjectCreate(ProjectBase):
     pass
@@ -59,6 +60,7 @@ class ProjectUpdate(BaseModel):
     description: Optional[str] = None
     project_type: Optional[str] = None
     status: Optional[str] = None
+    color: Optional[str] = None
 
 class Project(ProjectBase):
     id: int
@@ -67,7 +69,7 @@ class Project(ProjectBase):
     status: str
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -77,6 +79,32 @@ class ProjectList(Project):
     
     class Config:
         from_attributes = True
+
+# Drawing Folder Schemas — Togal parity "Project folders & organization"
+class DrawingFolderBase(BaseModel):
+    name: str
+    color: str = "#6366f1"
+    sort_order: int = 0
+
+class DrawingFolderCreate(DrawingFolderBase):
+    pass
+
+class DrawingFolderUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+class DrawingFolder(DrawingFolderBase):
+    id: int
+    project_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class DrawingFolderAssign(BaseModel):
+    folder_id: Optional[int] = None  # None un-files the drawing
 
 # Drawing Schemas
 class DrawingBase(BaseModel):
@@ -104,6 +132,7 @@ class Drawing(DrawingBase):
     sheet_number: Optional[str] = None
     discipline: Optional[str] = None
     upload_batch_id: Optional[str] = None
+    folder_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -141,6 +170,81 @@ class Condition(ConditionBase):
 
     class Config:
         from_attributes = True
+
+# Classification Library (Condition Template) Schemas — Togal parity
+# "Classification libraries — reusable templates, import/export"
+class ConditionTemplateItem(ConditionBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+class ConditionTemplateCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class ConditionTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class ConditionTemplate(BaseModel):
+    id: int
+    organization_id: int
+    name: str
+    description: Optional[str] = None
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+    items: List[ConditionTemplateItem] = []
+
+    class Config:
+        from_attributes = True
+
+# Raw JSON import/export payload — ConditionBase items with no template_id,
+# so a template's items (or a project's live conditions) can round-trip
+# through a downloaded/uploaded .json file, not just the in-app library.
+class ConditionTemplateExport(BaseModel):
+    name: str
+    description: Optional[str] = None
+    items: List[ConditionBase]
+
+# Share Links — Togal parity "External collaboration, no account needed"
+class ShareLinkCreate(BaseModel):
+    permission: Literal["view", "comment"] = "view"
+    label: Optional[str] = None
+    expires_in_days: Optional[int] = None  # converted to expires_at server-side; None = no expiry
+
+class ShareLink(BaseModel):
+    id: int
+    project_id: int
+    token: str
+    permission: ShareLinkPermission
+    label: Optional[str] = None
+    created_by: int
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        use_enum_values = True
+
+# Guest-facing payloads (routes/share_routes.py) — deliberately narrower
+# than the authenticated Project/Drawing schemas above: no organization_id,
+# owner_id, internal status fields, or anything else a guest with just a
+# link shouldn't see.
+class GuestProjectInfo(BaseModel):
+    project_name: str
+    permission: str
+    drawings: List[dict]
+
+class GuestCommentCreate(BaseModel):
+    drawing_id: int
+    x: float
+    y: float
+    body: str
+    guest_name: str
+    parent_id: Optional[int] = None
 
 # Correction Event Schemas — the training-data flywheel (CLAUDE.md §2/§5)
 class CorrectionEventCreate(BaseModel):

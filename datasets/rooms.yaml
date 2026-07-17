@@ -1,0 +1,20 @@
+path: /data/datasets/rooms_yolo
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: background
+  1: outdoor
+  2: wall
+  3: kitchen
+  4: living_room
+  5: bedroom
+  6: bath
+  7: hallway
+  8: railing
+  9: storage
+  10: garage
+  11: other
+
+# Split: 70/15/15
