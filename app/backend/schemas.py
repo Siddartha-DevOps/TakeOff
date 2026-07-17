@@ -171,6 +171,43 @@ class Condition(ConditionBase):
     class Config:
         from_attributes = True
 
+# Classification Library (Condition Template) Schemas — Togal parity
+# "Classification libraries — reusable templates, import/export"
+class ConditionTemplateItem(ConditionBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+class ConditionTemplateCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class ConditionTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class ConditionTemplate(BaseModel):
+    id: int
+    organization_id: int
+    name: str
+    description: Optional[str] = None
+    created_by: int
+    created_at: datetime
+    updated_at: datetime
+    items: List[ConditionTemplateItem] = []
+
+    class Config:
+        from_attributes = True
+
+# Raw JSON import/export payload — ConditionBase items with no template_id,
+# so a template's items (or a project's live conditions) can round-trip
+# through a downloaded/uploaded .json file, not just the in-app library.
+class ConditionTemplateExport(BaseModel):
+    name: str
+    description: Optional[str] = None
+    items: List[ConditionBase]
+
 # Correction Event Schemas — the training-data flywheel (CLAUDE.md §2/§5)
 class CorrectionEventCreate(BaseModel):
     drawing_id: Optional[int] = None

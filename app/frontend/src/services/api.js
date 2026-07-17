@@ -170,6 +170,17 @@ export const conditionsAPI = {
   delete: (conditionId) => api.delete(`/api/conditions/${conditionId}`),
 };
 
+// Classification libraries — Togal parity "reusable templates, import/export"
+export const templatesAPI = {
+  list: () => api.get('/api/condition-templates'),
+  saveFromProject: (projectId, data) => api.post(`/api/projects/${projectId}/conditions/save-as-template`, data),
+  apply: (projectId, templateId) => api.post(`/api/projects/${projectId}/conditions/apply-template/${templateId}`),
+  rename: (templateId, data) => api.put(`/api/condition-templates/${templateId}`, data),
+  delete: (templateId) => api.delete(`/api/condition-templates/${templateId}`),
+  exportProject: (projectId) => api.get(`/api/projects/${projectId}/conditions/export`),
+  importJson: (projectId, payload) => api.post(`/api/projects/${projectId}/conditions/import`, payload),
+};
+
 // Correction events API — the training-data flywheel (CLAUDE.md §2/§5)
 export const correctionsAPI = {
   list: (projectId, params) => api.get(`/api/projects/${projectId}/corrections`, { params }),

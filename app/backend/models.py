@@ -113,6 +113,57 @@ class Condition(Base):
     # Relationships
     project = relationship("Project", back_populates="conditions")
 
+class ConditionTemplate(Base):
+    """
+    Reusable classification library (Togal parity: "Classification
+    libraries — reusable templates, import/export"; previously only a
+    pricing-page bullet — "Personal library" / "Classification library
+    template" in mockData.js's PRICING_PLANS — with nothing behind it,
+    confirmed by grepping the whole backend for template/library: zero hits
+    before this).
+
+    Org-scoped, not project-scoped or per-user: a template captures a named,
+    reusable set of Condition definitions (trade/unit/formula, no
+    project-specific data) that any project in the org can import from, and
+    any project's current condition set can be saved back into. Items are a
+    child table (ConditionTemplateItem) rather than a JSON blob so each
+    item's fields stay typed/validated the same way Condition's already are.
+    """
+    __tablename__ = "condition_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    organization = relationship("Organization")
+    creator = relationship("User")
+    items = relationship("ConditionTemplateItem", back_populates="template", cascade="all, delete-orphan")
+
+
+class ConditionTemplateItem(Base):
+    """One reusable condition definition within a ConditionTemplate — same fields as Condition, minus anything project-specific (no project_id)."""
+    __tablename__ = "condition_template_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("condition_templates.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    trade = Column(String(100), nullable=False)
+    space_type = Column(String(100), nullable=True)
+    annotation_type = Column(String(20), nullable=False)
+    unit = Column(String(20), nullable=False)
+    color = Column(String(20), default="#6366f1")
+    waste_percent = Column(Float, default=0)
+    unit_cost = Column(Float, default=0)
+
+    # Relationships
+    template = relationship("ConditionTemplate", back_populates="items")
+
+
 class DrawingFolder(Base):
     """
     Manual, color-coded grouping of sheets within a project (Togal parity:

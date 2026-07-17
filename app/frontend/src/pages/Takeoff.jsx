@@ -5,7 +5,7 @@ import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI, templatesAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -1061,7 +1061,10 @@ export default function Takeoff() {
           </div>
           <div className="mt-6 mb-2 flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5"><Tag className="w-3 h-3" /> Conditions</div>
-            <ConditionCreateButton onCreate={createCondition} />
+            <div className="flex items-center gap-1">
+              <ConditionLibraryMenu projectId={id} projectName={project?.name} conditions={conditions} onChanged={fetchConditions} />
+              <ConditionCreateButton onCreate={createCondition} />
+            </div>
           </div>
           <div className="space-y-1">
             {conditions.length === 0 && (
@@ -1662,6 +1665,161 @@ function ConditionForm({ initial, initialType = 'area', onSubmit, onCancel, subm
         <button type="submit" className="flex-1 py-1.5 text-xs font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800">{submitLabel}</button>
       </div>
     </form>
+  );
+}
+
+// Classification libraries (Togal parity: "Reusable templates, import/export").
+// Org-scoped templates (routes/template_routes.py) plus raw JSON
+// download/upload for exchanging condition sets outside the app entirely.
+function ConditionLibraryMenu({ projectId, projectName, conditions, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [templates, setTemplates] = useState(null); // null = not loaded yet
+  const [saving, setSaving] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const fileInputRef = useRef(null);
+
+  async function loadTemplates() {
+    try {
+      const res = await templatesAPI.list();
+      setTemplates(res.data || []);
+    } catch (error) {
+      console.error('Failed to load templates:', error);
+      setTemplates([]);
+    }
+  }
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next && templates === null) loadTemplates();
+  }
+
+  async function saveAsTemplate() {
+    const name = newTemplateName.trim();
+    if (!name || conditions.length === 0) return;
+    setSaving(true);
+    try {
+      const res = await templatesAPI.saveFromProject(projectId, { name });
+      setTemplates((prev) => [...(prev || []), res.data]);
+      setNewTemplateName('');
+    } catch (error) {
+      console.error('Failed to save template:', error);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function applyTemplate(templateId) {
+    try {
+      await templatesAPI.apply(projectId, templateId);
+      onChanged();
+      setOpen(false);
+    } catch (error) {
+      console.error('Failed to apply template:', error);
+    }
+  }
+
+  async function deleteTemplate(templateId) {
+    try {
+      await templatesAPI.delete(templateId);
+      setTemplates((prev) => prev.filter((t) => t.id !== templateId));
+    } catch (error) {
+      console.error('Failed to delete template:', error);
+    }
+  }
+
+  async function exportJson() {
+    try {
+      const res = await templatesAPI.exportProject(projectId);
+      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(projectName || 'conditions').replace(/[^a-z0-9]+/gi, '-')}-conditions.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to export conditions:', error);
+    }
+  }
+
+  async function importJsonFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      await templatesAPI.importJson(projectId, payload);
+      onChanged();
+      setOpen(false);
+    } catch (error) {
+      console.error('Failed to import conditions JSON:', error);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button onClick={toggle} title="Classification library" className="text-slate-500 hover:text-slate-200">
+        <Folder className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-30" onClick={() => setOpen(false)}>
+          <div
+            className="absolute right-4 top-32 w-72 rounded-xl bg-slate-800 border border-slate-700 shadow-2xl p-3 text-xs"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Classification library</div>
+
+            <div className="space-y-1 mb-3 max-h-40 overflow-auto">
+              {templates === null && <div className="text-slate-500 px-1 py-1">Loading…</div>}
+              {templates?.length === 0 && <div className="text-slate-500 px-1 py-1">No saved templates yet.</div>}
+              {templates?.map((t) => (
+                <div key={t.id} className="flex items-center gap-1.5 group">
+                  <button
+                    onClick={() => applyTemplate(t.id)}
+                    className="flex-1 min-w-0 text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300"
+                  >
+                    <span className="truncate block">{t.name}</span>
+                    <span className="text-[10px] text-slate-500">{t.items.length} condition{t.items.length === 1 ? '' : 's'}</span>
+                  </button>
+                  <button
+                    onClick={() => deleteTemplate(t.id)}
+                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-700 text-slate-500 hover:text-rose-400"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1.5 mb-2">
+              <input
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="Save current conditions as…"
+                disabled={conditions.length === 0}
+                className="flex-1 min-w-0 px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500 disabled:opacity-50"
+              />
+              <button
+                onClick={saveAsTemplate}
+                disabled={saving || !newTemplateName.trim() || conditions.length === 0}
+                className="px-2 py-1 rounded bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50 flex-shrink-0"
+              >
+                Save
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
+              <button onClick={exportJson} disabled={conditions.length === 0} className="text-slate-400 hover:text-slate-200 disabled:opacity-50">Export JSON</button>
+              <span className="text-slate-600">·</span>
+              <button onClick={() => fileInputRef.current?.click()} className="text-slate-400 hover:text-slate-200">Import JSON</button>
+              <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={importJsonFile} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

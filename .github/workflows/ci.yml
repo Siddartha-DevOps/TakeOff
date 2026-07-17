@@ -53,6 +53,9 @@ jobs:
       - name: End-to-end smoke test (drawing folders & organization)
         run: python scripts/smoke_test_folders.py
 
+      - name: End-to-end smoke test (classification libraries)
+        run: python scripts/smoke_test_templates.py
+
   frontend-build:
     name: Frontend build
     runs-on: ubuntu-latest
