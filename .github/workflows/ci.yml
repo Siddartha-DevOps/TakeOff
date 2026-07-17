@@ -39,7 +39,7 @@ jobs:
             pymupdf shapely numpy pytest \
             sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
             "passlib[bcrypt]" "bcrypt==4.0.1" \
-            fastapi "python-jose[cryptography]" email-validator httpx2
+            fastapi "python-jose[cryptography]" email-validator httpx2 openpyxl
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head
