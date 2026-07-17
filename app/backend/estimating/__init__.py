@@ -13,6 +13,8 @@ unit-tested (``tests/test_estimating.py``).
 
 from .ratebook import RateItem, RateBook
 from .boq import BOQItem, build_boq, rate_analysis, abstract, DEFAULT_ITEM_MAP
+from .tax import gst_breakdown, finalize_estimate, DEFAULT_GST_RATE
+from .estimate import full_estimate
 
 __all__ = [
     "RateItem",
@@ -22,4 +24,8 @@ __all__ = [
     "rate_analysis",
     "abstract",
     "DEFAULT_ITEM_MAP",
+    "gst_breakdown",
+    "finalize_estimate",
+    "DEFAULT_GST_RATE",
+    "full_estimate",
 ]
