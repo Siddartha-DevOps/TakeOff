@@ -1,7 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Any, Dict, Literal, Optional, List
 from datetime import datetime
-from models import ProcessingStatus
+from models import ProcessingStatus, ShareLinkPermission
 
 # User Schemas
 class UserBase(BaseModel):
@@ -207,6 +207,44 @@ class ConditionTemplateExport(BaseModel):
     name: str
     description: Optional[str] = None
     items: List[ConditionBase]
+
+# Share Links — Togal parity "External collaboration, no account needed"
+class ShareLinkCreate(BaseModel):
+    permission: Literal["view", "comment"] = "view"
+    label: Optional[str] = None
+    expires_in_days: Optional[int] = None  # converted to expires_at server-side; None = no expiry
+
+class ShareLink(BaseModel):
+    id: int
+    project_id: int
+    token: str
+    permission: ShareLinkPermission
+    label: Optional[str] = None
+    created_by: int
+    expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        use_enum_values = True
+
+# Guest-facing payloads (routes/share_routes.py) — deliberately narrower
+# than the authenticated Project/Drawing schemas above: no organization_id,
+# owner_id, internal status fields, or anything else a guest with just a
+# link shouldn't see.
+class GuestProjectInfo(BaseModel):
+    project_name: str
+    permission: str
+    drawings: List[dict]
+
+class GuestCommentCreate(BaseModel):
+    drawing_id: int
+    x: float
+    y: float
+    body: str
+    guest_name: str
+    parent_id: Optional[int] = None
 
 # Correction Event Schemas — the training-data flywheel (CLAUDE.md §2/§5)
 class CorrectionEventCreate(BaseModel):

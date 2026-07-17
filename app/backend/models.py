@@ -556,6 +556,49 @@ class HandoffAuditEvent(Base):
     user = relationship("User")
 
 
+class ShareLinkPermission(enum.Enum):
+    VIEW = "view"        # read-only: drawing image, quantities, comments
+    COMMENT = "comment"  # view + can post pinned comments as a named guest
+
+
+class ShareLink(Base):
+    """
+    External collaboration without a TakeOff account (Togal parity:
+    "External collaboration — unlimited, no account needed"). Before this,
+    every single route in the backend except blog/webhook required a real
+    authenticated User (confirmed by grepping every routes/*.py file for
+    get_current_user) — the marketing copy in mockData.js's pricing FAQ
+    claimed "no TakeOff account required to view," but nothing backed it;
+    this closes that gap for real rather than just relabeling it.
+
+    `token` is the bearer credential — an unguessable secrets.token_urlsafe(32)
+    string, same generation as Invite.token, but unlike an Invite it never
+    becomes a User; the routes/share_routes.py guest endpoints resolve
+    straight from token -> Project, with no login step at all. Scope is
+    deliberately view + comment only, not edit — a guest can see the real
+    drawing and pin comments on it, but can't touch conditions, upload
+    files, or edit annotations. That's a real, stated boundary (not yet
+    "granular permissions" in the fuller sense Togal's copy implies), kept
+    narrow because unauthenticated write access to anything beyond a
+    comment is a materially bigger security surface than this gap asked
+    for closing.
+    """
+    __tablename__ = "share_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    permission = Column(SQLEnum(ShareLinkPermission), default=ShareLinkPermission.VIEW, nullable=False)
+    label = Column(String(255), nullable=True)  # e.g. "For GC review" — the creator's own note, not shown to guests
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)  # None = no expiry
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project")
+    creator = relationship("User")
+
+
 class Comment(Base):
     """
     Real-time collaboration — memory/TOGAL_PARITY_REAUDIT.md #16: "No
@@ -588,7 +631,15 @@ class Comment(Base):
     x = Column(Float, nullable=False)
     y = Column(Float, nullable=False)
     body = Column(Text, nullable=False)
-    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # Exactly one of (author_id, guest_name) is set — a real org member, or
+    # an external guest commenting through a ShareLink with no account of
+    # their own (see ShareLink below; Togal parity: "External collaboration
+    # — no account needed"). author_id went from NOT NULL to nullable for
+    # this; every existing authenticated comment path is unaffected, it
+    # just always sets author_id and leaves guest_name/share_link_id null.
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    guest_name = Column(String(100), nullable=True)
+    share_link_id = Column(Integer, ForeignKey("share_links.id"), nullable=True)
     resolved = Column(Boolean, default=False, nullable=False)
     resolved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
@@ -597,6 +648,7 @@ class Comment(Base):
     project = relationship("Project")
     drawing = relationship("Drawing")
     author = relationship("User", foreign_keys=[author_id])
+    share_link = relationship("ShareLink")
 
 
 class InviteStatus(enum.Enum):

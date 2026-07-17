@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight, Combine, Scissors, SquareMinus } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight, Combine, Scissors, SquareMinus, Link2, Copy } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI, templatesAPI } from '../services/api';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI, templatesAPI, shareAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
@@ -65,6 +65,7 @@ export default function Takeoff() {
   const [exporting, setExporting] = useState(false);
   const [showAdvancedExport, setShowAdvancedExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [showRepeatingGroups, setShowRepeatingGroups] = useState(false);
   const [show3DView, setShow3DView] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
@@ -899,6 +900,13 @@ export default function Takeoff() {
             ))}
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
+          <button
+            onClick={() => setShowShareModal(true)}
+            title="External collaboration — share a view/comment link, no account needed"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
+          >
+            <Link2 className="w-3.5 h-3.5" /> Share
+          </button>
           <div className="w-px h-5 bg-slate-700" />
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
@@ -953,6 +961,12 @@ export default function Takeoff() {
           projectId={id}
           projectName={project?.name}
           onClose={() => setShowHandoff(false)}
+        />
+      )}
+      {showShareModal && (
+        <ShareLinksModal
+          projectId={id}
+          onClose={() => setShowShareModal(false)}
         />
       )}
       {showRepeatingGroups && (
@@ -2214,6 +2228,125 @@ const HANDOFF_TARGET_SYSTEMS = [
 // (routes/handoff_routes.py, handoff_engine.py). Not an estimating engine:
 // this maps the AI's trade/item quantities to the cost codes a partner tool
 // imports, and logs every mapping edit + every export for accountability.
+// External collaboration without an account (Togal parity: "External
+// collaboration — unlimited, no account needed"). A link is view-only or
+// view+comment (see models.ShareLink) — never edit; guests hit it at
+// /share/:token (pages/GuestView.jsx), which never touches the
+// authenticated `api` client.
+function ShareLinksModal({ projectId, onClose }) {
+  const [links, setLinks] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const [permission, setPermission] = useState('view');
+  const [label, setLabel] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
+
+  useEffect(() => {
+    shareAPI.list(projectId).then((res) => setLinks(res.data)).catch(() => setLinks([]));
+  }, [projectId]);
+
+  async function create() {
+    setCreating(true);
+    try {
+      const res = await shareAPI.create(projectId, { permission, label: label.trim() || undefined });
+      setLinks((prev) => [res.data, ...(prev || [])]);
+      setLabel('');
+    } catch (error) {
+      console.error('Failed to create share link:', error);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function revoke(linkId) {
+    try {
+      await shareAPI.revoke(linkId);
+      setLinks((prev) => prev.map((l) => (l.id === linkId ? { ...l, revoked_at: new Date().toISOString() } : l)));
+    } catch (error) {
+      console.error('Failed to revoke share link:', error);
+    }
+  }
+
+  function copy(link) {
+    navigator.clipboard.writeText(shareAPI.guestUrl(link.token));
+    setCopiedId(link.id);
+    setTimeout(() => setCopiedId((c) => (c === link.id ? null : c)), 1500);
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40" onClick={onClose}>
+      <div className="w-[420px] max-h-[80vh] flex flex-col rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <div className="flex items-center gap-2">
+            <Link2 className="w-4 h-4 text-slate-500" />
+            <h2 className="text-sm font-semibold text-slate-900">Share this project</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="px-5 py-4 border-b border-slate-100 space-y-2.5">
+          <p className="text-xs text-slate-500">Anyone with the link can view — no TakeOff account needed.</p>
+          <div className="flex items-center gap-2">
+            <select
+              value={permission}
+              onChange={(e) => setPermission(e.target.value)}
+              className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 bg-white outline-none focus:border-indigo-500"
+            >
+              <option value="view">View only</option>
+              <option value="comment">View &amp; comment</option>
+            </select>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Label (optional) — e.g. For GC review"
+              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={create}
+              disabled={creating}
+              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50 flex-shrink-0"
+            >
+              Create link
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto px-5 py-3">
+          {links === null && <div className="text-xs text-slate-500 py-4 text-center">Loading…</div>}
+          {links?.length === 0 && <div className="text-xs text-slate-500 py-4 text-center">No share links yet.</div>}
+          <div className="space-y-2">
+            {links?.map((link) => {
+              const isRevoked = !!link.revoked_at;
+              return (
+                <div key={link.id} className={`p-3 rounded-lg border ${isRevoked ? 'border-slate-100 bg-slate-50 opacity-60' : 'border-slate-200'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-slate-800 truncate">{link.label || 'Untitled link'}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        {link.permission === 'comment' ? 'View & comment' : 'View only'}
+                        {isRevoked && ' · Revoked'}
+                      </div>
+                    </div>
+                    {!isRevoked && (
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button onClick={() => copy(link)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500" title="Copy link">
+                          {copiedId === link.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                        <button onClick={() => revoke(link.id)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-rose-600" title="Revoke">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HandoffModal({ projectId, projectName, onClose }) {
   const [tab, setTab] = useState('mapping'); // 'mapping' | 'audit'
   const [rows, setRows] = useState(null);

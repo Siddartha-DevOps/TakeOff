@@ -42,6 +42,18 @@ api.interceptors.response.use(
 
 export default api;
 
+// Guest client — deliberately separate from `api` above: no auth-token
+// interceptor (a guest viewing a share link has no account, and must
+// never have a logged-in user's token silently attached to their
+// requests) and no 401/403 -> redirect-to-/login interceptor (a guest
+// hitting a 403 on a view-only link trying to comment should see an
+// inline message, not get bounced to a login page they have no account
+// for). See routes/share_routes.py's guest_router.
+const guestApi = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+});
+
 // Auth API
 export const authAPI = {
   login: (email, password) => api.post('/api/auth/login', { email, password }),
@@ -283,6 +295,29 @@ export const collabAPI = {
   createComment: (projectId, comment) => api.post(`/api/collab/projects/${projectId}/comments`, comment),
   resolveComment: (commentId, resolved = true) => api.patch(`/api/collab/comments/${commentId}/resolve`, { resolved }),
   deleteComment: (commentId) => api.delete(`/api/collab/comments/${commentId}`),
+};
+
+// External collaboration without an account — Togal parity. Authenticated
+// side (create/list/revoke a project's share links) uses the normal `api`
+// client; guestAPI below is what the /share/:token page itself uses.
+export const shareAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/share-links`),
+  create: (projectId, data) => api.post(`/api/projects/${projectId}/share-links`, data),
+  revoke: (linkId) => api.delete(`/api/share-links/${linkId}`),
+  guestUrl: (token) => `${window.location.origin}/share/${token}`,
+};
+
+// The guest-facing surface itself — no Authorization header, ever (see
+// guestApi's definition above). token is a path segment, not a header, so
+// these also work as plain <img src>/tile-source URLs for the drawing viewer.
+export const guestAPI = {
+  fileUrl: (token, drawingId) => `${API_BASE_URL}/api/guest/${token}/drawings/${drawingId}/file`,
+  tileUrl: (token, drawingId, level, x, y) => `${API_BASE_URL}/api/guest/${token}/drawings/${drawingId}/tiles/${level}/${x}_${y}.jpg`,
+  resolve: (token) => guestApi.get(`/api/guest/${token}`),
+  getTileStatus: (token, drawingId) => guestApi.get(`/api/guest/${token}/drawings/${drawingId}/tiles/status`),
+  getResults: (token, drawingId) => guestApi.get(`/api/guest/${token}/drawings/${drawingId}/results`),
+  listComments: (token, drawingId) => guestApi.get(`/api/guest/${token}/comments`, { params: { drawing_id: drawingId } }),
+  createComment: (token, comment) => guestApi.post(`/api/guest/${token}/comments`, comment),
 };
 
 // Teams/roles/permissions + invites — routes/team_routes.py, permissions.py
