@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight, Combine, Scissors, SquareMinus } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
@@ -83,6 +83,7 @@ export default function Takeoff() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
+  const [shapeOpError, setShapeOpError] = useState(null); // last merge/split/backout failure message
   const [editingCondition, setEditingCondition] = useState(null); // Condition object being edited, or null
 
   const [revisions, setRevisions] = useState([]);
@@ -761,6 +762,34 @@ export default function Takeoff() {
     return map;
   }, [annotationStore.annotations]);
 
+  // Advanced tools (Togal parity: split/merge/cut/backout) — see
+  // useAnnotationStore.js's mergeSelection/backoutSelection/splitSelection
+  // for the actual geometry. These wrappers just turn a thrown validation
+  // error into a visible message instead of an uncaught exception, and
+  // clear the selection/menu on success.
+  function runShapeOp(op) {
+    try {
+      op();
+      setShapeOpError(null);
+      setContextMenu(null);
+      setSelectedIds([]);
+    } catch (error) {
+      setShapeOpError(error.message);
+      setContextMenu(null);
+    }
+  }
+  const handleMergeSelection = () => runShapeOp(() => annotationStore.mergeSelection(selectedIds));
+  const handleBackoutSelection = () => runShapeOp(() => annotationStore.backoutSelection(selectedIds));
+  const handleSplitSelection = () => runShapeOp(() => annotationStore.splitSelection(selectedIds));
+
+  const selectedShapeTypes = useMemo(
+    () => selectedIds.map((sid) => annotationsById.get(sid)?.type).filter(Boolean),
+    [selectedIds, annotationsById],
+  );
+  const canMerge = selectedShapeTypes.length >= 2 && selectedShapeTypes.every((t) => t === selectedShapeTypes[0]) && selectedShapeTypes[0] !== 'count';
+  const canBackout = selectedShapeTypes.length === 2 && selectedShapeTypes.every((t) => t === 'area');
+  const canSplit = selectedShapeTypes.length === 2 && selectedShapeTypes.includes('area') && selectedShapeTypes.includes('line');
+
   const selected = useMemo(() => {
     if (!detection || !selectedId) return null;
     if (annotationsById.get(selectedId)?.meta?.rejected) return null;
@@ -1229,7 +1258,13 @@ export default function Takeoff() {
           {selectMode && selectedIds.length > 0 && !contextMenu && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
               <MousePointer2 className="w-3.5 h-3.5 text-indigo-400" />
-              {selectedIds.length} selected · right-click to assign a condition
+              {selectedIds.length} selected · right-click for actions
+            </div>
+          )}
+          {shapeOpError && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-600 text-white shadow-lg text-xs font-medium max-w-md">
+              {shapeOpError}
+              <button onClick={() => setShapeOpError(null)} className="ml-1 opacity-80 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
             </div>
           )}
           {contextMenu && (
@@ -1240,6 +1275,12 @@ export default function Takeoff() {
               onAssign={assignSelectionToCondition}
               onCreateAndAssign={createConditionAndAssign}
               onClose={() => setContextMenu(null)}
+              canMerge={canMerge}
+              canBackout={canBackout}
+              canSplit={canSplit}
+              onMerge={handleMergeSelection}
+              onBackout={handleBackoutSelection}
+              onSplit={handleSplitSelection}
             />
           )}
         </main>
@@ -2513,13 +2554,37 @@ function CommentPopover({ point, comment, replies, currentUserId, onSubmitNew, o
   );
 }
 
-function ConditionAssignMenu({ position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose }) {
+function ConditionAssignMenu({
+  position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose,
+  canMerge, canBackout, canSplit, onMerge, onBackout, onSplit,
+}) {
   const [creating, setCreating] = useState(false);
   const menuStyle = { left: Math.min(position.x, window.innerWidth - 260), top: Math.min(position.y, window.innerHeight - 320) };
+  const showAdvancedTools = !creating && (canMerge || canBackout || canSplit);
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
       <div className="fixed w-64 rounded-xl bg-white border border-slate-200 shadow-2xl py-2" style={menuStyle} onClick={(e) => e.stopPropagation()}>
+        {showAdvancedTools && (
+          <div className="pb-1 mb-1 border-b border-slate-100">
+            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Advanced tools</div>
+            {canMerge && (
+              <button onClick={onMerge} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <Combine className="w-3.5 h-3.5 text-slate-400" /> Merge shapes
+              </button>
+            )}
+            {canBackout && (
+              <button onClick={onBackout} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <SquareMinus className="w-3.5 h-3.5 text-slate-400" /> Backout (deduct)
+              </button>
+            )}
+            {canSplit && (
+              <button onClick={onSplit} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
+                <Scissors className="w-3.5 h-3.5 text-slate-400" /> Split along line
+              </button>
+            )}
+          </div>
+        )}
         {!creating ? (
           <>
             <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
