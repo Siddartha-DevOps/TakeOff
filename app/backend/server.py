@@ -4,7 +4,7 @@ from starlette.middleware.cors import CORSMiddleware
 import os
 import logging
 from pathlib import Path
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes, india_routes, active_learning_routes, assemblies_routes, plan_set_routes
+from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes, india_routes, active_learning_routes, assemblies_routes, plan_set_routes, integrations_routes
 
 # Import models so every relationship("ClassName") string reference across
 # the ORM mapper registry resolves before the app starts handling requests.
@@ -50,6 +50,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Observability — structured request logging + X-Request-ID, and Sentry when
+# SENTRY_DSN is set (no-op otherwise). Hardening #3.
+try:
+    from observability import init_observability
+    init_observability(app)
+except Exception as _obs_err:  # never let observability wiring block startup
+    import logging as _logging
+    _logging.getLogger(__name__).warning("observability init skipped: %s", _obs_err)
+
 app.include_router(auth_routes.router,    prefix="/api")
 app.include_router(project_routes.router, prefix="/api")
 app.include_router(upload_routes.router,  prefix="/api")
@@ -73,6 +82,7 @@ app.include_router(india_routes.router,   prefix="/api")
 app.include_router(active_learning_routes.router, prefix="/api")
 app.include_router(assemblies_routes.router, prefix="/api")
 app.include_router(plan_set_routes.router, prefix="/api")
+app.include_router(integrations_routes.router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 app.post("/api/webhook/stripe")(stripe_webhook)
