@@ -281,6 +281,13 @@ export const teamAPI = {
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
 
+// Plan-set organizer — discipline-grouped sheet tree + sheet rename/reclassify
+// (routes/plan_set_routes.py).
+export const planSetAPI = {
+  get: (projectId) => api.get(`/api/plan-set/projects/${projectId}`),
+  updateSheet: (drawingId, patch) => api.patch(`/api/plan-set/drawings/${drawingId}`, patch),
+};
+
 // Trade assemblies estimating — one measured qty -> many priced trade line items
 // (routes/assemblies_routes.py). Distinct from the India BOQ layer below.
 export const estimatingAPI = {
