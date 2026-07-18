@@ -128,6 +128,31 @@ outside the space vocab (walls/doors/…) are dropped. Merge in
 combined set. The SVG/PNG/remap/version logic is unit-tested; only the network
 download runs on the data box.
 
+## Training a model (`ml/training/run_training.py`)
+
+Config-driven, preflight-gated YOLOv8-seg training. The runner **refuses to
+train** unless the dataset is present and the ML deps are importable — it never
+no-ops silently or produces fake weights. On success it copies the run's
+`best.pt` to the stable inference path (`models/best.pt` for spaces), which
+`ai.inference` loads on next start.
+
+```bash
+# preview the gate without training (exits 1 if blocked):
+python -m ml.training.run_training --data data/spaces_v1/data.yaml --dry-run
+
+# fast pipeline check — 1 epoch, small imgsz (needs GPU box w/ requirements-ml):
+python -m ml.training.run_training --data data/spaces_v1/data.yaml --smoke
+
+# full run (defaults: yolov8m-seg, 100 epochs, imgsz 1280 for large sheets):
+python -m ml.training.run_training --data data/spaces_v1/data.yaml --task spaces
+```
+
+`TrainConfig` (`ml/training/config.py`) holds the hyperparameters (validated:
+imgsz must be a multiple of 32, etc.) and maps `task → weights path`. Device is
+resolved via `ai.inference.device` (`auto` → CUDA/MPS/CPU). The config,
+plan/gating, and weights-promotion helpers are unit-tested; only the actual
+`model.train()` needs the GPU box.
+
 ## Readiness preflight (`python -m ml.preflight`)
 
 Before training or serving, run the readiness doctor — it reports, from the
