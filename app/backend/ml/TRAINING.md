@@ -45,6 +45,32 @@ python -m ml.eval.predict_golden --dataset data/spaces_v1 --weights models/best.
 python -m ml.registry.release verify --task spaces
 ```
 
+## Labeling your own plans (for accuracy on your sheet types)
+Generate the Label Studio labeling interface from your class list, create a
+project with it, label sheets (polygons for rooms, boxes for symbols), then
+export — `ml/annotation/formats.label_studio_to_rings` + `acquire_cubicasa`-style
+conversion turn the export into the trainer's format.
+
+```python
+from ml.datasets.bootstrap_public import SPACE_CLASSES
+from ml.annotation.label_studio import build_labeling_config
+print(build_labeling_config(SPACE_CLASSES, ["door", "window", "toilet", "sink"]))
+# paste into Label Studio → Settings → Labeling Interface
+```
+Aim for ~150–400 labeled sheets to start; keep ~20–40 aside as the held-out
+golden set (never trained on) for the accuracy report below.
+
+## Accuracy report (the proof)
+After `predict_golden --evaluate` produces the gate verdict, render a one-page
+accuracy card to share or attach to a `ModelVersion`:
+
+```bash
+python -m ml.eval.build_golden --dataset data/spaces_v1 --out golden.json --predictions preds.json
+python -m ml.eval.report --golden golden.json --out accuracy_report.md   # exit 1 if it fails the gate
+```
+It shows mIoU / mAP@0.5 / measurement-error vs thresholds, PASS/FAIL, sample
+size, and — if it fails — which metrics missed and what to label next.
+
 ## Outputs
 - `models/best.pt` — trained weights. `ai.inference` loads these on next server
   start; `analyze()` switches from `ModelUnavailableError` to real detections
