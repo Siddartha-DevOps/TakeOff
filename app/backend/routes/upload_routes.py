@@ -16,7 +16,11 @@ import models
 import storage
 from auth import get_current_user
 from database import get_db
+from ratelimit import RateLimit
 import aiofiles
+
+# Uploads are the most abuse-prone endpoint — cap per caller.
+_UPLOAD_RL = [Depends(RateLimit("upload", limit=60, window_s=60))]
 import logging
 import os
 from pathlib import Path
@@ -163,7 +167,7 @@ def ingest_plan_set(
     return drawings
 
 
-@router.post("/project/{project_id}/drawings", response_model=List[schemas.Drawing])
+@router.post("/project/{project_id}/drawings", response_model=List[schemas.Drawing], dependencies=_UPLOAD_RL)
 async def upload_drawing(
     project_id: int,
     background_tasks: BackgroundTasks,          # ← NEW
@@ -262,7 +266,7 @@ class ConfirmUploadRequest(BaseModel):
     scale: Optional[str] = None
 
 
-@router.post("/project/{project_id}/drawings/confirm", response_model=List[schemas.Drawing])
+@router.post("/project/{project_id}/drawings/confirm", response_model=List[schemas.Drawing], dependencies=_UPLOAD_RL)
 async def confirm_drawing_upload(
     project_id: int,
     payload: ConfirmUploadRequest,

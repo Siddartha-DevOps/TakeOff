@@ -38,6 +38,10 @@ from clip_embeddings import (
     search_embeddings_threshold,
 )
 from ml.search import count_and_group
+from ratelimit import RateLimit
+
+# AI search/count hit CLIP + pgvector — cap per caller to prevent abuse.
+_AI_SEARCH_RL = [Depends(RateLimit("ai_search", limit=30, window_s=60))]
 
 router = APIRouter(prefix="/takeoff", tags=["AI Search & Chat"])
 
@@ -84,7 +88,7 @@ class ImageSearchQuery(BaseModel):
     top_k: int = 10
 
 
-@router.post("/projects/{project_id}/search/image")
+@router.post("/projects/{project_id}/search/image", dependencies=_AI_SEARCH_RL)
 async def ai_image_search(
     project_id: int,
     query: ImageSearchQuery,
@@ -134,7 +138,7 @@ class TextSearchQuery(BaseModel):
     top_k: int = 10
 
 
-@router.post("/projects/{project_id}/search/text")
+@router.post("/projects/{project_id}/search/text", dependencies=_AI_SEARCH_RL)
 async def ai_text_search(
     project_id: int,
     body: TextSearchQuery,
@@ -177,7 +181,7 @@ class CountSearchQuery(BaseModel):
     max_matches: int = 500
 
 
-@router.post("/projects/{project_id}/search/count")
+@router.post("/projects/{project_id}/search/count", dependencies=_AI_SEARCH_RL)
 async def ai_count_search(
     project_id: int,
     body: CountSearchQuery,

@@ -8,6 +8,7 @@ from database import get_db
 from detection_geometry import persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
 from ai.inference import ModelUnavailableError
+from ratelimit import RateLimit
 import json
 import os
 import tempfile
@@ -39,7 +40,8 @@ def _require_ai_takeoff_entitlement(db: Session, organization_id: int):
 
 
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
-@router.post("/drawings/{drawing_id}/analyze")
+@router.post("/drawings/{drawing_id}/analyze",
+             dependencies=[Depends(RateLimit("ai_analyze", limit=20, window_s=60))])
 async def analyze_drawing(
     drawing_id: int,
     background_tasks: BackgroundTasks,
