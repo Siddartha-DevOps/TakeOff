@@ -10,9 +10,29 @@ Two complementary eval paths:
 - **`ml/eval/`** (this package) — scores against a *fixed labeled golden set*.
   This is what gates a release (defensible, repeatable).
 
+## Cold start — before any labels exist
+
+The flywheel needs labels to turn, but a brand-new deployment has none. Two
+bootstrap sources prime it (Phase 1 "AI MVP"):
+
+- **`../ai/sam2_zero_shot.py`** — SAM2 zero-shot segments a plan into candidate
+  room regions with **no trained model**. Rendered on the canvas, the user's
+  accept/reject/label actions become the first `CorrectionEvent`s — feeding the
+  export below.
+- **`ml/datasets/bootstrap_public.py`** — remaps public floor-plan corpora
+  (CubiCasa5K / RPLAN / Structured3D) onto the space-class list and writes a
+  YOLOv8-seg dataset, so `train_yolov8_seg` can fine-tune a *first* space model
+  before a single hand-labeled Takeoff sheet exists.
+
+Both feed the same YOLO-seg dataset the correction export produces, so the loop
+below runs identically once it's warm.
+
 ## The flywheel
 
 ```
+SAM2 zero-shot ──► user accept/reject ──► CorrectionEvents ─┐
+public datasets ──► ml/datasets/bootstrap_public ───────────┤
+                                                            ▼
 CorrectionEvents ──► ml/training/export_corrections ──► YOLO-seg dataset
                                                              │
                      training/train_yolov8_seg  ◄────────────┘
