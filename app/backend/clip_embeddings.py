@@ -167,3 +167,47 @@ def search_embeddings(db: Session, project_id: int, query_embedding: list, top_k
     if exclude_drawing_id is not None:
         q = q.filter(models.DrawingEmbedding.drawing_id != exclude_drawing_id)
     return q.order_by("distance").limit(top_k).all()
+
+
+def search_embeddings_threshold(db: Session, project_id: int, query_embedding: list,
+                                min_similarity: float = 0.85, max_results: int = 1000,
+                                exclude_drawing_id: Optional[int] = None):
+    """Every DrawingEmbedding within a similarity threshold (for pattern/COUNT search).
+
+    Unlike search_embeddings' fixed top_k, this returns *all* matches whose cosine
+    similarity >= min_similarity (distance <= 1 - min_similarity), closest first,
+    capped at max_results. That count is the "there are 42 of these" number Togal
+    surfaces. Same (DrawingEmbedding, distance, geojson) tuple shape.
+    """
+    from sqlalchemy import func
+
+    max_distance = 1.0 - float(min_similarity)
+    dist = models.DrawingEmbedding.embedding.cosine_distance(query_embedding)
+    q = db.query(
+        models.DrawingEmbedding,
+        dist.label("distance"),
+        func.ST_AsGeoJSON(models.DrawingEmbedding.geom).label("geojson"),
+    ).filter(
+        models.DrawingEmbedding.project_id == project_id,
+        dist <= max_distance,
+    )
+    if exclude_drawing_id is not None:
+        q = q.filter(models.DrawingEmbedding.drawing_id != exclude_drawing_id)
+    return q.order_by("distance").limit(max_results).all()
+
+
+def embedding_for_detection(db: Session, project_id: int, annotation_id: str) -> Optional[list]:
+    """The stored CLIP vector for an existing detection, or None.
+
+    Lets "find all like THIS detection" reuse an indexed embedding as the query —
+    no CLIP/torch needed at query time, only that the sheet was indexed on ingest.
+    """
+    row = (
+        db.query(models.DrawingEmbedding)
+        .filter(
+            models.DrawingEmbedding.project_id == project_id,
+            models.DrawingEmbedding.annotation_id == annotation_id,
+        )
+        .first()
+    )
+    return list(row.embedding) if row is not None else None

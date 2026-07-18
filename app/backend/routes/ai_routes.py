@@ -15,6 +15,7 @@ which don't collide with anything.
 """
 
 import json
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -28,7 +29,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import models
 from auth import get_current_user
 from database import get_db
-from clip_embeddings import clip_available, embed_image_patch, embed_text, search_embeddings
+from clip_embeddings import (
+    clip_available,
+    embed_image_patch,
+    embed_text,
+    embedding_for_detection,
+    search_embeddings,
+    search_embeddings_threshold,
+)
+from ml.search import count_and_group
 
 router = APIRouter(prefix="/takeoff", tags=["AI Search & Chat"])
 
@@ -149,6 +158,89 @@ async def ai_text_search(
     rows = search_embeddings(db, project_id, query_embedding, top_k=body.top_k)
 
     return {"query": body.query, "results": _search_results_to_response(rows)}
+
+
+# ──────────────────────────────────────────────────────────────
+# AI Pattern/Count Search — "find all like this → 42". Threshold-based
+# retrieval (not fixed top_k) so the COUNT is meaningful, grouped per sheet.
+# Reference can be text, a drawn region, or an existing detection's embedding.
+# ──────────────────────────────────────────────────────────────
+class CountSearchQuery(BaseModel):
+    text: Optional[str] = None
+    detection_id: Optional[str] = None
+    drawing_id: Optional[int] = None
+    x1: Optional[float] = None
+    y1: Optional[float] = None
+    x2: Optional[float] = None
+    y2: Optional[float] = None
+    min_similarity: float = 0.85
+    max_matches: int = 500
+
+
+@router.post("/projects/{project_id}/search/count")
+async def ai_count_search(
+    project_id: int,
+    body: CountSearchQuery,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Count every instance similar to a reference across the project.
+
+    Reference resolution (in priority order):
+      1. ``detection_id`` — reuse that detection's stored embedding (no CLIP needed).
+      2. ``drawing_id`` + ``x1..y2`` — embed the drawn region (needs CLIP).
+      3. ``text`` — embed the phrase (needs CLIP).
+    Returns ``{total, per_drawing, matches}`` — the count Togal surfaces plus
+    per-sheet tallies and match locations ready to drop in as count annotations.
+    """
+    _require_project(project_id, current_user, db)
+
+    if not 0.0 <= body.min_similarity <= 1.0:
+        raise HTTPException(status_code=400, detail="min_similarity must be in [0, 1]")
+
+    query_embedding = None
+    exclude_drawing_id = None
+
+    if body.detection_id:
+        query_embedding = embedding_for_detection(db, project_id, body.detection_id)
+        if query_embedding is None:
+            raise HTTPException(status_code=404, detail="No indexed embedding for that detection")
+    elif body.drawing_id is not None and None not in (body.x1, body.y1, body.x2, body.y2):
+        if not clip_available():
+            raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
+        source = db.query(models.Drawing).filter(
+            models.Drawing.id == body.drawing_id,
+            models.Drawing.project_id == project_id,
+        ).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source drawing not found")
+        ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
+        sys.path.insert(0, ai_dir)
+        from preprocessing import load_drawing
+        img = load_drawing(source.file_path, page_number=0)
+        x1, y1, x2, y2 = int(body.x1), int(body.y1), int(body.x2), int(body.y2)
+        patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
+        if patch.size == 0:
+            raise HTTPException(status_code=400, detail="Query region is empty")
+        query_embedding = embed_image_patch(patch)
+        exclude_drawing_id = None  # count includes the source sheet's other instances
+    elif body.text and body.text.strip():
+        if not clip_available():
+            raise HTTPException(status_code=503, detail=CLIP_UNAVAILABLE_DETAIL)
+        query_embedding = embed_text(body.text.strip())
+    else:
+        raise HTTPException(status_code=400, detail="Provide detection_id, drawing_id+bbox, or text")
+
+    rows = search_embeddings_threshold(
+        db, project_id, query_embedding,
+        min_similarity=body.min_similarity, max_results=max(body.max_matches, 1000),
+    )
+    results = _search_results_to_response(rows)
+    grouped = count_and_group(
+        results, min_similarity=body.min_similarity,
+        exclude_drawing_id=exclude_drawing_id, max_matches=body.max_matches,
+    )
+    return {"min_similarity": body.min_similarity, **grouped}
 
 
 # ──────────────────────────────────────────────────────────────
