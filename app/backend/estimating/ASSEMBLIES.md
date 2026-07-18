@@ -24,6 +24,19 @@ are editable US-customary defaults — tune per project/region.
 - `POST /api/estimating/assemblies/expand` — body
   `{measured: [{assembly, quantity}], cost_book: {item: cost}}` →
   `{line_items, by_trade, total, skipped}`.
+- `POST /api/estimating/assemblies/from-takeoff` — body
+  `{quantities: [{trade, item, quantity, unit}], cost_book}` → auto-maps takeoff
+  quantities to assemblies, returns `{drivers, measured, line_items, by_trade, total}`.
+- `GET /api/estimating/drawings/{id}/assemblies` — the assemblies estimate for a
+  drawing's latest takeoff (org-isolated).
+
+## Auto-map from a takeoff (`takeoff_map.py`)
+`estimate_from_takeoff(quantities)` turns the takeoff quantity rows the pipeline
+writes to `TakeoffResult.quantities_data` into assembly drivers and expands them —
+so a drawing produces an estimate with no hand entry. Conservative by default
+(only floor area → flooring, wall LF → partition, door count → doors); enable
+more with custom `rules`. `drivers` and `measured` are returned so a UI can show
+exactly what drove each line.
 
 ## Example
 ```python
