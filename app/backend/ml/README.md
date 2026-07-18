@@ -75,6 +75,33 @@ A JSON list of per-sheet samples; see `ml/eval/harness.py` docstring. Each sampl
 carries ground-truth **and** predicted rooms (polygons), symbols (boxes+scores),
 and quantities.
 
+## Production ML pipeline — mission coverage
+
+The full "eliminate mock, ship a real ML pipeline" mission maps to these modules
+(reusing existing infra; new modules marked ★):
+
+| # | Capability | Module |
+|---|-----------|--------|
+| 1 | Remove mock inference | `ai/inference/` (mock deleted; `ModelUnavailableError`) |
+| 2 | YOLO training pipeline | `training/train_yolov8_seg.py` + `ml/training/retrain.py` (flywheel orchestrator) |
+| 3 | ★ Dataset versioning | `ml/datasets/versioning.py` (content-addressed manifest + lineage) |
+| 4 | ★ Annotation support | `ml/annotation/formats.py` (COCO / Label Studio / YOLO-seg converters) |
+| 5 | Model evaluation | `ml/eval/` (mIoU, mAP@0.5, measurement-error, promotion gate) |
+| 6 | Model registry | `ml/registry/model_card.py` + `models.ModelVersion` |
+| 7 | Inference benchmarking | `ai/inference/benchmark.py` |
+| 8 | GPU + CPU inference | `ai/inference/device.py` |
+| 9 | Confidence scoring | `ai/inference/confidence.py` (thresholds, calibration, ECE) |
+| 10 | ★ Active learning | `ml/active_learning/sampler.py` (uncertainty + disagreement sampling) |
+
+New modules are pure NumPy/stdlib and unit-tested; heavy runtime (torch,
+ultralytics, cv2) stays lazy so CI runs green on CPU.
+
+**End-to-end flow:** annotate (`ml/annotation`) or bootstrap
+(`ml/datasets/bootstrap_public`) → version the dataset (`ml/datasets/versioning`)
+→ train (`training/train_yolov8_seg`) → evaluate + gate (`ml/eval`) → register
+(`ml/registry`) → serve (`ai/inference`, device-aware + tiled) → surface uncertain
+sheets (`ml/active_learning`) → user corrects → retrain (`ml/training/retrain`).
+
 ## Scope / what still needs a GPU + data
 The code is complete and tested. To actually move the accuracy number you still
 need: a labeled **golden plan set**, a **GPU** to fine-tune, and enough
