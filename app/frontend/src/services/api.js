@@ -1,7 +1,16 @@
 import axios from 'axios';
 
 // Vite uses import.meta.env, not process.env
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// In production VITE_BACKEND_URL MUST be set (Vercel env). Only fall back to
+// localhost during local `vite dev` — never ship localhost to a deployed build
+// (that's what made every deployed API call, including login, silently fail).
+const API_BASE_URL =
+  import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
+if (!import.meta.env.VITE_BACKEND_URL && !import.meta.env.DEV) {
+  // Same-origin '' only works if a proxy/rewrite forwards /api to the backend.
+  console.error('[api] VITE_BACKEND_URL is not set — API requests will fail. Set it in your host env.');
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -257,7 +266,8 @@ export const handoffAPI = {
 // in pages/Takeoff.jsx) + durable pinned comments (REST, routes/realtime_routes.py)
 export const collabAPI = {
   wsUrl: (projectId) => {
-    const httpBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    const httpBase =
+      import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const wsBase = httpBase.replace(/^http/, 'ws');
     const token = localStorage.getItem('auth_token');
     return `${wsBase}/api/ws/projects/${projectId}?token=${encodeURIComponent(token || '')}`;

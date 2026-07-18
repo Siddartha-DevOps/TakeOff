@@ -35,6 +35,18 @@ export const AuthProvider = ({ children }) => {
     setLoading(false);
   }, []);
 
+  // Turn an axios error into an honest, actionable message. A real backend
+  // rejection carries error.response (e.g. 401 "Incorrect email or password");
+  // no error.response means the request never reached the server — a network /
+  // CORS / wrong-backend-URL problem, NOT a bad password.
+  const authErrorMessage = (error, action) => {
+    if (error.response) {
+      return error.response.data?.detail || `${action} failed. Please try again.`;
+    }
+    return `Can't reach the server. Check that the backend is deployed and reachable ` +
+           `(VITE_BACKEND_URL), then try again.`;
+  };
+
   const login = async (email, password) => {
     try {
       const response = await authAPI.login(email, password);
@@ -49,10 +61,7 @@ export const AuthProvider = ({ children }) => {
       return { success: true, user: userData };
     } catch (error) {
       console.error('Login failed:', error);
-      return {
-        success: false,
-        error: error.response?.data?.detail || 'Login failed. Please try again.',
-      };
+      return { success: false, error: authErrorMessage(error, 'Login') };
     }
   };
 
@@ -70,10 +79,7 @@ export const AuthProvider = ({ children }) => {
       return { success: true, user: userData };
     } catch (error) {
       console.error('Signup failed:', error);
-      return {
-        success: false,
-        error: error.response?.data?.detail || 'Signup failed. Please try again.',
-      };
+      return { success: false, error: authErrorMessage(error, 'Signup') };
     }
   };
 
