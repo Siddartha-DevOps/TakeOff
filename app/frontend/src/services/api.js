@@ -268,3 +268,18 @@ export const teamAPI = {
   previewInvite: (token) => api.get(`/api/team/invites/${token}/preview`),
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
+
+// India estimating — IS 1200 metric quantities -> DSR/SOR-priced BOQ -> GST
+// tender total, plus Excel/PDF download (routes/india_routes.py).
+// `params` tunes the tender waterfall: overhead_profit_pct, contingency_pct,
+// gst_rate (fraction, e.g. 0.18), inter_state (bool).
+export const indiaAPI = {
+  getBOQ: (drawingId, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq`, { params }),
+  // fmt = 'xlsx' | 'pdf'; returns a Blob for download
+  exportBOQ: (drawingId, fmt, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq.${fmt}`, {
+      params,
+      responseType: 'blob',
+    }),
+};
