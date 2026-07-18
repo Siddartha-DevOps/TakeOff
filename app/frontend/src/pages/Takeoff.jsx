@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
+import IndiaBOQPanel from '../components/IndiaBOQPanel';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -57,6 +58,7 @@ export default function Takeoff() {
   const [showHandoff, setShowHandoff] = useState(false);
   const [showRepeatingGroups, setShowRepeatingGroups] = useState(false);
   const [show3DView, setShow3DView] = useState(false);
+  const [showBOQ, setShowBOQ] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -703,6 +705,15 @@ export default function Takeoff() {
             <Box className="w-3.5 h-3.5" /> 3D View
           </button>
         )}
+        {selectedDrawing && (
+          <button
+            onClick={() => setShowBOQ(true)}
+            title="Bill of Quantities — IS 1200 metric takeoff priced against the DSR/SOR rate book with GST"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+          >
+            <IndianRupee className="w-3.5 h-3.5" /> BOQ (India)
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -788,6 +799,9 @@ export default function Takeoff() {
           scaleRatio={scaleInfo?.scale_ratio}
           onClose={() => setShow3DView(false)}
         />
+      )}
+      {showBOQ && selectedDrawing && (
+        <IndiaBOQPanel drawing={selectedDrawing} onClose={() => setShowBOQ(false)} />
       )}
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
