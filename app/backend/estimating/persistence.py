@@ -75,3 +75,28 @@ def cost_book_to_dict(cost_book) -> dict:
 def cost_book_to_map(cost_book) -> dict:
     """Turn a stored CostBook into the ``{item: unit_cost}`` map expand_* consumes."""
     return {i.item: i.unit_cost for i in (getattr(cost_book, "items", None) or [])}
+
+
+def estimate_to_dict(estimate, *, include_data: bool = True) -> dict:
+    """Serialize an Estimate row for the API.
+
+    ``data`` (the estimate snapshot JSON) is parsed and inlined when
+    ``include_data`` (detail view); list views can omit it for compactness.
+    """
+    import json as _json
+
+    out = {
+        "id": getattr(estimate, "id", None),
+        "name": estimate.name,
+        "project_id": estimate.project_id,
+        "drawing_id": estimate.drawing_id,
+        "cost_book_id": estimate.cost_book_id,
+        "total": estimate.total,
+        "created_at": estimate.created_at.isoformat() if getattr(estimate, "created_at", None) else None,
+    }
+    if include_data:
+        try:
+            out["data"] = _json.loads(estimate.data) if estimate.data else {}
+        except (ValueError, TypeError):
+            out["data"] = {}
+    return out

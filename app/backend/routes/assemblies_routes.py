@@ -84,18 +84,8 @@ async def from_takeoff(body: FromTakeoffRequest, current_user: models.User = Dep
     return estimate_from_takeoff(body.quantities, cost_book=body.cost_book)
 
 
-@router.get("/drawings/{drawing_id}/assemblies")
-async def drawing_assemblies(
-    drawing_id: int,
-    cost_book_id: Optional[int] = None,
-    current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Assemblies estimate for a drawing's latest takeoff (org-isolated).
-
-    ``cost_book_id`` optionally prices the estimate with one of the org's saved
-    cost books; without it, quantities are returned at zero cost.
-    """
+def _compute_drawing_estimate(drawing_id: int, cost_book_id, current_user, db) -> dict:
+    """Shared: build the assemblies estimate for a drawing's latest takeoff."""
     cost_book = None
     if cost_book_id is not None:
         book = (
@@ -134,7 +124,137 @@ async def drawing_assemblies(
     except (json.JSONDecodeError, TypeError):
         raise HTTPException(status_code=500, detail="Stored quantities are not valid JSON")
 
-    return {"drawing_id": drawing_id, **estimate_from_takeoff(quantities)}
+    return {"drawing_id": drawing_id, **estimate_from_takeoff(quantities, cost_book=cost_book)}
+
+
+@router.get("/drawings/{drawing_id}/assemblies")
+async def drawing_assemblies(
+    drawing_id: int,
+    cost_book_id: Optional[int] = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Assemblies estimate for a drawing's latest takeoff (org-isolated).
+
+    ``cost_book_id`` optionally prices the estimate with one of the org's saved
+    cost books; without it, quantities are returned at zero cost.
+    """
+    return _compute_drawing_estimate(drawing_id, cost_book_id, current_user, db)
+
+
+# ──────────────────────────────────────────────────────────────
+# Saved estimates — name/store/re-open/export a priced estimate
+# ──────────────────────────────────────────────────────────────
+class SaveEstimateRequest(BaseModel):
+    name: str
+    drawing_id: int
+    cost_book_id: Optional[int] = None
+
+
+@router.post("/estimates")
+async def save_estimate(
+    body: SaveEstimateRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Compute a drawing's estimate now and persist it as a named snapshot."""
+    from estimating.persistence import estimate_to_dict
+
+    snapshot = _compute_drawing_estimate(body.drawing_id, body.cost_book_id, current_user, db)
+    drawing = db.query(models.Drawing).filter(models.Drawing.id == body.drawing_id).first()
+    est = models.Estimate(
+        organization_id=current_user.organization_id,
+        project_id=drawing.project_id if drawing else None,
+        drawing_id=body.drawing_id,
+        cost_book_id=body.cost_book_id,
+        name=body.name,
+        total=float(snapshot.get("total", 0)),
+        data=json.dumps(snapshot),
+        created_by=current_user.id,
+    )
+    db.add(est)
+    db.commit()
+    db.refresh(est)
+    return estimate_to_dict(est)
+
+
+@router.get("/estimates")
+async def list_estimates(
+    project_id: Optional[int] = None,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List saved estimates for the org (optionally filtered by project)."""
+    from estimating.persistence import estimate_to_dict
+
+    q = db.query(models.Estimate).filter(
+        models.Estimate.organization_id == current_user.organization_id)
+    if project_id is not None:
+        q = q.filter(models.Estimate.project_id == project_id)
+    rows = q.order_by(models.Estimate.created_at.desc()).all()
+    return {"estimates": [estimate_to_dict(e, include_data=False) for e in rows]}
+
+
+def _own_estimate(estimate_id: int, current_user, db) -> "models.Estimate":
+    est = (
+        db.query(models.Estimate)
+        .filter(models.Estimate.id == estimate_id,
+                models.Estimate.organization_id == current_user.organization_id)
+        .first()
+    )
+    if not est:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    return est
+
+
+@router.get("/estimates/{estimate_id}")
+async def get_estimate(
+    estimate_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from estimating.persistence import estimate_to_dict
+    return estimate_to_dict(_own_estimate(estimate_id, current_user, db))
+
+
+@router.delete("/estimates/{estimate_id}")
+async def delete_estimate(
+    estimate_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.delete(_own_estimate(estimate_id, current_user, db))
+    db.commit()
+    return {"deleted": estimate_id}
+
+
+@router.get("/estimates/{estimate_id}/export.xlsx")
+async def export_estimate(
+    estimate_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Download a saved estimate as a formatted .xlsx."""
+    from datetime import datetime, timezone
+
+    from fastapi.responses import StreamingResponse
+
+    from estimating.estimate_export import estimate_to_excel
+
+    est = _own_estimate(estimate_id, current_user, db)
+    try:
+        snapshot = json.loads(est.data)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=500, detail="Stored estimate is not valid JSON")
+
+    content = estimate_to_excel(snapshot, title=est.name)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"estimate_{estimate_id}_{ts}.xlsx"
+    return StreamingResponse(
+        iter([content]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ──────────────────────────────────────────────────────────────

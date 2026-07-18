@@ -292,6 +292,13 @@ export const estimatingAPI = {
   createCostBook: (payload) => api.post('/api/estimating/cost-books', payload),
   updateCostBook: (id, payload) => api.put(`/api/estimating/cost-books/${id}`, payload),
   deleteCostBook: (id) => api.delete(`/api/estimating/cost-books/${id}`),
+  // Saved estimates
+  saveEstimate: (payload) => api.post('/api/estimating/estimates', payload),
+  listEstimates: (projectId) =>
+    api.get('/api/estimating/estimates', { params: projectId ? { project_id: projectId } : {} }),
+  getEstimate: (id) => api.get(`/api/estimating/estimates/${id}`),
+  deleteEstimate: (id) => api.delete(`/api/estimating/estimates/${id}`),
+  exportEstimate: (id) => api.get(`/api/estimating/estimates/${id}/export.xlsx`, { responseType: 'blob' }),
 };
 
 // India estimating — IS 1200 metric quantities -> DSR/SOR-priced BOQ -> GST

@@ -651,3 +651,26 @@ class CostItem(Base):
     __table_args__ = (
         Index("ux_cost_items_book_item", "cost_book_id", "item", unique=True),
     )
+
+
+class Estimate(Base):
+    """A saved, named snapshot of a priced assemblies estimate.
+
+    Turns an on-the-fly takeoff → assemblies calculation into a durable artifact
+    an estimator can name, re-open, and export. `data` is the JSON snapshot
+    (drivers / line_items / by_trade / total) so the estimate is reproducible
+    even if the drawing or cost book changes later.
+    """
+    __tablename__ = "estimates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id"), nullable=True)
+    name = Column(String(255), nullable=False)
+    total = Column(Float, nullable=False, default=0)
+    data = Column(Text, nullable=False)  # JSON snapshot of the estimate
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

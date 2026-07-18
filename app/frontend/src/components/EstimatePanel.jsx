@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Loader2, Calculator, RefreshCw, Save, DollarSign } from 'lucide-react';
+import { X, Loader2, Calculator, RefreshCw, Save, DollarSign, FileSpreadsheet } from 'lucide-react';
 import { estimatingAPI } from '../services/api';
 
 // Trade assemblies estimate for a drawing — one measured quantity (floor area,
@@ -23,6 +23,7 @@ export default function EstimatePanel({ drawing, onClose }) {
   const [editing, setEditing] = useState(false);
   const [priceDraft, setPriceDraft] = useState({});   // item -> unit_cost while editing
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     estimatingAPI.listCostBooks().then((r) => setCostBooks(r.data.cost_books || [])).catch(() => {});
@@ -81,6 +82,29 @@ export default function EstimatePanel({ drawing, onClose }) {
       setError(err.response?.data?.detail || 'Could not save cost book.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveAndExport() {
+    setExporting(true);
+    setError(null);
+    try {
+      const base = (drawing.sheet_name || drawing.original_filename || `drawing_${drawing.id}`).replace(/\.[^.]+$/, '');
+      const name = window.prompt('Name this estimate', `Estimate — ${base}`);
+      if (name === null) { setExporting(false); return; }
+      const saved = await estimatingAPI.saveEstimate({
+        name: name || base, drawing_id: drawing.id, cost_book_id: costBookId,
+      });
+      const res = await estimatingAPI.exportEstimate(saved.data.id);
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = `${(name || base).replace(/\s+/g, '_')}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Could not save/export the estimate.');
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -229,8 +253,18 @@ export default function EstimatePanel({ drawing, onClose }) {
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-slate-200 text-[11px] text-slate-400">
-          Assemblies auto-mapped from this drawing's takeoff. Select or create a cost book to price them.
+        <div className="px-5 py-3 border-t border-slate-200 flex items-center gap-2">
+          <span className="text-[11px] text-slate-400">
+            Assemblies auto-mapped from this drawing's takeoff. Select or create a cost book to price them.
+          </span>
+          <button
+            onClick={saveAndExport}
+            disabled={!estimate || exporting || (estimate?.line_items || []).length === 0}
+            className="ml-auto inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-indigo-600 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+          >
+            {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileSpreadsheet className="w-4 h-4" />}
+            Save &amp; export .xlsx
+          </button>
         </div>
       </div>
     </div>
