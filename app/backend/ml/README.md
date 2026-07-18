@@ -128,6 +128,30 @@ outside the space vocab (walls/doors/…) are dropped. Merge in
 combined set. The SVG/PNG/remap/version logic is unit-tested; only the network
 download runs on the data box.
 
+## Golden eval + promotion gate (`ml/eval/`)
+
+Before a trained model is allowed to serve, it must clear the golden gate
+(mIoU ≥ 0.70, mAP@0.5 ≥ 0.50, measurement-error ≤ 5%).
+
+```bash
+# 1. build the GT side of golden.json from a held-out labeled split:
+python -m ml.eval.build_golden --dataset data/spaces_v1 --split val --out golden.json
+
+# 2. on the GPU box, run the trained model over those images, save predictions as
+#    {image_id: pred} (use predictions_from_detections to adapt ai.inference output),
+#    then attach + score:
+python -m ml.eval.build_golden --dataset data/spaces_v1 --out golden.json --predictions preds.json
+python -m ml.eval.harness --dataset golden.json      # exits 1 if the gate fails
+```
+
+`build_golden.py` turns YOLO-seg labels into harness-valid samples (room rings,
+symbol boxes, derived quantities) and adapts model detections to the pred shape;
+it's tested end-to-end through the real harness (perfect preds pass, empty preds
+fail closed). `promote.py` enforces the **single-ACTIVE invariant**: a passing
+model becomes ACTIVE and demotes the prior ACTIVE sibling; a failing one is
+registered CANDIDATE. Registration into `models.ModelVersion` is done by
+`ml/training/retrain.register_model_version`.
+
 ## Training a model (`ml/training/run_training.py`)
 
 Config-driven, preflight-gated YOLOv8-seg training. The runner **refuses to
