@@ -7,6 +7,7 @@ from auth import get_current_user
 from database import get_db
 from detection_geometry import persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
+from ai.inference import ModelUnavailableError
 import json
 import os
 import tempfile
@@ -214,6 +215,20 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         except Exception as embed_err:
             logger.warning(f"[AI] Embedding index failed for drawing_id={drawing_id}: {embed_err}")
 
+    except ModelUnavailableError as e:
+        # No trained raster model installed — do NOT fabricate detections
+        # (the old mock path did). Mark failed with a clear, actionable reason;
+        # vector PDFs still get real results via the /autodetect path.
+        logger.warning(
+            f"[AI] Raster model unavailable for drawing_id={drawing_id}: {e} "
+            f"Install trained weights or use vector AUTODETECT."
+        )
+        drawing = db.query(models.Drawing).filter(
+            models.Drawing.id == drawing_id
+        ).first()
+        if drawing:
+            drawing.processing_status = models.ProcessingStatus.FAILED
+            db.commit()
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
         drawing = db.query(models.Drawing).filter(

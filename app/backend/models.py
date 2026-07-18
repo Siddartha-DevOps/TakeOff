@@ -264,7 +264,7 @@ class TakeoffResult(Base):
     quantities_data = Column(Text)  # JSON string with trade quantities
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
-    ai_model_version = Column(String(50), default="mock_v1")
+    ai_model_version = Column(String(50), default="pending")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
