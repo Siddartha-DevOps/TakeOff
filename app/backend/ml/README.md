@@ -102,6 +102,32 @@ ultralytics, cv2) stays lazy so CI runs green on CPU.
 (`ml/registry`) → serve (`ai/inference`, device-aware + tiled) → surface uncertain
 sheets (`ml/active_learning`) → user corrects → retrain (`ml/training/retrain`).
 
+## Dataset v1 — CubiCasa5K (`ml/datasets/acquire_cubicasa.py`)
+
+Builds the first labeled training set from the public CubiCasa5K corpus
+(CC-BY-4.0, Zenodo 2613548) with no hand-labeling:
+
+```bash
+# on the data box (the download is ~5 GB):
+python -c "from ml.datasets.acquire_cubicasa import download_cubicasa; download_cubicasa('cubicasa5k.zip')"
+unzip cubicasa5k.zip -d cubicasa5k
+
+# convert + version (runs anywhere — pure stdlib):
+python -m ml.datasets.acquire_cubicasa \
+    --root cubicasa5k --out data/spaces_v1 --created-at 2026-07-18T00:00:00Z
+python -m ml.preflight --data data/spaces_v1/data.yaml --require train
+```
+
+It parses each sample's `model.svg` (`<g class="Space <RoomType>">` polygons),
+reads image size straight from the PNG header (no PIL), remaps room types to the
+space classes (`bootstrap_public.CUBICASA_TO_TAKEOFF`), writes an Ultralytics
+YOLO-seg dataset (`images/{train,val}` + `labels/{train,val}` + `data.yaml`), and
+snapshots a content-addressed `DatasetVersion` (`dataset_version.json`). Rooms
+outside the space vocab (walls/doors/…) are dropped. Merge in
+`CorrectionEvent`-derived labels with `ml/training/export_corrections.py` for a
+combined set. The SVG/PNG/remap/version logic is unit-tested; only the network
+download runs on the data box.
+
 ## Readiness preflight (`python -m ml.preflight`)
 
 Before training or serving, run the readiness doctor — it reports, from the
