@@ -1,92 +1,169 @@
-# GPU Training Runbook — spaces (room) model
+# AI Components Runbook — train / install every model
 
-Run on a **CUDA GPU box** (cloud instance, RunPod, Colab, or local). Not on CI or
-Vercel — the app path stays CPU-light by design.
+How to stand up all five AI components of TakeOff.ai. Run on a **CUDA GPU box**
+(cloud VM, RunPod, Lambda, Vast, or Colab). Not on CI or Vercel — the app path
+stays CPU-light by design (`device.py` falls back to CPU automatically, just
+slowly).
 
-## Prerequisites
-- An NVIDIA GPU + drivers (CUDA 12.x). A CPU-only box also works, just slowly —
-  `device.py` resolves to CPU automatically.
+> **The key fact: only 2 of the 5 are actually _trained_.** The other 3 are
+> pretrained / zero-shot / rule-based — you **install and run** them.
+
+| # | Component | Train it? | What you do |
+|---|-----------|-----------|-------------|
+| 1 | Space segmentation (YOLOv8-seg) | ✅ **Train** | label data → fine-tune → gate → promote |
+| 2 | Symbol detection (YOLOv8-seg) | ✅ **Train** | label symbols → fine-tune → promote |
+| 3 | SAM2 zero-shot | ❌ Install | download checkpoint, run as-is (label bootstrap) |
+| 4 | CLIP ViT-B/32 | ❌ Install | install, bulk-encode sheets into pgvector |
+| 5 | OCR (Tesseract) | ❌ Install | install the system binary — works immediately |
+
+## Prerequisites (once)
+- NVIDIA GPU + drivers (CUDA 12.x); 16 GB+ VRAM is comfortable.
 - Python 3.11, `git`, `unzip`, ~15 GB free disk (CubiCasa5K is ~5 GB).
-- The repo checked out; run everything from `app/backend/`.
-
-## Do I need to provide data?
-**No.** The run downloads **CubiCasa5K** (CC-BY-4.0, 5,000 annotated floor plans)
-automatically — enough for a first spaces model. Add your own labeled drawings
-later (via `ml/annotation/formats.py`) to specialize; the active-learning queue
-(`/api/active-learning/...`) tells you which sheets to label first.
-
-## One command
+- Repo checked out; **run everything from `app/backend/`**.
 ```bash
-bash scripts/train_spaces_gpu.sh
-```
-Chains, with a readiness gate before each heavy stage:
-`deps → CubiCasa5K → convert+version → preflight → smoke(1 epoch) → full train →
-golden eval + gate → serving verify`. Override anything via env:
-```bash
-EPOCHS=50 IMGSZ=1024 DATASET_OUT=data/spaces_v2 bash scripts/train_spaces_gpu.sh
-```
-
-## Or step by step
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install torch --index-url https://download.pytorch.org/whl/cu121   # match your CUDA
 pip install -r requirements-ml.txt
+python -m ml.preflight        # shows exactly what's present/missing
+```
 
-# dataset → versioned YOLO-seg
+---
+
+## 1. Space segmentation (YOLOv8-seg) — TRAIN
+The core model: outlines and classifies rooms/spaces. Everything downstream
+(measurement, quantities, BOQ, assemblies) consumes its output.
+
+### Get data — public (zero effort) or your own (better accuracy)
+**Public CubiCasa5K** (CC-BY-4.0, 5,000 plans) — fully automatic:
+```bash
 python -c "from ml.datasets.acquire_cubicasa import download_cubicasa; download_cubicasa('cubicasa5k.zip')"
 unzip -q cubicasa5k.zip -d data/cubicasa5k
 python -m ml.datasets.acquire_cubicasa --root data/cubicasa5k --out data/spaces_v1 --created-at "$(date -u +%FT%TZ)"
+```
+**Your own plans** (recommended for production accuracy) — label ~150–400 sheets,
+keep ~20–40 aside as a held-out golden set:
+```bash
+python -c "from ml.datasets.bootstrap_public import SPACE_CLASSES; \
+from ml.annotation.label_studio import build_labeling_config; print(build_labeling_config(SPACE_CLASSES))"
+# → Label Studio → Settings → Labeling Interface → label (polygons) → export
+# → convert the export with ml/annotation/formats.label_studio_to_rings
+```
 
-python -m ml.preflight --data data/spaces_v1/data.yaml --require train   # gate
+### Train (one command)
+```bash
+bash scripts/train_spaces_gpu.sh          # deps→data→preflight→smoke→train→eval→verify
+# override: EPOCHS=50 IMGSZ=1024 bash scripts/train_spaces_gpu.sh
+```
+Or step by step:
+```bash
+python -m ml.preflight --data data/spaces_v1/data.yaml --require train
 python -m ml.training.run_training --data data/spaces_v1/data.yaml --task spaces --smoke --no-promote
 python -m ml.training.run_training --data data/spaces_v1/data.yaml --task spaces --epochs 100 --imgsz 1280
-
-# evaluate the trained model against the gate (mIoU≥.70, mAP≥.50, err≤5%)
-python -m ml.eval.predict_golden --dataset data/spaces_v1 --weights models/best.pt --evaluate
-python -m ml.registry.release verify --task spaces
 ```
+**Output:** `models/best.pt` → `ai.inference.InferenceEngine` loads it on next
+server start. Cost ~$5–30, a few hours on one GPU.
 
-## Labeling your own plans (for accuracy on your sheet types)
-Generate the Label Studio labeling interface from your class list, create a
-project with it, label sheets (polygons for rooms, boxes for symbols), then
-export — `ml/annotation/formats.label_studio_to_rings` + `acquire_cubicasa`-style
-conversion turn the export into the trainer's format.
-
-```python
-from ml.datasets.bootstrap_public import SPACE_CLASSES
-from ml.annotation.label_studio import build_labeling_config
-print(build_labeling_config(SPACE_CLASSES, ["door", "window", "toilet", "sink"]))
-# paste into Label Studio → Settings → Labeling Interface
-```
-Aim for ~150–400 labeled sheets to start; keep ~20–40 aside as the held-out
-golden set (never trained on) for the accuracy report below.
-
-## Accuracy report (the proof)
-After `predict_golden --evaluate` produces the gate verdict, render a one-page
-accuracy card to share or attach to a `ModelVersion`:
-
+### Prove accuracy (the gate)
 ```bash
-python -m ml.eval.build_golden --dataset data/spaces_v1 --out golden.json --predictions preds.json
-python -m ml.eval.report --golden golden.json --out accuracy_report.md   # exit 1 if it fails the gate
+python -m ml.eval.predict_golden --dataset data/spaces_v1 --weights models/best.pt --evaluate
+python -m ml.eval.report --golden golden.json --out accuracy_report.md    # exit 1 if it fails
 ```
-It shows mIoU / mAP@0.5 / measurement-error vs thresholds, PASS/FAIL, sample
-size, and — if it fails — which metrics missed and what to label next.
+Gate: mIoU ≥ 0.70, mAP@0.5 ≥ 0.50, measurement-error ≤ 5%. The report shows
+pass/fail per metric and, on failure, what to label next.
 
-## Outputs
-- `models/best.pt` — trained weights. `ai.inference` loads these on next server
-  start; `analyze()` switches from `ModelUnavailableError` to real detections
-  with **zero code change**.
-- `data/spaces_v1/dataset_version.json` — the content-addressed dataset version.
-- Gate verdict from `predict_golden --evaluate` (exit 1 if it fails the gate).
+---
 
-## Register + promote (with DB access, on the release box)
-`predict_golden --evaluate` gives you the eval report; to persist a
-`ModelVersion` and enforce the single-ACTIVE invariant, call
-`ml.registry.release.release(db, name=..., version=..., task="spaces",
-golden_path=..., weights_uri=..., stage_from="models/best.pt")`.
+## 2. Symbol detection (YOLOv8-seg) — TRAIN
+Detects + **counts** doors, windows, plumbing/electrical fixtures — the ~18
+classes in `training/train_yolov8_seg.py:SYMBOL_CLASSES`.
 
-## Notes
-- **Large sheets**: `imgsz` defaults to 1280; inference auto-tiles pages > 2000 px.
-- **Symbol model** (doors/windows/MEP counts) is a separate run: `--task symbols`
-  with a symbol dataset (weights → `ai/models/symbol_counts/yolov8-seg.pt`).
-- **Colab**: same commands in a bash cell; set `CUDA_INDEX_URL` to match the
-  runtime's CUDA version if needed.
+- **Labels are boxes**, not polygons (RectangleLabels in Label Studio), or reuse
+  CubiCasa's icon annotations.
+```bash
+python -m ml.training.run_training --data data/symbols_v1/data.yaml --task symbols --epochs 100 --imgsz 1280
+```
+**Output:** `ai/models/symbol_counts/yolov8-seg.pt` → `ai/detect_symbols.py` loads it.
+
+> Vector PDFs count symbols geometrically with **no model**
+> (`geometry/vector_symbol_match.py`); this trained model covers scanned/raster
+> sheets.
+
+---
+
+## 3. SAM2 zero-shot — INSTALL (no training)
+Proposes room regions with **no trained model** — used to *bootstrap* labels
+faster (accept/relabel its proposals → those become training data).
+```bash
+pip install "git+https://github.com/facebookresearch/segment-anything-2.git"
+mkdir -p ai/models/sam2
+# place the checkpoint + config here (from the SAM2 repo / Hugging Face):
+#   ai/models/sam2/sam2_hiera_large.pt
+#   ai/models/sam2/sam2_hiera_l.yaml
+```
+Then:
+```python
+from ai.sam2_zero_shot import run_sam2_zero_shot
+run_sam2_zero_shot("sheet.png")   # -> candidate room polygons; returns needs_weights until installed
+```
+No training step. `sam2_weights_available()` reports whether the checkpoint is in place.
+
+---
+
+## 4. CLIP ViT-B/32 — INSTALL + build the index (no training)
+CLIP powers AI Search / pattern-count. Used **as-is** (pretrained); you install
+it and encode your sheets once into pgvector.
+```bash
+pip install ftfy regex
+pip install "git+https://github.com/openai/CLIP.git"     # provides `import clip`
+```
+Backfill embeddings for existing drawings (new uploads index automatically):
+```python
+from clip_embeddings import index_drawing_embeddings, clip_available
+assert clip_available()
+# per drawing (project_id, drawing_id, file_path, detection_json):
+index_drawing_embeddings(db, project_id, drawing_id, file_path, detection_json)
+```
+After that, `POST /api/takeoff/projects/{id}/search/text | search/image | search/count`
+return real results. *(Optional, much later: fine-tune CLIP on construction
+imagery for better recall — not needed to start.)*
+
+---
+
+## 5. OCR (Tesseract) — INSTALL only (no training)
+Rule-based title-block + scale-text reading. Works the moment the binary exists.
+```bash
+apt-get install -y tesseract-ocr     # Debian/Ubuntu; the system binary
+pip install pytesseract              # already in requirements-ml.txt
+```
+`ai/title_block_ocr.py` and `ai/scale_detection.py` then work; both degrade
+gracefully (numbered placeholder / no scale) if the binary is absent. Tesseract
+can be fine-tuned for unusual fonts, but you almost never need to.
+
+---
+
+## Register + promote a trained model (release box, DB access)
+`predict_golden --evaluate` produces the eval report; to persist a `ModelVersion`
+and enforce the single-ACTIVE serving invariant:
+```python
+from ml.registry.release import release
+release(db, name="spaces_seg", version="2026.07.1", task="spaces",
+        golden_path="golden.json", weights_uri="s3://models/spaces/2026.07.1/best.pt",
+        stage_from="models/best.pt")
+```
+Or just stage + verify on an inference box:
+```bash
+python -m ml.registry.release stage  --from runs/.../best.pt --task spaces
+python -m ml.registry.release verify --task spaces      # exit 1 unless deps + weights present
+```
+
+## The improvement loop (after go-live)
+Serve → users correct AI output → `ml/training/export_corrections` turns
+corrections into new labels → retrain → re-gate → promote. The active-learning
+queue (`GET /api/active-learning/projects/{id}/review-queue`) ranks which sheets
+to label next.
+
+## Summary — your real work
+1. **Train space seg** — `bash scripts/train_spaces_gpu.sh` (biggest value).
+2. **Train symbol detection** — same runner, `--task symbols`, once you have symbol labels.
+3. **Install** SAM2 (label bootstrap), **CLIP** (search index), **Tesseract** (OCR).
+
+Everything above is already coded and tested — you're running it, not building it.

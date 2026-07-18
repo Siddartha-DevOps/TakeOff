@@ -281,6 +281,26 @@ export const teamAPI = {
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
 
+// Trade assemblies estimating — one measured qty -> many priced trade line items
+// (routes/assemblies_routes.py). Distinct from the India BOQ layer below.
+export const estimatingAPI = {
+  drawingAssemblies: (drawingId, costBookId) =>
+    api.get(`/api/estimating/drawings/${drawingId}/assemblies`, {
+      params: costBookId ? { cost_book_id: costBookId } : {},
+    }),
+  listCostBooks: () => api.get('/api/estimating/cost-books'),
+  createCostBook: (payload) => api.post('/api/estimating/cost-books', payload),
+  updateCostBook: (id, payload) => api.put(`/api/estimating/cost-books/${id}`, payload),
+  deleteCostBook: (id) => api.delete(`/api/estimating/cost-books/${id}`),
+  // Saved estimates
+  saveEstimate: (payload) => api.post('/api/estimating/estimates', payload),
+  listEstimates: (projectId) =>
+    api.get('/api/estimating/estimates', { params: projectId ? { project_id: projectId } : {} }),
+  getEstimate: (id) => api.get(`/api/estimating/estimates/${id}`),
+  deleteEstimate: (id) => api.delete(`/api/estimating/estimates/${id}`),
+  exportEstimate: (id) => api.get(`/api/estimating/estimates/${id}/export.xlsx`, { responseType: 'blob' }),
+};
+
 // India estimating — IS 1200 metric quantities -> DSR/SOR-priced BOQ -> GST
 // tender total, plus Excel/PDF download (routes/india_routes.py).
 // `params` tunes the tender waterfall: overhead_profit_pct, contingency_pct,
