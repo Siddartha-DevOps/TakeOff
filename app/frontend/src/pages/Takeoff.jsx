@@ -2235,6 +2235,9 @@ function QuantitiesPanel({ detection }) {
 function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
+  const [count, setCount] = useState(null);      // { total, per_drawing, matches }
+  const [mode, setMode] = useState('find');       // 'find' | 'count'
+  const [minSim, setMinSim] = useState(85);       // similarity % for count mode
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -2248,10 +2251,15 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
     e?.preventDefault();
     const q = query.trim();
     if (!q || loading) return;
-    setLoading(true); setError(null); setResults(null);
+    setLoading(true); setError(null); setResults(null); setCount(null);
     try {
-      const res = await searchAPI.text(projectId, q);
-      setResults(res.data.results);
+      if (mode === 'count') {
+        const res = await searchAPI.count(projectId, { text: q, minSimilarity: minSim / 100 });
+        setCount(res.data);
+      } else {
+        const res = await searchAPI.text(projectId, q);
+        setResults(res.data.results);
+      }
     } catch (err) {
       setError(err.response?.status === 503
         ? "AI Search isn't available yet — the server is missing its CLIP model dependencies."
@@ -2264,21 +2272,68 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
   return (
     <div className="h-full flex flex-col">
       <div className="p-4 border-b border-slate-200">
+        <div className="mb-2 inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-medium">
+          {[['find', 'Find'], ['count', 'Count all']].map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => { setMode(m); setResults(null); setCount(null); setError(null); }}
+              className={`px-3 py-1 rounded-md ${mode === m ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <form onSubmit={runSearch} className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 focus-within:border-slate-500 focus-within:ring-2 focus-within:ring-slate-200">
           <SearchIcon className="w-4 h-4 text-slate-400" />
           <input
             value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder='Find "outlets", "bedrooms"...'
+            placeholder={mode === 'count' ? 'Count "outlets", "doors"...' : 'Find "outlets", "bedrooms"...'}
             className="flex-1 text-sm outline-none bg-transparent"
           />
           <button type="submit" disabled={!query.trim() || loading} className="w-7 h-7 rounded-md bg-slate-900 text-white flex items-center justify-center disabled:opacity-40">
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SearchIcon className="w-3.5 h-3.5" />}
           </button>
         </form>
-        <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+        {mode === 'count' ? (
+          <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+            <span className="whitespace-nowrap">Match ≥ {minSim}%</span>
+            <input
+              type="range" min="60" max="99" value={minSim}
+              onChange={(e) => setMinSim(Number(e.target.value))}
+              className="flex-1 accent-slate-900"
+            />
+          </label>
+        ) : (
+          <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+        )}
       </div>
       <div className="flex-1 overflow-auto p-4 space-y-2">
         {error && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-3">{error}</div>}
+
+        {count && (
+          <div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-center">
+              <div className="text-3xl font-bold text-emerald-700 tabular-nums">{count.total}</div>
+              <div className="text-[11px] uppercase tracking-wide text-emerald-600 mt-0.5">
+                matches for “{query.trim()}”
+              </div>
+            </div>
+            {count.total === 0 ? (
+              <p className="mt-3 text-xs text-slate-500">Nothing above {minSim}% similarity — lower the threshold or index more sheets.</p>
+            ) : (
+              <div className="mt-3 space-y-1">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Per sheet</div>
+                {count.per_drawing.map((row) => (
+                  <div key={row.drawing_id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-sm">
+                    <span className="text-slate-700 truncate">{drawingNameById.get(row.drawing_id) || `Sheet #${row.drawing_id}`}</span>
+                    <span className="tabular-nums font-semibold text-slate-900">{row.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {results && results.length === 0 && <div className="text-sm text-slate-500">No matches found.</div>}
         {results && results.map((r) => {
           const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
@@ -2310,9 +2365,11 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
             </div>
           );
         })}
-        {!results && !error && (
+        {!results && !count && !error && (
           <p className="text-xs text-slate-500">
-            Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project's sheets.
+            {mode === 'count'
+              ? 'Type what to count — "outlets", "doors", "fire extinguishers" — and get a total plus a per-sheet breakdown across the project.'
+              : 'Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project\'s sheets.'}
           </p>
         )}
       </div>

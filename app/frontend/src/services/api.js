@@ -183,6 +183,18 @@ export const searchAPI = {
     x1: bbox[0], y1: bbox[1], x2: bbox[2], y2: bbox[3],
     top_k: topK,
   }),
+  // Pattern/count search — "find all like this -> N". Reference is text,
+  // a detection (detectionId), or a drawn region (drawingId + bbox).
+  // Returns { total, per_drawing, matches }.
+  count: (projectId, { text, detectionId, drawingId, bbox, minSimilarity = 0.85, maxMatches = 500 } = {}) =>
+    api.post(`/api/takeoff/projects/${projectId}/search/count`, {
+      text,
+      detection_id: detectionId,
+      drawing_id: drawingId,
+      x1: bbox?.[0], y1: bbox?.[1], x2: bbox?.[2], y2: bbox?.[3],
+      min_similarity: minSimilarity,
+      max_matches: maxMatches,
+    }),
 };
 
 // Drawing Compare — revision overlay/diff, OpenCV-backed (routes/compare_routes.py)
