@@ -50,6 +50,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Observability — structured request logging + X-Request-ID, and Sentry when
+# SENTRY_DSN is set (no-op otherwise). Hardening #3.
+try:
+    from observability import init_observability
+    init_observability(app)
+except Exception as _obs_err:  # never let observability wiring block startup
+    import logging as _logging
+    _logging.getLogger(__name__).warning("observability init skipped: %s", _obs_err)
+
 app.include_router(auth_routes.router,    prefix="/api")
 app.include_router(project_routes.router, prefix="/api")
 app.include_router(upload_routes.router,  prefix="/api")
