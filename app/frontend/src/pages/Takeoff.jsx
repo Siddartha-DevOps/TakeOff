@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
 import EstimatePanel from '../components/EstimatePanel';
+import PlanSetModal from '../components/PlanSetModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -61,6 +62,7 @@ export default function Takeoff() {
   const [show3DView, setShow3DView] = useState(false);
   const [showBOQ, setShowBOQ] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
+  const [showPlanSet, setShowPlanSet] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -725,6 +727,15 @@ export default function Takeoff() {
             <Calculator className="w-3.5 h-3.5" /> Estimate
           </button>
         )}
+        {drawings.length > 0 && (
+          <button
+            onClick={() => setShowPlanSet(true)}
+            title="Plan set — sheets grouped by discipline; rename / reclassify"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
+          >
+            <FolderTree className="w-3.5 h-3.5" /> Sheets
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -816,6 +827,18 @@ export default function Takeoff() {
       )}
       {showEstimate && selectedDrawing && (
         <EstimatePanel drawing={selectedDrawing} onClose={() => setShowEstimate(false)} />
+      )}
+      {showPlanSet && (
+        <PlanSetModal
+          projectId={id}
+          selectedDrawingId={selectedDrawing?.id}
+          onSelectSheet={(sheetId) => {
+            const d = drawings.find((dr) => dr.id === sheetId);
+            if (d) setSelectedDrawing(d);
+            setShowPlanSet(false);
+          }}
+          onClose={() => setShowPlanSet(false)}
+        />
       )}
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
