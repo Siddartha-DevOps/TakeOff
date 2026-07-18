@@ -128,6 +128,31 @@ outside the space vocab (walls/doors/…) are dropped. Merge in
 combined set. The SVG/PNG/remap/version logic is unit-tested; only the network
 download runs on the data box.
 
+## Release + deploy (`ml/registry/release.py`)
+
+One gated path from a trained model to a served one — composing eval → register →
+promote → stage → verify:
+
+```bash
+# on the release box (DB access): evaluate golden, register, promote if it passes
+python -c "from database import SessionLocal; from ml.registry.release import release; \
+  print(release(SessionLocal(), name='spaces_seg', version='2026.07.1', task='spaces', \
+                golden_path='golden.json', weights_uri='s3://models/spaces/2026.07.1/best.pt', \
+                stage_from='runs/.../best.pt'))"
+
+# stage the ACTIVE weights onto an inference box and verify it can serve:
+python -m ml.registry.release stage  --from runs/.../best.pt --task spaces
+python -m ml.registry.release verify --task spaces      # exit 1 unless deps + weights present
+```
+
+`release()` registers the version (CANDIDATE if it fails the gate), applies the
+single-ACTIVE promotion, and — only for a passing model — stages `best.pt` to the
+inference path (`models/best.pt`) that `ai.inference` loads. `pick_active` /
+`stage_weights` / `serving_readiness` are unit-tested; the DB write reuses
+`retrain.register_model_version`. In production the inference `Dockerfile` mounts
+`/models`; an init-container resolves the ACTIVE `ModelVersion.weights_uri`
+(`resolve_active_weights`) and stages it before the server starts.
+
 ## Golden eval + promotion gate (`ml/eval/`)
 
 Before a trained model is allowed to serve, it must clear the golden gate
