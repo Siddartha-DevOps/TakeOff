@@ -128,6 +128,22 @@ outside the space vocab (walls/doors/…) are dropped. Merge in
 combined set. The SVG/PNG/remap/version logic is unit-tested; only the network
 download runs on the data box.
 
+## Online active learning (`routes/active_learning_routes.py`)
+
+Closes the flywheel in the running app — surface what to label next from live
+signals, so corrections feed the next retrain:
+
+- `GET /api/active-learning/projects/{id}/review-queue` — drawings ranked by
+  priority (low model confidence + high user-rejection rate).
+- `GET /api/active-learning/projects/{id}/uncertain-detections` — the most
+  uncertain individual AI detections, spread across drawings (`diversify=true`).
+
+`ml/active_learning/queue.py` folds `Detection` confidence + `CorrectionEvent`
+actions into per-drawing stats (pure, unit-tested); `sampler.py`
+(`rank_drawings_for_review` / `select_batch`) does the ranking. The loop:
+serve → these endpoints surface uncertain sheets → users correct →
+`ml/training/export_corrections` → retrain → promote.
+
 ## Release + deploy (`ml/registry/release.py`)
 
 One gated path from a trained model to a served one — composing eval → register →
