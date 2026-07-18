@@ -543,7 +543,7 @@ export default function DrawingRenderer({
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const token = localStorage.getItem('auth_token');
     const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
 
