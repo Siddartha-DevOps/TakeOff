@@ -87,10 +87,28 @@ async def from_takeoff(body: FromTakeoffRequest, current_user: models.User = Dep
 @router.get("/drawings/{drawing_id}/assemblies")
 async def drawing_assemblies(
     drawing_id: int,
+    cost_book_id: Optional[int] = None,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Assemblies estimate for a drawing's latest takeoff (org-isolated)."""
+    """Assemblies estimate for a drawing's latest takeoff (org-isolated).
+
+    ``cost_book_id`` optionally prices the estimate with one of the org's saved
+    cost books; without it, quantities are returned at zero cost.
+    """
+    cost_book = None
+    if cost_book_id is not None:
+        book = (
+            db.query(models.CostBook)
+            .filter(models.CostBook.id == cost_book_id,
+                    models.CostBook.organization_id == current_user.organization_id)
+            .first()
+        )
+        if not book:
+            raise HTTPException(status_code=404, detail="Cost book not found")
+        from estimating.persistence import cost_book_to_map
+        cost_book = cost_book_to_map(book)
+
     drawing = (
         db.query(models.Drawing)
         .join(models.Project)
