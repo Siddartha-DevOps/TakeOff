@@ -102,6 +102,34 @@ ultralytics, cv2) stays lazy so CI runs green on CPU.
 (`ml/registry`) → serve (`ai/inference`, device-aware + tiled) → surface uncertain
 sheets (`ml/active_learning`) → user corrects → retrain (`ml/training/retrain`).
 
+## Readiness preflight (`python -m ml.preflight`)
+
+Before training or serving, run the readiness doctor — it reports, from the
+actual environment, whether this box **can train** (deps + a labeled dataset) and
+**can serve** (deps + weights), with actionable blockers:
+
+```bash
+python -m ml.preflight                      # human report
+python -m ml.preflight --json               # machine-readable
+python -m ml.preflight --require serve      # exit 1 unless serving is ready (CI/deploy gate)
+python -m ml.preflight --data path/data.yaml
+```
+
+Stdlib-only (probes deps via `importlib.util.find_spec` without importing the
+heavy libs), so it runs in CI too — where it correctly reports "not ready".
+
+## Dependencies & weights contract
+
+The deep-learning stack is pinned in **`requirements-ml.txt`** (torch,
+ultralytics, opencv, pillow, pytesseract, + optional sam2/dvc). It is installed
+**only** on the GPU training/inference box and by `ai/inference/Dockerfile` —
+never by CI or the Vercel/app path (CLAUDE.md guardrails #1/#2).
+
+Trained weights live at **`models/best.pt`** (spaces) and
+`ai/models/symbol_counts/yolov8-seg.pt` (symbols) — see `models/README.md`. They
+are gitignored and delivered at runtime, never committed. Absent weights →
+`ModelUnavailableError`, never a mock.
+
 ## Scope / what still needs a GPU + data
 The code is complete and tested. To actually move the accuracy number you still
 need: a labeled **golden plan set**, a **GPU** to fine-tune, and enough

@@ -30,7 +30,7 @@ tests on a CPU-only CI box.
 ```python
 from ai.inference import InferenceEngine, ModelUnavailableError
 
-engine = InferenceEngine.get_instance("ai/models/best.pt", device="auto")
+engine = InferenceEngine.get_instance("models/best.pt", device="auto")
 try:
     result = engine.analyze("sheet.png", drawing_id=42)   # auto-tiles large sheets
     print(result.summary, result.confidence_avg, result.device)
@@ -74,7 +74,7 @@ ece = expected_calibration_error(scores, accepted_flags)
 ## Where the real model runs
 
 Training and inference weights are produced on a GPU box (see `ml/` and
-`ai/inference/Dockerfile`), then dropped at `ai/models/best.pt`. This repo/CI
+`ai/inference/Dockerfile`), then dropped at `models/best.pt`. This repo/CI
 never runs torch — it tests the pure logic and imports the lazy paths. Install a
 checkpoint and `analyze()` switches from `ModelUnavailableError` to real
 detections with zero code change.
