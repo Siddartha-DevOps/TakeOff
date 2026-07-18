@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
 import EstimatePanel from '../components/EstimatePanel';
 import PlanSetModal from '../components/PlanSetModal';
+import AIDashboardModal from '../components/AIDashboardModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -63,6 +64,7 @@ export default function Takeoff() {
   const [showBOQ, setShowBOQ] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
   const [showPlanSet, setShowPlanSet] = useState(false);
+  const [showAIDash, setShowAIDash] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -736,6 +738,13 @@ export default function Takeoff() {
             <FolderTree className="w-3.5 h-3.5" /> Sheets
           </button>
         )}
+        <button
+          onClick={() => setShowAIDash(true)}
+          title="AI & Model dashboard — accuracy + what to label next"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-violet-500/10 hover:bg-violet-500/20 text-violet-300 border-violet-500/30"
+        >
+          <Brain className="w-3.5 h-3.5" /> AI
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -838,6 +847,17 @@ export default function Takeoff() {
             setShowPlanSet(false);
           }}
           onClose={() => setShowPlanSet(false)}
+        />
+      )}
+      {showAIDash && (
+        <AIDashboardModal
+          projectId={id}
+          onSelectDrawing={(drawingId) => {
+            const d = drawings.find((dr) => dr.id === drawingId);
+            if (d) setSelectedDrawing(d);
+            setShowAIDash(false);
+          }}
+          onClose={() => setShowAIDash(false)}
         />
       )}
 
@@ -2359,6 +2379,18 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
               <p className="mt-3 text-xs text-slate-500">Nothing above {minSim}% similarity — lower the threshold or index more sheets.</p>
             ) : (
               <div className="mt-3 space-y-1">
+                {(() => {
+                  const here = (count.matches || []).filter((m) => m.drawing_id === selectedDrawing?.id);
+                  if (!here.length) return null;
+                  return (
+                    <button
+                      onClick={() => here.forEach((m) => onAddAnnotation(m, 'count'))}
+                      className="w-full mb-1 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700"
+                    >
+                      Highlight {here.length} on this sheet
+                    </button>
+                  );
+                })()}
                 <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Per sheet</div>
                 {count.per_drawing.map((row) => (
                   <div key={row.drawing_id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-sm">

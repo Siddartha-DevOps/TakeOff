@@ -281,6 +281,16 @@ export const teamAPI = {
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
 
+// ML ops — model registry (eval_routes) + active-learning review queue
+// (active_learning_routes). Surfaces the training flywheel in the UI.
+export const mlAPI = {
+  listModelVersions: () => api.get('/api/eval/model-versions'),
+  reviewQueue: (projectId, limit = 20) =>
+    api.get(`/api/active-learning/projects/${projectId}/review-queue`, { params: { limit } }),
+  uncertainDetections: (projectId, limit = 50) =>
+    api.get(`/api/active-learning/projects/${projectId}/uncertain-detections`, { params: { limit } }),
+};
+
 // Plan-set organizer — discipline-grouped sheet tree + sheet rename/reclassify
 // (routes/plan_set_routes.py).
 export const planSetAPI = {
