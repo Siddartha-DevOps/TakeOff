@@ -16,6 +16,10 @@ slowly).
 | 4 | CLIP ViT-B/32 | ❌ Install | install, bulk-encode sheets into pgvector |
 | 5 | OCR (Tesseract) | ❌ Install | install the system binary — works immediately |
 
+> **Just want it copy-paste?** Open **`ml/notebooks/train_spaces_colab.ipynb`** in
+> Google Colab (or RunPod/Jupyter) on a GPU runtime and run the cells top to
+> bottom — it does steps 1 (space model) end to end and hands you `best.pt`.
+
 ## Prerequisites (once)
 - NVIDIA GPU + drivers (CUDA 12.x); 16 GB+ VRAM is comfortable.
 - Python 3.11, `git`, `unzip`, ~15 GB free disk (CubiCasa5K is ~5 GB).
