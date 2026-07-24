@@ -749,3 +749,45 @@ class ClassificationTemplate(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class ActivityLog(Base):
+    """General org-scoped audit trail — who did what, when (enterprise ask).
+
+    Complements the scoped correction/handoff logs with a single activity feed.
+    `details` is optional JSON (name avoids SQLAlchemy's reserved `metadata`).
+    """
+    __tablename__ = "activity_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String(50), nullable=False)          # 'login' | 'share.created' | 'template.applied' | ...
+    entity_type = Column(String(50), nullable=True)      # 'project' | 'share' | ...
+    entity_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)                # optional JSON
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class SSOConnection(Base):
+    """Per-org SAML SSO configuration (enterprise auth). One row per org.
+
+    Stores IdP metadata (entity id, SSO URL, x509 cert — all public) so the login
+    flow can redirect to the IdP and validate assertions. Disabled until
+    `enabled` is set and the IdP fields are filled.
+    """
+    __tablename__ = "sso_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(20), nullable=False, default="saml")
+    enabled = Column(Boolean, nullable=False, default=False)
+    idp_entity_id = Column(String(255), nullable=True)
+    idp_sso_url = Column(String(500), nullable=True)
+    idp_x509_cert = Column(Text, nullable=True)          # IdP signing cert (public)
+    sp_entity_id = Column(String(255), nullable=True)    # our SP identifier
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_sso_connections_org", "organization_id", unique=True),
+    )

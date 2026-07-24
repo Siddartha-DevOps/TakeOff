@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+from audit import record_activity
 from auth import get_current_user
 from database import get_db
 from sharing import new_share_token, normalize_role, share_is_valid
@@ -84,6 +85,9 @@ async def create_share(
     db.add(share)
     db.commit()
     db.refresh(share)
+    record_activity(db, action="share.created", organization_id=current_user.organization_id,
+                    user_id=current_user.id, entity_type="project", entity_id=project_id,
+                    details={"role": share.role, "email": share.email})
     return _share_to_dict(share)
 
 
