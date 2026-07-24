@@ -291,6 +291,15 @@ export const teamAPI = {
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
 
+// External collaboration — share a project with people who have no account
+// (routes/sharing_routes.py). resolve() is the PUBLIC guest endpoint.
+export const sharingAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/shares`),
+  create: (projectId, payload) => api.post(`/api/projects/${projectId}/shares`, payload),
+  revoke: (shareId) => api.delete(`/api/shares/${shareId}`),
+  resolve: (token) => api.get(`/api/shared/${token}`),
+};
+
 // ML ops — model registry (eval_routes) + active-learning review queue
 // (active_learning_routes). Surfaces the training flywheel in the UI.
 export const mlAPI = {

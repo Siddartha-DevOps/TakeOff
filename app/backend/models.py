@@ -706,3 +706,27 @@ class IntegrationConnection(Base):
     __table_args__ = (
         Index("ux_integration_org_provider", "organization_id", "provider", unique=True),
     )
+
+
+class ProjectShare(Base):
+    """External collaboration — share a project with someone who has no account.
+
+    A tokenized link grants scoped, account-free access (view or comment), like
+    Togal's "collaborate with users outside your account." The token is the
+    bearer credential; guests never authenticate. Revoke or expire to cut access.
+    """
+    __tablename__ = "project_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True)          # optional — link can be email-less
+    role = Column(String(20), nullable=False, default="viewer")  # 'viewer' | 'commenter'
+    revoked = Column(Boolean, nullable=False, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    project = relationship("Project")
