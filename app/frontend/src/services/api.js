@@ -291,6 +291,16 @@ export const teamAPI = {
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
 };
 
+// Classification-library templates — reusable org-level condition sets
+// (routes/classification_routes.py).
+export const classificationAPI = {
+  list: () => api.get('/api/classifications/templates'),
+  seed: () => api.post('/api/classifications/templates/seed'),
+  create: (payload) => api.post('/api/classifications/templates', payload),
+  remove: (id) => api.delete(`/api/classifications/templates/${id}`),
+  apply: (templateId, projectId) => api.post(`/api/classifications/templates/${templateId}/apply/${projectId}`),
+};
+
 // External collaboration — share a project with people who have no account
 // (routes/sharing_routes.py). resolve() is the PUBLIC guest endpoint.
 export const sharingAPI = {

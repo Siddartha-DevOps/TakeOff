@@ -730,3 +730,22 @@ class ProjectShare(Base):
     last_accessed_at = Column(DateTime(timezone=True), nullable=True)
 
     project = relationship("Project")
+
+
+class ClassificationTemplate(Base):
+    """A reusable, org-level library of classifications (Togal's "classification
+    library template"). Each item is a named measurable condition (trade, unit,
+    annotation type, color) an estimator applies to a project in one click,
+    creating Condition rows. `data` is a JSON list of items.
+    """
+    __tablename__ = "classification_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    data = Column(Text, nullable=False, default="[]")   # JSON: [{name, trade, annotation_type, unit, color, waste_percent}]
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

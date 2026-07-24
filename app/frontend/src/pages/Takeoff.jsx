@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
@@ -10,6 +10,7 @@ import AIDashboardModal from '../components/AIDashboardModal';
 import ShareModal from '../components/ShareModal';
 import HelpPanel from '../components/HelpPanel';
 import OnboardingChecklist from '../components/OnboardingChecklist';
+import ClassificationModal from '../components/ClassificationModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -70,6 +71,7 @@ export default function Takeoff() {
   const [showAIDash, setShowAIDash] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showClassifications, setShowClassifications] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -758,6 +760,13 @@ export default function Takeoff() {
           <Share2 className="w-3.5 h-3.5" /> Share
         </button>
         <button
+          onClick={() => setShowClassifications(true)}
+          title="Classification library — apply a reusable set of conditions to this project"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30"
+        >
+          <Library className="w-3.5 h-3.5" /> Library
+        </button>
+        <button
           onClick={() => setShowHelp(true)}
           title="Help & how-tos"
           className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300"
@@ -883,6 +892,9 @@ export default function Takeoff() {
         <ShareModal projectId={id} projectName={project?.name || 'Project'} onClose={() => setShowShare(false)} />
       )}
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      {showClassifications && (
+        <ClassificationModal projectId={id} onClose={() => setShowClassifications(false)} />
+      )}
       <OnboardingChecklist onOpenHelp={() => setShowHelp(true)} />
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
