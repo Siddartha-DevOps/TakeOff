@@ -4,6 +4,7 @@ import schemas
 import models
 import auth
 from auth import get_password_hash, verify_password, create_access_token
+from audit import record_activity
 from database import get_db
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -61,7 +62,10 @@ async def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     
     # Create access token
     access_token = create_access_token(data={"sub": user.email})
-    
+
+    if user.organization_id:
+        record_activity(db, action="login", organization_id=user.organization_id, user_id=user.id)
+
     return {
         "access_token": access_token,
         "token_type": "bearer",
