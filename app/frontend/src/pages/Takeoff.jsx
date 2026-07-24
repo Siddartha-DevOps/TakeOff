@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2 } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
@@ -8,6 +8,8 @@ import EstimatePanel from '../components/EstimatePanel';
 import PlanSetModal from '../components/PlanSetModal';
 import AIDashboardModal from '../components/AIDashboardModal';
 import ShareModal from '../components/ShareModal';
+import HelpPanel from '../components/HelpPanel';
+import OnboardingChecklist from '../components/OnboardingChecklist';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -67,6 +69,7 @@ export default function Takeoff() {
   const [showPlanSet, setShowPlanSet] = useState(false);
   const [showAIDash, setShowAIDash] = useState(false);
   const [showShare, setShowShare] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -754,6 +757,13 @@ export default function Takeoff() {
         >
           <Share2 className="w-3.5 h-3.5" /> Share
         </button>
+        <button
+          onClick={() => setShowHelp(true)}
+          title="Help & how-tos"
+          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300"
+        >
+          <HelpCircle className="w-4 h-4" />
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -872,6 +882,8 @@ export default function Takeoff() {
       {showShare && (
         <ShareModal projectId={id} projectName={project?.name || 'Project'} onClose={() => setShowShare(false)} />
       )}
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      <OnboardingChecklist onOpenHelp={() => setShowHelp(true)} />
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
         <aside className="bg-slate-900 text-slate-200 border-r border-slate-800 p-4 overflow-auto">
