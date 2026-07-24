@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2 } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
 import EstimatePanel from '../components/EstimatePanel';
 import PlanSetModal from '../components/PlanSetModal';
 import AIDashboardModal from '../components/AIDashboardModal';
+import ShareModal from '../components/ShareModal';
 import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
@@ -65,6 +66,7 @@ export default function Takeoff() {
   const [showEstimate, setShowEstimate] = useState(false);
   const [showPlanSet, setShowPlanSet] = useState(false);
   const [showAIDash, setShowAIDash] = useState(false);
+  const [showShare, setShowShare] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
@@ -745,6 +747,13 @@ export default function Takeoff() {
         >
           <Brain className="w-3.5 h-3.5" /> AI
         </button>
+        <button
+          onClick={() => setShowShare(true)}
+          title="Share this project with people outside your team (no account needed)"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border-teal-500/30"
+        >
+          <Share2 className="w-3.5 h-3.5" /> Share
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -859,6 +868,9 @@ export default function Takeoff() {
           }}
           onClose={() => setShowAIDash(false)}
         />
+      )}
+      {showShare && (
+        <ShareModal projectId={id} projectName={project?.name || 'Project'} onClose={() => setShowShare(false)} />
       )}
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
