@@ -1,8 +1,11 @@
 """
 CubiCasa5K → versioned YOLO-seg dataset (Phase 2: Dataset v1).
 
-CubiCasa5K (Kalervo et al., 2019; CC-BY-4.0, hosted on Zenodo record 2613548) is
-5000 annotated residential floor plans. Each sample folder contains a floor-plan
+CubiCasa5K (Kalervo et al., 2019; CC BY-NC 4.0 — NonCommercial, per the dataset's
+LICENSE file; hosted on Zenodo record 2613548) is 5000 annotated residential floor
+plans. NOTE: the NonCommercial clause forbids commercial use — do NOT train a
+commercial model on this data or re-host it (an earlier version of this docstring
+mislabeled it "CC-BY-4.0", which is incorrect). Each sample folder contains a floor-plan
 raster (``F1_original.png`` / ``F1_scaled.png``) and a ``model.svg`` whose
 ``<g class="Space <RoomType>">`` groups carry the room polygons. This module
 turns those into the trainer's format by reusing the existing space-class remap
