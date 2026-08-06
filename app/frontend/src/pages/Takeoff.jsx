@@ -11,7 +11,7 @@ import ShareModal from '../components/ShareModal';
 import HelpPanel from '../components/HelpPanel';
 import OnboardingChecklist from '../components/OnboardingChecklist';
 import ClassificationModal from '../components/ClassificationModal';
-import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
+import { askTakeoffChat, getRoomColor } from '../mock/mockAI';
 import { SAMPLE_PROJECTS } from '../mock/mockData';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
@@ -325,48 +325,81 @@ export default function Takeoff() {
     };
   };
 
+  // Poll the backend for a persisted AI result (the raster /analyze path runs
+  // asynchronously). Returns a UI-ready detection, or null if the job fails /
+  // times out / no model is installed — never fabricated data.
+  const pollForResult = async (drawingId, drawing) => {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      try {
+        const { data } = await takeoffAPI.getResults(drawingId);
+        if (data && data.detection_data) {
+          const det = typeof data.detection_data === 'string'
+            ? JSON.parse(data.detection_data) : data.detection_data;
+          let quantities = [];
+          try {
+            quantities = typeof data.quantities_data === 'string'
+              ? JSON.parse(data.quantities_data) : (data.quantities_data || []);
+          } catch { quantities = []; }
+          return {
+            rooms: det.rooms || [], walls: det.walls || [], doors: det.doors || [],
+            windows: det.windows || [], summary: det.summary || {},
+            quantities, method: 'raster',
+            scale: '—', sheet: drawing?.sheet_name || drawing?.original_filename || '',
+            processingTimeMs: data.processing_time_ms || 0,
+          };
+        }
+        if (data && data.processing_status === 'failed') return null;  // model unavailable / errored
+      } catch (error) {
+        // 404 / transient — keep waiting until the deadline
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return null;
+  };
+
   const runAnalysisForDrawing = async (drawing) => {
     setStatus('processing');
     setProgress({ msg: 'Reading vector geometry from the plan…', pct: 30 });
 
-    // Real vector AUTODETECT first (exact, no weights). Falls back to the mock
-    // only when the sheet isn't a vector PDF or the call fails — same
-    // real-first/fallback pattern this app uses for chat.
+    // Real vector AUTODETECT first (exact, no weights) for vector PDFs. Anything
+    // else falls through to the real raster AI model below — never to mock data.
     let result = null;
-    let fromVector = false;
     if ((drawing.file_type || '').toUpperCase() === 'PDF') {
       try {
         const { data } = await takeoffAPI.autodetect(drawing.id);
         if (data && data.method === 'vector' && data.is_vector !== false) {
           result = mapAutodetect(data, drawing);
-          fromVector = true;
         }
       } catch (error) {
-        console.warn('AUTODETECT unavailable, falling back:', error);
+        console.warn('AUTODETECT unavailable, falling back to raster AI:', error);
       }
     }
     if (!result) {
-      result = await runTakeoffAI({ onProgress: setProgress, seed: drawing.id });
+      // No vector geometry (scanned PDF or JPG/PNG/TIFF) → real raster AI model,
+      // which runs asynchronously. Poll for the persisted result; NEVER fabricate.
+      // If the model isn't installed the job fails → honest "unavailable" state.
+      setProgress({ msg: 'Running AI detection on this sheet…', pct: 60 });
+      try {
+        await takeoffAPI.analyze(drawing.id);
+      } catch (error) {
+        console.warn('AI analyze trigger failed:', error);
+      }
+      result = await pollForResult(drawing.id, drawing);
+      if (!result) {
+        setDetection(null);
+        setStatus('unavailable');
+        setProgress(null);
+        return;
+      }
     }
 
     setDetection(result);
     annotationStore.loadFromDetection(result);
     setStatus('ready');
-
-    // The vector AUTODETECT endpoint already persisted a TakeoffResult; only the
-    // mock/fallback path needs to save here (avoids a duplicate row + usage count).
-    if (!fromVector) {
-      try {
-        await takeoffAPI.saveResults(drawing.id, {
-          detection_data: JSON.stringify(result),
-          quantities_data: JSON.stringify(result.summary || {}),
-          confidence_scores: JSON.stringify({ avg: 0.95 }),
-          processing_time_ms: result.processingTimeMs || 1500,
-        });
-      } catch (error) {
-        console.error('Failed to save AI results:', error);
-      }
-    }
+    // Both real paths (vector AUTODETECT and raster /analyze) persist their own
+    // TakeoffResult server-side, so there's nothing to save from the client here.
+    // (The old client-side save existed only for the removed mock path.)
   };
 
   const selectDrawing = (drawing) => {
@@ -563,11 +596,8 @@ export default function Takeoff() {
   }
 
   async function runAnalysis() {
-    setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
-    const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
-    setDetection(res);
-    annotationStore.loadFromDetection(res);
-    setStatus('ready');
+    // Route to the single real analysis path (vector AUTODETECT → raster AI).
+    if (selectedDrawing) return runAnalysisForDrawing(selectedDrawing);
   }
 
   async function handleExport(format) {
@@ -1021,6 +1051,21 @@ export default function Takeoff() {
 
         <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
+          {status === 'unavailable' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-md">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-800">
+                  <div className="font-semibold">AI auto-detect isn’t available for this sheet yet.</div>
+                  Vector PDFs are read directly; scanned images need the trained model installed.
+                  You can measure this sheet manually with the takeoff tools in the meantime.
+                </div>
+                <button onClick={() => setStatus('ready')} className="ml-1 text-amber-500 hover:text-amber-700">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
           {selectedDrawing ? (
             <div className="absolute inset-0">
               <DrawingRenderer

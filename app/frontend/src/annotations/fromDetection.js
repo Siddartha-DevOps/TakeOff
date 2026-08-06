@@ -80,7 +80,7 @@ function symbolToAnnotation(item, layerId, detectionMeta) {
 }
 
 /**
- * @param {object} detection - result of runTakeoffAI() / GET /takeoff/drawings/:id/results
+ * @param {object} detection - AUTODETECT response / GET /takeoff/drawings/:id/results
  * @returns {import('./types').Annotation[]}
  */
 export function annotationsFromDetection(detection) {
