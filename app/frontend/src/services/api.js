@@ -132,6 +132,10 @@ export const uploadsAPI = {
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  // Real raster AI takeoff — triggers YOLOv8-seg in the background
+  // (routes/takeoff_routes.py _run_ai_analysis). Poll getResults for the result;
+  // marks the drawing FAILED (no fabricated data) when no model is installed.
+  analyze: (drawingId) => api.post(`/api/takeoff/drawings/${drawingId}/analyze`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
   // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
   // view (memory/TOGAL_PARITY_REAUDIT.md #19).
