@@ -249,6 +249,15 @@ def evaluate_model(model_path: str, data_yaml: str, device: str = "0") -> dict:
         "recall": float(metrics.box.r.mean()),
     }
 
+    # Segmentation metrics (present only for -seg models). prepare.py reads
+    # `mAP50_seg` as its val_map scalar; guarded with getattr so detection-only
+    # models (DetMetrics, which expose no `.seg`) still return cleanly with just
+    # the box metrics above. Box metrics are kept unchanged.
+    seg = getattr(metrics, "seg", None)
+    if seg is not None:
+        results["mAP50_seg"] = float(seg.map50)
+        results["mAP50_95_seg"] = float(seg.map)
+
     # Check targets (from AI_TRAINING_GUIDE.md)
     targets = {
         "mAP50": 0.85,
