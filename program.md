@@ -21,6 +21,13 @@ val_map=-1                 HARD REJECT (any failure — see §4)
 - **Metric:** `metrics.seg.map50` (seg mAP@0.5), surfaced by `evaluate_model()`
   in `app/training/train.py` as `mAP50_seg`. Box metrics are still computed and
   returned, just not used as `val_map`.
+- **Gate:** `val_map ≥ 0.50` passes; below that → revert (§2). **No fixed
+  "target" yet** — it is intentionally left uncalibrated until several real
+  `experiment_log.md` runs exist to calibrate against. Do not invent a target.
+- **Not the product metric:** CLAUDE.md's "≥95% space-detection accuracy" is a
+  separate, **product-level** measure (detection rate the product is judged on),
+  **not** this harness's seg mAP@0.5 gate. They are different metrics on
+  different scales — do not conflate them.
 - **Model under test:** `app/backend/models/best.pt` (the promoted inference
   path `server.py` loads), overridable via `--weights` or `$MODEL_PATH`.
 
@@ -111,7 +118,8 @@ through the normal path and looks like "a bad model." Here it is a distinct
   remap. Commercially clean.
 - **P2 — Train + measure.** Train the spaces model on the clean set via
   `run_training.py`, promote `best.pt`, run `python prepare.py`, log `val_map`.
-  Iterate toward the gate: seg mAP@0.5 ≥ 0.50 (target 0.70).
+  Pass gate = `val_map` (seg mAP@0.5) ≥ 0.50. No target set yet — calibrate one
+  from real `experiment_log.md` entries; do not invent it.
 - **P3 — train-then-eval mode.** Extend the loop so `prepare.py` (or a sibling)
   can drive training with the edited code, then score — once eval-only is proven.
 - **P4 — Symbols model.** Doors/windows/MEP detection, once spaces clears the gate.
