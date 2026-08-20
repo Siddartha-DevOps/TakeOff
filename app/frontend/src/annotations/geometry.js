@@ -53,12 +53,29 @@ export function rectsIntersect([ax1, ay1, ax2, ay2], [bx1, by1, bx2, by2]) {
  * measured identically and a stale/reported value can never leak through.
  * @param {import('./types').Annotation} annotation
  */
-export function computeMeasuredValue(annotation) {
+export function planUnitsToFeet(value, scaleRatio, fileType = 'PDF') {
+  if (!Number.isFinite(value) || !Number.isFinite(scaleRatio) || scaleRatio <= 0) return 0;
+  const planUnitsPerInch = String(fileType).toUpperCase() === 'PDF' ? 72 : 300;
+  return (value * scaleRatio) / (planUnitsPerInch * 12);
+}
+
+/**
+ * Compute a takeoff quantity from plan geometry. With a confirmed drawing
+ * scale this returns real square feet / linear feet; without one it falls
+ * back to plan-space units for backwards-compatible annotation ingest.
+ */
+export function computeMeasuredValue(annotation, measurementContext = null) {
+  const scaleRatio = Number(measurementContext?.scaleRatio);
+  const hasScale = Number.isFinite(scaleRatio) && scaleRatio > 0;
+  const feetPerPlanUnit = hasScale
+    ? planUnitsToFeet(1, scaleRatio, measurementContext?.fileType)
+    : 1;
+
   switch (annotation.type) {
     case 'area':
-      return round2(polygonArea(annotation.geometry));
+      return round2(polygonArea(annotation.geometry) * feetPerPlanUnit ** 2);
     case 'line':
-      return round2(polylineLength(annotation.geometry));
+      return round2(polylineLength(annotation.geometry) * feetPerPlanUnit);
     case 'count':
       return 1;
     default:

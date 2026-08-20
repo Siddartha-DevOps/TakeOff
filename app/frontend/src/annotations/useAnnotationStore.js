@@ -11,8 +11,8 @@ import { deserializeAnnotations, serializeAnnotations } from './serialize';
 export function useAnnotationStore() {
   const [annotations, setAnnotations] = useState([]);
 
-  const loadFromDetection = useCallback((detection) => {
-    setAnnotations(annotationsFromDetection(detection));
+  const loadFromDetection = useCallback((detection, measurementContext = null) => {
+    setAnnotations(annotationsFromDetection(detection, measurementContext));
   }, []);
 
   const loadFromJSON = useCallback((json) => {
@@ -42,9 +42,9 @@ export function useAnnotationStore() {
   // since the user triggered it" rule the original overlay spec gives for
   // Smart-fill — a search match only becomes a real shape once a person
   // picks it, but it's the identical Annotation object from then on).
-  const addAnnotation = useCallback((partial) => {
+  const addAnnotation = useCallback((partial, measurementContext = null) => {
     const annotation = { style: {}, meta: {}, ...partial };
-    annotation.measuredValue = computeMeasuredValue(annotation);
+    annotation.measuredValue = computeMeasuredValue(annotation, measurementContext);
     setAnnotations((prev) => [...prev, annotation]);
     return annotation;
   }, []);

@@ -10,6 +10,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    organization_name: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
