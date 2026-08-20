@@ -3,10 +3,19 @@ Bootstrap a space-segmentation training set from PUBLIC floor-plan datasets.
 
 The correction flywheel (``ml/training/export_corrections.py``) only produces
 labels once users start correcting AI output — a cold start. This module warms it
-up: it remaps room polygons from public, permissively-licensed floor-plan corpora
-(CubiCasa5K, RPLAN, Structured3D) onto Takeoff's space-class list and writes them
-in Ultralytics YOLOv8-seg format, so ``training/train_yolov8_seg.py`` can fine-tune
-a first space model before a single hand-labeled Takeoff sheet exists.
+up: it remaps room polygons from public floor-plan corpora (CubiCasa5K, RPLAN,
+Structured3D) onto Takeoff's space-class list and writes them in Ultralytics
+YOLOv8-seg format, so ``training/train_yolov8_seg.py`` can fine-tune a first space
+model before a single hand-labeled Takeoff sheet exists.
+
+LICENSES ARE NOT UNIFORMLY PERMISSIVE — verify before any commercial use or
+re-hosting (an earlier version of this file wrongly called these corpora
+"permissively-licensed"):
+  - CubiCasa5K   — CC BY-NC 4.0 (NonCommercial); no commercial use.
+  - RPLAN        — research/academic Terms of Use; no redistribution.
+  - Structured3D — research/non-commercial Terms of Use; no redistribution.
+ResPlan (CC BY 4.0) is the commercial-safe alternative. Do NOT train a commercial
+model on the NonCommercial corpora above.
 
 Space classes here mirror the room labels in ``ai/inference_api.py`` (living /
 bedroom / bathroom / kitchen / balcony / stair / storage). Symbols (doors,

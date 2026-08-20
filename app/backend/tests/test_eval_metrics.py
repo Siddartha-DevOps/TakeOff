@@ -22,6 +22,18 @@ def test_poly_iou_half_overlap():
     assert poly_iou(SQ_A, SQ_B) == pytest.approx(2 / 6)  # inter 2, union 6
 
 
+def test_poly_iou_degenerate_ring_scores_zero_not_crash():
+    # A truncated CubiCasa contour / sliver prediction can be a point or a line
+    # (< 3 vertices). shapely can't build a polygon from it and raises
+    # "A linearring requires at least 4 coordinates" — it must score 0, not crash.
+    assert poly_iou([[0, 0], [2, 0]], SQ_A) == 0.0   # 2-point line
+    assert poly_iou([[0, 0]], SQ_A) == 0.0           # single point
+    assert poly_iou([], SQ_A) == 0.0                 # empty ring
+    assert poly_iou(SQ_A, []) == 0.0                 # empty on the other side
+    # a degenerate prediction inside mean_iou is a miss (0), not an exception
+    assert mean_iou([SQ_A], [[[0, 0], [2, 0]]]) == pytest.approx(0.0)
+
+
 def test_box_iou_matches_poly():
     assert box_iou(BOX_A, BOX_A) == pytest.approx(1.0)
     assert box_iou(BOX_A, BOX_B) == pytest.approx(2 / 6)
