@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -33,6 +33,70 @@ function toPlanSpacePoint(e, rect, nativeWidth, nativeHeight) {
   ];
 }
 
+const MANUAL_STYLE = {
+  area: { stroke: '#ec4899', fill: '#ec4899', unit: 'sf' },
+  line: { stroke: '#06b6d4', fill: 'none', unit: 'lf' },
+  count: { stroke: '#f97316', fill: '#f97316', unit: 'ea' },
+};
+
+function ManualTakeoffOverlay({ annotations, draftPoints, hoverPoint, tool, screenPointFor, planScale = 1 }) {
+  const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
+  const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
+
+  const renderShape = (annotation) => {
+    const points = annotation.geometry.map(toScreen).filter(Boolean);
+    if (points.length === 0) return null;
+    const style = { ...MANUAL_STYLE[annotation.type], ...annotation.style };
+    const center = points.reduce((acc, point) => ({ x: acc.x + point.x / points.length, y: acc.y + point.y / points.length }), { x: 0, y: 0 });
+    const measuredValue = Number(annotation.measuredValue) || 0;
+    const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
+
+    return (
+      <g key={annotation.id}>
+        {annotation.type === 'area' && (
+          <polygon points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill={style.fill} fillOpacity="0.2" stroke={style.stroke} strokeWidth="2" />
+        )}
+        {annotation.type === 'line' && (
+          <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth="3" />
+        )}
+        {annotation.type === 'count' && (
+          <g>
+            <circle cx={center.x} cy={center.y} r="8" fill={style.fill} stroke="#fff" strokeWidth="2" />
+            <path d={`M ${center.x - 4} ${center.y} H ${center.x + 4} M ${center.x} ${center.y - 4} V ${center.y + 4}`} stroke="#fff" strokeWidth="1.5" />
+          </g>
+        )}
+        <text x={center.x} y={center.y - 12} textAnchor="middle" fontSize="11" fontWeight="700" fill={style.stroke}
+          style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
+          {label}
+        </text>
+      </g>
+    );
+  };
+
+  const previewPlanPoints = tool && hoverPoint ? [...draftPoints, hoverPoint] : draftPoints;
+  const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
+
+  return (
+    <svg className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+      {manualAnnotations.map(renderShape)}
+      {tool === 'area' && previewPoints.length > 0 && (
+        <>
+          <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
+          {draftPoints.map(toScreen).filter(Boolean).map((point, index) => (
+            <circle key={index} cx={point.x} cy={point.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1.5" />
+          ))}
+        </>
+      )}
+      {tool === 'line' && previewPoints.length > 0 && (
+        <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#06b6d4" strokeWidth="3" strokeDasharray="6 4" />
+      )}
+      {tool === 'count' && hoverPoint && previewPoints[0] && (
+        <circle cx={previewPoints[0].x} cy={previewPoints[0].y} r="8" fill="#f97316" fillOpacity="0.65" stroke="#fff" strokeWidth="2" />
+      )}
+    </svg>
+  );
+}
+
 /**
  * @param {object} props
  * @param {boolean} [props.calibrating] - when true, the next two clicks on the
@@ -48,19 +112,16 @@ function toPlanSpacePoint(e, rect, nativeWidth, nativeHeight) {
  * @param {Array<{id:number,x:number,y:number,resolved:boolean}>} [props.commentPins]
  *   - persisted comment pins on this drawing, in plan-space.
  * @param {(id:number) => void} [props.onPinClick]
- * @param {boolean} [props.regionSelectMode] - when true, a click-drag rectangle
- *   is captured as a plan-space bbox instead of normal interaction (AI Image
- *   Search: "draw a box, find visually similar patches on every sheet").
- * @param {(bbox: number[]) => void} [props.onRegionSelected] - [x1,y1,x2,y2]
- *   in plan-space pixels — the same space toPlanSpacePoint produces, and what
- *   POST /search/image expects.
+ * @param {'area'|'line'|'count'|null} [props.manualTool]
+ * @param {import('../annotations/types').Annotation[]} [props.annotations]
+ * @param {(shape:{type:string,geometry:number[][]}) => void} [props.onManualAnnotation]
  */
 export default function DrawingRenderer({
   drawing, onLoad, calibrating = false, onCalibrationPoints,
   commentMode = false, onCommentClick, onPointerMove,
   remoteCursors = [], commentPins = [], onPinClick,
-  detection = null, onSelect,
-  regionSelectMode = false, onRegionSelected,
+  detection = null,
+  manualTool = null, annotations = [], onManualAnnotation,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -70,6 +131,8 @@ export default function DrawingRenderer({
   const [calScreenPoints, setCalScreenPoints] = useState([]); // for the on-screen marker overlay only
   const [tileMeta, setTileMeta] = useState(null); // null until this drawing's tile pyramid is ready
   const [osdTick, setOsdTick] = useState(0); // bumped on OSD pan/zoom so overlay positions recompute
+  const [manualPoints, setManualPoints] = useState([]);
+  const [manualHoverPoint, setManualHoverPoint] = useState(null);
   const canvasRef = useRef(null);
   const imageWrapRef = useRef(null);
   const pageWrapRef = useRef(null);
@@ -77,21 +140,94 @@ export default function DrawingRenderer({
   const osdViewerRef = useRef(null);
   const calibratingRef = useRef(calibrating); // OSD's click handler closes over this once — needs the live value
   const commentModeRef = useRef(commentMode);
-  const regionSelectModeRef = useRef(regionSelectMode); // same reason — OSD's handlers close over this once
-  const regionDragRef = useRef(null); // { startPlan: [x,y] } while a region-search drag is in progress
-  const [regionDragScreen, setRegionDragScreen] = useState(null); // {x1,y1,x2,y2} fixed screen coords, live preview only
+  const manualToolRef = useRef(manualTool);
+  const manualPointsRef = useRef(manualPoints);
+  const onManualAnnotationRef = useRef(onManualAnnotation);
 
   useEffect(() => {
     calibratingRef.current = calibrating;
   }, [calibrating]);
 
   useEffect(() => {
-    regionSelectModeRef.current = regionSelectMode;
-  }, [regionSelectMode]);
-
-  useEffect(() => {
     commentModeRef.current = commentMode;
   }, [commentMode]);
+
+  useEffect(() => {
+    manualToolRef.current = manualTool;
+    manualPointsRef.current = [];
+    setManualPoints([]);
+    setManualHoverPoint(null);
+  }, [manualTool, drawing?.id]);
+
+  useEffect(() => {
+    manualPointsRef.current = manualPoints;
+  }, [manualPoints]);
+
+  useEffect(() => {
+    onManualAnnotationRef.current = onManualAnnotation;
+  }, [onManualAnnotation]);
+
+  const finishManualArea = useCallback(() => {
+    const points = manualPointsRef.current;
+    if (manualToolRef.current !== 'area' || points.length < 3) return;
+    onManualAnnotationRef.current?.({ type: 'area', geometry: points });
+    manualPointsRef.current = [];
+    setManualPoints([]);
+    setManualHoverPoint(null);
+  }, []);
+
+  useEffect(() => {
+    if (!manualTool) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        manualPointsRef.current = [];
+        setManualPoints([]);
+        setManualHoverPoint(null);
+      } else if (event.key === 'Enter') {
+        finishManualArea();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [manualTool, finishManualArea]);
+
+  const handleManualPlanClick = useCallback((point, isDoubleClick = false) => {
+    const tool = manualToolRef.current;
+    if (!tool) return false;
+
+    if (tool === 'count') {
+      onManualAnnotationRef.current?.({ type: 'count', geometry: [point] });
+      return true;
+    }
+
+    if (tool === 'line') {
+      const start = manualPointsRef.current[0];
+      if (!start) {
+        manualPointsRef.current = [point];
+        setManualPoints([point]);
+      } else {
+        onManualAnnotationRef.current?.({ type: 'line', geometry: [start, point] });
+        manualPointsRef.current = [];
+        setManualPoints([]);
+        setManualHoverPoint(null);
+      }
+      return true;
+    }
+
+    if (tool === 'area') {
+      if (isDoubleClick && manualPointsRef.current.length >= 3) {
+        finishManualArea();
+      } else {
+        setManualPoints((prev) => {
+          const next = [...prev, point];
+          manualPointsRef.current = next;
+          return next;
+        });
+      }
+      return true;
+    }
+    return false;
+  }, [finishManualArea]);
 
   // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a sheet split
   // from a multi-page PDF has its own page_number (0-indexed) even though
@@ -195,54 +331,31 @@ export default function DrawingRenderer({
     });
 
     viewer.addHandler('canvas-click', (event) => {
-      if (!osdContainerRef.current || regionSelectModeRef.current) return;
+      if (!osdContainerRef.current) return;
       const viewportPoint = viewer.viewport.pointFromPixel(event.position);
       const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      const point = [imagePoint.x, imagePoint.y];
+      const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+      const point = [imagePoint.x / planScale, imagePoint.y / planScale];
 
       if (commentModeRef.current) {
         onCommentClick?.(point);
         return;
       }
-      if (!calibratingRef.current) return;
-      const rect = osdContainerRef.current.getBoundingClientRect();
-      const screenPoint = { x: rect.left + event.position.x, y: rect.top + event.position.y };
+      if (calibratingRef.current) {
+        const rect = osdContainerRef.current.getBoundingClientRect();
+        const screenPoint = { x: rect.left + event.position.x, y: rect.top + event.position.y };
 
-      setCalScreenPoints((prev) => {
-        const next = [...prev, { ...screenPoint, plan: point }];
-        if (next.length === 2) {
-          onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
-          return [];
-        }
-        return next;
-      });
-    });
-
-    // Region-search drag (AI Image Search): disable OSD's own pan-on-drag for
-    // the gesture's duration so it draws a selection rectangle instead of
-    // panning the sheet.
-    viewer.addHandler('canvas-press', (event) => {
-      if (!regionSelectModeRef.current || !osdContainerRef.current) return;
-      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      const rect = osdContainerRef.current.getBoundingClientRect();
-      viewer.setMouseNavEnabled(false);
-      startRegionDrag(
-        [imagePoint.x, imagePoint.y],
-        { x: rect.left + event.position.x, y: rect.top + event.position.y },
-      );
-    });
-    viewer.addHandler('canvas-drag', (event) => {
-      if (!regionSelectModeRef.current || !osdContainerRef.current) return;
-      const rect = osdContainerRef.current.getBoundingClientRect();
-      updateRegionDrag({ x: rect.left + event.position.x, y: rect.top + event.position.y });
-    });
-    viewer.addHandler('canvas-release', (event) => {
-      if (!regionSelectModeRef.current) return;
-      viewer.setMouseNavEnabled(true);
-      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      finishRegionDrag([imagePoint.x, imagePoint.y]);
+        setCalScreenPoints((prev) => {
+          const next = [...prev, { ...screenPoint, plan: point }];
+          if (next.length === 2) {
+            onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
+            return [];
+          }
+          return next;
+        });
+        return;
+      }
+      handleManualPlanClick(point, event.originalEvent?.detail >= 2);
     });
 
     // Repositions remote-cursor/comment-pin overlays (rendered as plain
@@ -256,7 +369,7 @@ export default function DrawingRenderer({
       osdViewerRef.current = null;
     };
     // eslint-disable-next-line
-  }, [tileMeta, drawing?.id]);
+  }, [tileMeta, drawing?.id, handleManualPlanClick]);
 
   // Plan-space point -> pixel position relative to the OSD viewer element,
   // for overlay rendering. Recomputes on every `osdTick` bump above so
@@ -271,12 +384,15 @@ export default function DrawingRenderer({
 
   function handleOsdPointerMove(e) {
     const viewer = osdViewerRef.current;
-    if (!viewer || !osdContainerRef.current || !onPointerMove) return;
+    if (!viewer || !osdContainerRef.current) return;
     const rect = osdContainerRef.current.getBoundingClientRect();
     const offset = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
     const viewportPoint = viewer.viewport.pointFromPixel(offset);
     const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-    onPointerMove([imagePoint.x, imagePoint.y]);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    const point = [imagePoint.x / planScale, imagePoint.y / planScale];
+    if (manualToolRef.current) setManualHoverPoint(point);
+    onPointerMove?.(point);
   }
 
   const loadImage = () => {
@@ -339,54 +455,18 @@ export default function DrawingRenderer({
     setPageNativeSize({ width: page.width, height: page.height });
   };
 
-  // Region-search drag (AI Image Search): press-drag-release captures a
-  // plan-space bbox instead of the click-based calibration/comment gestures.
-  function startRegionDrag(planPoint, screenPoint) {
-    regionDragRef.current = { startPlan: planPoint };
-    setRegionDragScreen({ x1: screenPoint.x, y1: screenPoint.y, x2: screenPoint.x, y2: screenPoint.y });
-  }
-
-  function updateRegionDrag(screenPoint) {
-    if (!regionDragRef.current) return;
-    setRegionDragScreen((prev) => (prev ? { ...prev, x2: screenPoint.x, y2: screenPoint.y } : prev));
-  }
-
-  function finishRegionDrag(planPoint) {
-    const drag = regionDragRef.current;
-    regionDragRef.current = null;
-    setRegionDragScreen(null);
-    if (!drag) return;
-
-    const [sx, sy] = drag.startPlan;
-    const [ex, ey] = planPoint;
-    const bbox = [Math.min(sx, ex), Math.min(sy, ey), Math.max(sx, ex), Math.max(sy, ey)];
-    // Ignore accidental clicks/sub-pixel drags — require a real rectangle.
-    if (bbox[2] - bbox[0] > 2 && bbox[3] - bbox[1] > 2) {
-      onRegionSelected?.(bbox);
-    }
-  }
-
-  function RegionSelectOverlay() {
-    if (!regionDragScreen) return null;
-    const { x1, y1, x2, y2 } = regionDragScreen;
-    const x = Math.min(x1, x2), y = Math.min(y1, y2);
-    const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
-    return (
-      <svg className="fixed inset-0 pointer-events-none z-50" width="100%" height="100%">
-        <rect x={x} y={y} width={w} height={h} fill="#0ea5e9" fillOpacity="0.12" stroke="#0ea5e9" strokeWidth="2" strokeDasharray="6 4" />
-      </svg>
-    );
-  }
-
-  function handleCalibrationClick(e, rect, nativeWidth, nativeHeight) {
-    if (!nativeWidth || !nativeHeight || regionSelectMode) return;
+  function handlePlanClick(e, rect, nativeWidth, nativeHeight) {
+    if (!nativeWidth || !nativeHeight) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
 
     if (commentMode) {
       onCommentClick?.(point);
       return;
     }
-    if (!calibrating) return;
+    if (!calibrating) {
+      handleManualPlanClick(point, e.detail >= 2);
+      return;
+    }
     // Viewport-relative (not element-relative): the canvas carries its own CSS
     // `transform: scale()`, which doesn't affect layout, so an element-relative
     // overlay would drift out of sync with the visually scaled canvas. Fixed
@@ -404,8 +484,10 @@ export default function DrawingRenderer({
   }
 
   function handlePointerMove(e, rect, nativeWidth, nativeHeight) {
-    if (!onPointerMove || !nativeWidth || !nativeHeight) return;
-    onPointerMove(toPlanSpacePoint(e, rect, nativeWidth, nativeHeight));
+    if (!nativeWidth || !nativeHeight) return;
+    const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
+    if (manualToolRef.current) setManualHoverPoint(point);
+    onPointerMove?.(point);
   }
 
   // Plan-space -> viewport-fixed screen point, for the untiled paths (both
@@ -522,11 +604,7 @@ export default function DrawingRenderer({
           if (pts.length < 3) return null;
           const c = room.centroid ? S(room.centroid[0], room.centroid[1]) : pts[0];
           return (
-            <g
-              key={room.id}
-              style={{ pointerEvents: onSelect ? 'auto' : 'none', cursor: onSelect ? 'pointer' : undefined }}
-              onClick={(e) => { if (!onSelect) return; e.stopPropagation(); onSelect(room.id); }}
-            >
+            <g key={room.id}>
               <polygon
                 points={pts.map((p) => `${p.x},${p.y}`).join(' ')}
                 fill="#6366f1" fillOpacity="0.18" stroke="#4f46e5" strokeWidth="1.5"
@@ -546,12 +624,8 @@ export default function DrawingRenderer({
             const p = symCenter(inst);
             if (!p) return null;
             return (
-              <circle
-                key={inst.id} cx={p.x} cy={p.y} r="5"
-                fill={color} fillOpacity="0.85" stroke="#fff" strokeWidth="1.5"
-                style={{ pointerEvents: onSelect ? 'auto' : 'none', cursor: onSelect ? 'pointer' : undefined }}
-                onClick={(e) => { if (!onSelect) return; e.stopPropagation(); onSelect(inst.id); }}
-              />
+              <circle key={inst.id} cx={p.x} cy={p.y} r="5"
+                fill={color} fillOpacity="0.85" stroke="#fff" strokeWidth="1.5" />
             );
           });
         })}
@@ -577,11 +651,10 @@ export default function DrawingRenderer({
         <div
           ref={osdContainerRef}
           className="w-full h-full"
-          style={{ cursor: calibrating || commentMode || regionSelectMode ? 'crosshair' : undefined }}
+          style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
-        <RegionSelectOverlay />
         {(() => {
           const osdScreenPointFor = (x, y) => {
             if (!osdContainerRef.current) return null;
@@ -591,10 +664,20 @@ export default function DrawingRenderer({
             void osdTick; // recompute this callback's closure whenever the viewport moves
             return { x: rect.left + pixel.x, y: rect.top + pixel.y };
           };
+          const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+          const canonicalScreenPointFor = (x, y) => osdScreenPointFor(x * planScale, y * planScale);
           return (
             <>
-              <DetectionShapes screenPointFor={osdScreenPointFor} planScale={300 / 72} />
-              <CollabOverlay screenPointFor={osdScreenPointFor} />
+              <DetectionShapes screenPointFor={osdScreenPointFor} planScale={planScale} />
+              <ManualTakeoffOverlay
+                annotations={annotations}
+                draftPoints={manualPoints}
+                hoverPoint={manualHoverPoint}
+                tool={manualTool}
+                screenPointFor={osdScreenPointFor}
+                planScale={planScale}
+              />
+              <CollabOverlay screenPointFor={canonicalScreenPointFor} />
             </>
           );
         })()}
@@ -632,7 +715,7 @@ export default function DrawingRenderer({
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const token = localStorage.getItem('auth_token');
     const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
 
@@ -676,30 +759,16 @@ export default function DrawingRenderer({
         {/* PDF Document */}
         <div
           ref={pageWrapRef}
-          className={`relative inline-block ${calibrating || commentMode || regionSelectMode ? 'cursor-crosshair' : ''}`}
+          className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
-            handleCalibrationClick(e, rect, pageNativeSize.width, pageNativeSize.height);
-          }}
-          onMouseDown={(e) => {
-            if (!regionSelectMode || !pageWrapRef.current || !pageNativeSize) return;
-            const rect = pageWrapRef.current.getBoundingClientRect();
-            startRegionDrag(toPlanSpacePoint(e, rect, pageNativeSize.width, pageNativeSize.height), { x: e.clientX, y: e.clientY });
+            handlePlanClick(e, rect, pageNativeSize.width, pageNativeSize.height);
           }}
           onMouseMove={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
-            if (regionSelectMode && regionDragRef.current) {
-              updateRegionDrag({ x: e.clientX, y: e.clientY });
-              return;
-            }
             handlePointerMove(e, rect, pageNativeSize.width, pageNativeSize.height);
-          }}
-          onMouseUp={(e) => {
-            if (!regionSelectMode || !pageWrapRef.current || !pageNativeSize) return;
-            const rect = pageWrapRef.current.getBoundingClientRect();
-            finishRegionDrag(toPlanSpacePoint(e, rect, pageNativeSize.width, pageNativeSize.height));
           }}
         >
           <Document
@@ -715,7 +784,6 @@ export default function DrawingRenderer({
             <Page pageNumber={pageNumber} scale={scale} onLoadSuccess={onPageLoadSuccess} />
           </Document>
           <CalibrationMarkers />
-          <RegionSelectOverlay />
           {(() => {
             const pdfScreenPointFor = (x, y) => {
               if (!pageWrapRef.current || !pageNativeSize) return null;
@@ -726,6 +794,13 @@ export default function DrawingRenderer({
               <>
                 {/* Untiled PDF canvas is in PDF points — same space the engine emits. */}
                 <DetectionShapes screenPointFor={pdfScreenPointFor} planScale={1} />
+                <ManualTakeoffOverlay
+                  annotations={annotations}
+                  draftPoints={manualPoints}
+                  hoverPoint={manualHoverPoint}
+                  tool={manualTool}
+                  screenPointFor={pdfScreenPointFor}
+                />
                 <CollabOverlay screenPointFor={pdfScreenPointFor} />
               </>
             );
@@ -740,30 +815,16 @@ export default function DrawingRenderer({
     <div className="w-full h-full overflow-auto flex items-center justify-center bg-slate-800">
       <div
         ref={imageWrapRef}
-        className={`relative inline-block ${calibrating || commentMode || regionSelectMode ? 'cursor-crosshair' : ''}`}
+        className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;
           const rect = canvasRef.current.getBoundingClientRect();
-          handleCalibrationClick(e, rect, canvasRef.current.width, canvasRef.current.height);
-        }}
-        onMouseDown={(e) => {
-          if (!regionSelectMode || !canvasRef.current) return;
-          const rect = canvasRef.current.getBoundingClientRect();
-          startRegionDrag(toPlanSpacePoint(e, rect, canvasRef.current.width, canvasRef.current.height), { x: e.clientX, y: e.clientY });
+          handlePlanClick(e, rect, canvasRef.current.width, canvasRef.current.height);
         }}
         onMouseMove={(e) => {
           if (!canvasRef.current) return;
           const rect = canvasRef.current.getBoundingClientRect();
-          if (regionSelectMode && regionDragRef.current) {
-            updateRegionDrag({ x: e.clientX, y: e.clientY });
-            return;
-          }
           handlePointerMove(e, rect, canvasRef.current.width, canvasRef.current.height);
-        }}
-        onMouseUp={(e) => {
-          if (!regionSelectMode || !canvasRef.current) return;
-          const rect = canvasRef.current.getBoundingClientRect();
-          finishRegionDrag(toPlanSpacePoint(e, rect, canvasRef.current.width, canvasRef.current.height));
         }}
       >
         <canvas
@@ -772,7 +833,17 @@ export default function DrawingRenderer({
           className="max-w-full"
         />
         <CalibrationMarkers />
-        <RegionSelectOverlay />
+        <ManualTakeoffOverlay
+          annotations={annotations}
+          draftPoints={manualPoints}
+          hoverPoint={manualHoverPoint}
+          tool={manualTool}
+          screenPointFor={(x, y) => {
+            if (!canvasRef.current) return null;
+            const rect = canvasRef.current.getBoundingClientRect();
+            return planToFixedScreenPoint(rect, canvasRef.current.width, canvasRef.current.height, x, y);
+          }}
+        />
         <CollabOverlay
           screenPointFor={(x, y) => {
             if (!canvasRef.current) return null;

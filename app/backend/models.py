@@ -264,7 +264,7 @@ class TakeoffResult(Base):
     quantities_data = Column(Text)  # JSON string with trade quantities
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
-    ai_model_version = Column(String(50), default="mock_v1")
+    ai_model_version = Column(String(50), default="pending")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
@@ -577,4 +577,217 @@ class MasterUnit(Base):
 
     __table_args__ = (
         Index("ux_master_units_drawing_id", "drawing_id", unique=True),
+    )
+
+
+class Assembly(Base):
+    """A persisted, org-editable trade assembly (one measured qty -> many lines).
+
+    The code library (estimating/assemblies.ASSEMBLY_LIBRARY) is the default seed;
+    this table lets an org store and edit its own assemblies. `key` is unique per
+    org so it can be referenced by the same expansion engine.
+    """
+    __tablename__ = "assemblies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    key = Column(String(100), nullable=False)
+    name = Column(String(255), nullable=False)
+    trade = Column(String(100), nullable=False)
+    driver_unit = Column(String(20), nullable=False)  # 'sf' | 'lf' | 'ea'
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    components = relationship("AssemblyComponent", back_populates="assembly",
+                              cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ux_assemblies_org_key", "organization_id", "key", unique=True),
+    )
+
+
+class AssemblyComponent(Base):
+    """One line item an assembly produces per unit of its driver."""
+    __tablename__ = "assembly_components"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assembly_id = Column(Integer, ForeignKey("assemblies.id"), nullable=False, index=True)
+    item = Column(String(255), nullable=False)
+    unit = Column(String(20), nullable=False)          # sf | lf | ea | cy | gal | bf | lot
+    factor = Column(Float, nullable=False)             # output qty per 1 driver unit
+    waste_pct = Column(Float, nullable=False, default=0)
+    trade = Column(String(100), nullable=True)         # optional per-component trade
+
+    assembly = relationship("Assembly", back_populates="components")
+
+
+class CostBook(Base):
+    """A named unit-price list (org/regional) applied when expanding assemblies."""
+    __tablename__ = "cost_books"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    currency = Column(String(10), nullable=False, default="USD")
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    items = relationship("CostItem", back_populates="cost_book", cascade="all, delete-orphan")
+
+
+class CostItem(Base):
+    """One unit price in a cost book (item -> unit_cost)."""
+    __tablename__ = "cost_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id"), nullable=False, index=True)
+    item = Column(String(255), nullable=False)
+    unit = Column(String(20), nullable=True)
+    unit_cost = Column(Float, nullable=False, default=0)
+
+    cost_book = relationship("CostBook", back_populates="items")
+
+    __table_args__ = (
+        Index("ux_cost_items_book_item", "cost_book_id", "item", unique=True),
+    )
+
+
+class Estimate(Base):
+    """A saved, named snapshot of a priced assemblies estimate.
+
+    Turns an on-the-fly takeoff → assemblies calculation into a durable artifact
+    an estimator can name, re-open, and export. `data` is the JSON snapshot
+    (drivers / line_items / by_trade / total) so the estimate is reproducible
+    even if the drawing or cost book changes later.
+    """
+    __tablename__ = "estimates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id"), nullable=True)
+    name = Column(String(255), nullable=False)
+    total = Column(Float, nullable=False, default=0)
+    data = Column(Text, nullable=False)  # JSON snapshot of the estimate
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class IntegrationConnection(Base):
+    """An org's connection to an external estimating/PM system (Procore, PlanSwift…).
+
+    One row per (org, provider). Stores OAuth/API credentials and account
+    identity so quantities/estimates can be pushed to the provider.
+
+    SECURITY: access_token/refresh_token are secrets. This scaffold stores them
+    as text; production must encrypt at rest (app-level envelope encryption or a
+    secrets manager) — enforced before any real credentials are stored.
+    """
+    __tablename__ = "integration_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)      # 'procore' | 'planswift' | 'generic'
+    status = Column(String(20), nullable=False, default="disconnected")  # disconnected|connected|error
+    external_account_id = Column(String(255), nullable=True)
+    external_account_name = Column(String(255), nullable=True)
+    access_token = Column(Text, nullable=True)         # SECRET — encrypt in production
+    refresh_token = Column(Text, nullable=True)        # SECRET — encrypt in production
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    config = Column(Text, nullable=True)               # JSON: provider-specific settings
+    last_error = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_integration_org_provider", "organization_id", "provider", unique=True),
+    )
+
+
+class ProjectShare(Base):
+    """External collaboration — share a project with someone who has no account.
+
+    A tokenized link grants scoped, account-free access (view or comment), like
+    Togal's "collaborate with users outside your account." The token is the
+    bearer credential; guests never authenticate. Revoke or expire to cut access.
+    """
+    __tablename__ = "project_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True)          # optional — link can be email-less
+    role = Column(String(20), nullable=False, default="viewer")  # 'viewer' | 'commenter'
+    revoked = Column(Boolean, nullable=False, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    project = relationship("Project")
+
+
+class ClassificationTemplate(Base):
+    """A reusable, org-level library of classifications (Togal's "classification
+    library template"). Each item is a named measurable condition (trade, unit,
+    annotation type, color) an estimator applies to a project in one click,
+    creating Condition rows. `data` is a JSON list of items.
+    """
+    __tablename__ = "classification_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    data = Column(Text, nullable=False, default="[]")   # JSON: [{name, trade, annotation_type, unit, color, waste_percent}]
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class ActivityLog(Base):
+    """General org-scoped audit trail — who did what, when (enterprise ask).
+
+    Complements the scoped correction/handoff logs with a single activity feed.
+    `details` is optional JSON (name avoids SQLAlchemy's reserved `metadata`).
+    """
+    __tablename__ = "activity_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String(50), nullable=False)          # 'login' | 'share.created' | 'template.applied' | ...
+    entity_type = Column(String(50), nullable=True)      # 'project' | 'share' | ...
+    entity_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)                # optional JSON
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class SSOConnection(Base):
+    """Per-org SAML SSO configuration (enterprise auth). One row per org.
+
+    Stores IdP metadata (entity id, SSO URL, x509 cert — all public) so the login
+    flow can redirect to the IdP and validate assertions. Disabled until
+    `enabled` is set and the IdP fields are filled.
+    """
+    __tablename__ = "sso_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(20), nullable=False, default="saml")
+    enabled = Column(Boolean, nullable=False, default=False)
+    idp_entity_id = Column(String(255), nullable=True)
+    idp_sso_url = Column(String(500), nullable=True)
+    idp_x509_cert = Column(Text, nullable=True)          # IdP signing cert (public)
+    sp_entity_id = Column(String(255), nullable=True)    # our SP identifier
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_sso_connections_org", "organization_id", unique=True),
     )

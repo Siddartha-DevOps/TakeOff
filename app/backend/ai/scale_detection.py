@@ -11,7 +11,6 @@ Detects scale notations like:
 """
 
 import re
-import cv2
 import numpy as np
 from typing import Optional
 from loguru import logger
@@ -188,6 +187,8 @@ def detect_scale_bar(img: np.ndarray) -> Optional[float]:
     This is a rough heuristic — use only when OCR scale text not found.
     Returns estimated scale_ratio or None.
     """
+    import cv2  # lazy: keeps the module (and its pure text helpers, imported by
+                # routes/scale_routes.py) usable without OpenCV installed.
     height, width = img.shape[:2]
 
     # Focus on the bottom 20% of the image (where scale bars usually live)

@@ -5,6 +5,7 @@
   "buildCommand": "npm --prefix app/frontend run build",
   "outputDirectory": "app/frontend/dist",
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://takeoff-api.onrender.com/api/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

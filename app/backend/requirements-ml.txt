@@ -1,0 +1,30 @@
+# Heavy ML runtime for TakeOff.ai — the deep-learning stack that trains and
+# serves the real YOLOv8-seg models.
+#
+# DELIBERATELY separate from requirements.txt. Per CLAUDE.md guardrails #1/#2,
+# the Vercel/app path and CI stay CPU-light and must NOT install these; they are
+# installed only on the GPU training/inference box and by
+# ai/inference/Dockerfile (keep this file and that Dockerfile in sync).
+#
+#   Training / inference box:   pip install -r requirements-ml.txt
+#   torch is installed FIRST with the CUDA wheel index on a GPU host, e.g.:
+#     pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   (CPU-only hosts: plain `pip install torch` resolves the CPU wheel.)
+#
+# Verify readiness after install with:  python -m ml.preflight
+
+# --- core deep-learning stack --------------------------------------------
+torch>=2.2,<2.7
+ultralytics>=8.2,<9            # YOLOv8/v11-seg train + predict
+opencv-python-headless>=4.9,<5 # rasterization / preprocessing (cv2)
+pillow>=10.2                   # image IO
+numpy>=1.26                    # (also in requirements.txt; pinned compatibly)
+
+# --- OCR (title-block + scale text) --------------------------------------
+pytesseract>=0.3.10            # requires the system `tesseract-ocr` binary
+
+# --- optional / task-specific (uncomment when used) ----------------------
+# sam2 @ git+https://github.com/facebookresearch/segment-anything-2.git
+#                               # ai/sam2_zero_shot.py zero-shot room bootstrap
+# dvc>=3.50                     # dataset-pointer versioning for ml/datasets/
+# onnxruntime-gpu>=1.17         # optional ONNX export/serving path

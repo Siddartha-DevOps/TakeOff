@@ -1,7 +1,16 @@
 import axios from 'axios';
 
 // Vite uses import.meta.env, not process.env
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// In production VITE_BACKEND_URL MUST be set (Vercel env). Only fall back to
+// localhost during local `vite dev` — never ship localhost to a deployed build
+// (that's what made every deployed API call, including login, silently fail).
+const API_BASE_URL =
+  import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
+if (!import.meta.env.VITE_BACKEND_URL && !import.meta.env.DEV) {
+  // Same-origin '' only works if a proxy/rewrite forwards /api to the backend.
+  console.error('[api] VITE_BACKEND_URL is not set — API requests will fail. Set it in your host env.');
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -45,7 +54,12 @@ export default api;
 // Auth API
 export const authAPI = {
   login: (email, password) => api.post('/api/auth/login', { email, password }),
-  signup: (email, password, full_name) => api.post('/api/auth/signup', { email, password, full_name }),
+  signup: (email, password, full_name, organization_name) => api.post('/api/auth/signup', {
+    email,
+    password,
+    full_name,
+    organization_name: organization_name || undefined,
+  }),
   getCurrentUser: () => api.get('/api/auth/me'),
 };
 
@@ -123,6 +137,10 @@ export const uploadsAPI = {
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  // Real raster AI takeoff — triggers YOLOv8-seg in the background
+  // (routes/takeoff_routes.py _run_ai_analysis). Poll getResults for the result;
+  // marks the drawing FAILED (no fabricated data) when no model is installed.
+  analyze: (drawingId) => api.post(`/api/takeoff/drawings/${drawingId}/analyze`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
   // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
   // view (memory/TOGAL_PARITY_REAUDIT.md #19).
@@ -183,6 +201,18 @@ export const searchAPI = {
     x1: bbox[0], y1: bbox[1], x2: bbox[2], y2: bbox[3],
     top_k: topK,
   }),
+  // Pattern/count search — "find all like this -> N". Reference is text,
+  // a detection (detectionId), or a drawn region (drawingId + bbox).
+  // Returns { total, per_drawing, matches }.
+  count: (projectId, { text, detectionId, drawingId, bbox, minSimilarity = 0.85, maxMatches = 500 } = {}) =>
+    api.post(`/api/takeoff/projects/${projectId}/search/count`, {
+      text,
+      detection_id: detectionId,
+      drawing_id: drawingId,
+      x1: bbox?.[0], y1: bbox?.[1], x2: bbox?.[2], y2: bbox?.[3],
+      min_similarity: minSimilarity,
+      max_matches: maxMatches,
+    }),
 };
 
 // Drawing Compare — revision overlay/diff, OpenCV-backed (routes/compare_routes.py)
@@ -245,7 +275,8 @@ export const handoffAPI = {
 // in pages/Takeoff.jsx) + durable pinned comments (REST, routes/realtime_routes.py)
 export const collabAPI = {
   wsUrl: (projectId) => {
-    const httpBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    const httpBase =
+      import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const wsBase = httpBase.replace(/^http/, 'ws');
     const token = localStorage.getItem('auth_token');
     return `${wsBase}/api/ws/projects/${projectId}?token=${encodeURIComponent(token || '')}`;
@@ -267,4 +298,75 @@ export const teamAPI = {
   // Public — no auth token yet, the invitee doesn't have an account
   previewInvite: (token) => api.get(`/api/team/invites/${token}/preview`),
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
+};
+
+// Classification-library templates — reusable org-level condition sets
+// (routes/classification_routes.py).
+export const classificationAPI = {
+  list: () => api.get('/api/classifications/templates'),
+  seed: () => api.post('/api/classifications/templates/seed'),
+  create: (payload) => api.post('/api/classifications/templates', payload),
+  remove: (id) => api.delete(`/api/classifications/templates/${id}`),
+  apply: (templateId, projectId) => api.post(`/api/classifications/templates/${templateId}/apply/${projectId}`),
+};
+
+// External collaboration — share a project with people who have no account
+// (routes/sharing_routes.py). resolve() is the PUBLIC guest endpoint.
+export const sharingAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/shares`),
+  create: (projectId, payload) => api.post(`/api/projects/${projectId}/shares`, payload),
+  revoke: (shareId) => api.delete(`/api/shares/${shareId}`),
+  resolve: (token) => api.get(`/api/shared/${token}`),
+};
+
+// ML ops — model registry (eval_routes) + active-learning review queue
+// (active_learning_routes). Surfaces the training flywheel in the UI.
+export const mlAPI = {
+  listModelVersions: () => api.get('/api/eval/model-versions'),
+  reviewQueue: (projectId, limit = 20) =>
+    api.get(`/api/active-learning/projects/${projectId}/review-queue`, { params: { limit } }),
+  uncertainDetections: (projectId, limit = 50) =>
+    api.get(`/api/active-learning/projects/${projectId}/uncertain-detections`, { params: { limit } }),
+};
+
+// Plan-set organizer — discipline-grouped sheet tree + sheet rename/reclassify
+// (routes/plan_set_routes.py).
+export const planSetAPI = {
+  get: (projectId) => api.get(`/api/plan-set/projects/${projectId}`),
+  updateSheet: (drawingId, patch) => api.patch(`/api/plan-set/drawings/${drawingId}`, patch),
+};
+
+// Trade assemblies estimating — one measured qty -> many priced trade line items
+// (routes/assemblies_routes.py). Distinct from the India BOQ layer below.
+export const estimatingAPI = {
+  drawingAssemblies: (drawingId, costBookId) =>
+    api.get(`/api/estimating/drawings/${drawingId}/assemblies`, {
+      params: costBookId ? { cost_book_id: costBookId } : {},
+    }),
+  listCostBooks: () => api.get('/api/estimating/cost-books'),
+  createCostBook: (payload) => api.post('/api/estimating/cost-books', payload),
+  updateCostBook: (id, payload) => api.put(`/api/estimating/cost-books/${id}`, payload),
+  deleteCostBook: (id) => api.delete(`/api/estimating/cost-books/${id}`),
+  // Saved estimates
+  saveEstimate: (payload) => api.post('/api/estimating/estimates', payload),
+  listEstimates: (projectId) =>
+    api.get('/api/estimating/estimates', { params: projectId ? { project_id: projectId } : {} }),
+  getEstimate: (id) => api.get(`/api/estimating/estimates/${id}`),
+  deleteEstimate: (id) => api.delete(`/api/estimating/estimates/${id}`),
+  exportEstimate: (id) => api.get(`/api/estimating/estimates/${id}/export.xlsx`, { responseType: 'blob' }),
+};
+
+// India estimating — IS 1200 metric quantities -> DSR/SOR-priced BOQ -> GST
+// tender total, plus Excel/PDF download (routes/india_routes.py).
+// `params` tunes the tender waterfall: overhead_profit_pct, contingency_pct,
+// gst_rate (fraction, e.g. 0.18), inter_state (bool).
+export const indiaAPI = {
+  getBOQ: (drawingId, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq`, { params }),
+  // fmt = 'xlsx' | 'pdf'; returns a Blob for download
+  exportBOQ: (drawingId, fmt, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq.${fmt}`, {
+      params,
+      responseType: 'blob',
+    }),
 };

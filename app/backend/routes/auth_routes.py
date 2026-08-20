@@ -4,6 +4,7 @@ import schemas
 import models
 import auth
 from auth import get_password_hash, verify_password, create_access_token
+from audit import record_activity
 from database import get_db
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -18,8 +19,13 @@ async def signup(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Email already registered"
         )
     
-    # Create default organization if user doesn't have one
-    org = models.Organization(name=f"{user_data.full_name or user_data.email}'s Organization")
+    # A company name from onboarding becomes the organization name. Keep the
+    # generated name as a backwards-compatible fallback for API clients that
+    # only send email/password/full_name.
+    organization_name = (user_data.organization_name or "").strip()
+    org = models.Organization(
+        name=organization_name or f"{user_data.full_name or user_data.email}'s Organization"
+    )
     db.add(org)
     db.commit()
     db.refresh(org)
@@ -61,7 +67,10 @@ async def login(credentials: schemas.UserLogin, db: Session = Depends(get_db)):
     
     # Create access token
     access_token = create_access_token(data={"sub": user.email})
-    
+
+    if user.organization_id:
+        record_activity(db, action="login", organization_id=user.organization_id, user_id=user.id)
+
     return {
         "access_token": access_token,
         "token_type": "bearer",

@@ -7,6 +7,9 @@ from auth import get_current_user
 from database import get_db
 from detection_geometry import persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
+from ai.inference import ModelUnavailableError
+from ratelimit import RateLimit
+from scale_validation import require_confirmed_scale
 import json
 import os
 import tempfile
@@ -38,7 +41,8 @@ def _require_ai_takeoff_entitlement(db: Session, organization_id: int):
 
 
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
-@router.post("/drawings/{drawing_id}/analyze")
+@router.post("/drawings/{drawing_id}/analyze",
+             dependencies=[Depends(RateLimit("ai_analyze", limit=20, window_s=60))])
 async def analyze_drawing(
     drawing_id: int,
     background_tasks: BackgroundTasks,
@@ -61,6 +65,7 @@ async def analyze_drawing(
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
+    require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
     # Mark as processing immediately so frontend shows spinner
@@ -214,6 +219,20 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         except Exception as embed_err:
             logger.warning(f"[AI] Embedding index failed for drawing_id={drawing_id}: {embed_err}")
 
+    except ModelUnavailableError as e:
+        # No trained raster model installed — do NOT fabricate detections
+        # (the old mock path did). Mark failed with a clear, actionable reason;
+        # vector PDFs still get real results via the /autodetect path.
+        logger.warning(
+            f"[AI] Raster model unavailable for drawing_id={drawing_id}: {e} "
+            f"Install trained weights or use vector AUTODETECT."
+        )
+        drawing = db.query(models.Drawing).filter(
+            models.Drawing.id == drawing_id
+        ).first()
+        if drawing:
+            drawing.processing_status = models.ProcessingStatus.FAILED
+            db.commit()
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
         drawing = db.query(models.Drawing).filter(
@@ -253,14 +272,18 @@ def _parse_scale_ratio(scale_text):
 
 
 def _scale_ratio_for(drawing, override=None):
-    """Resolve the scale ratio: explicit override → calibrated → stored → default 96."""
-    return (
-        override
-        or getattr(drawing, "scale_ratio", None)
-        or _parse_scale_ratio(getattr(drawing, "scale", None))
-        or _parse_scale_ratio(getattr(drawing, "ocr_scale_text", None))
-        or 96.0
-    )
+    """Return only a persisted, user-confirmed ratio.
+
+    The legacy query override is rejected so callers cannot bypass the
+    auditable calibration endpoints.
+    """
+    ratio = require_confirmed_scale(drawing)
+    if override is not None and abs(float(override) - ratio) > 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail="Set scale through the calibration endpoint before takeoff; ad-hoc overrides are not accepted.",
+        )
+    return ratio
 
 
 @router.post("/drawings/{drawing_id}/autodetect")
