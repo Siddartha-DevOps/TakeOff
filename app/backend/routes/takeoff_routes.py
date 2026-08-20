@@ -9,6 +9,7 @@ from detection_geometry import persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
 from ai.inference import ModelUnavailableError
 from ratelimit import RateLimit
+from scale_validation import require_confirmed_scale
 import json
 import os
 import tempfile
@@ -64,6 +65,7 @@ async def analyze_drawing(
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
+    require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
     # Mark as processing immediately so frontend shows spinner
@@ -270,14 +272,18 @@ def _parse_scale_ratio(scale_text):
 
 
 def _scale_ratio_for(drawing, override=None):
-    """Resolve the scale ratio: explicit override → calibrated → stored → default 96."""
-    return (
-        override
-        or getattr(drawing, "scale_ratio", None)
-        or _parse_scale_ratio(getattr(drawing, "scale", None))
-        or _parse_scale_ratio(getattr(drawing, "ocr_scale_text", None))
-        or 96.0
-    )
+    """Return only a persisted, user-confirmed ratio.
+
+    The legacy query override is rejected so callers cannot bypass the
+    auditable calibration endpoints.
+    """
+    ratio = require_confirmed_scale(drawing)
+    if override is not None and abs(float(override) - ratio) > 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail="Set scale through the calibration endpoint before takeoff; ad-hoc overrides are not accepted.",
+        )
+    return ratio
 
 
 @router.post("/drawings/{drawing_id}/autodetect")

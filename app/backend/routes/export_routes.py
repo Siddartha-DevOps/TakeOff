@@ -9,6 +9,7 @@ import export_engine
 import repeating_groups
 from auth import get_current_user
 from database import get_db
+from scale_validation import require_confirmed_scale
 import json
 import io
 import csv
@@ -62,6 +63,8 @@ async def preview_project_export(
             raise HTTPException(status_code=400, detail="drawing_ids must be a comma-separated list of integers")
         drawings_query = drawings_query.filter(models.Drawing.id.in_(id_filter))
     drawings = drawings_query.order_by(models.Drawing.page_number, models.Drawing.uploaded_at).all()
+    for drawing in drawings:
+        require_confirmed_scale(drawing)
 
     all_rows = []
     for drawing in drawings:
@@ -131,6 +134,16 @@ async def generate_project_export(
         raise HTTPException(status_code=400, detail="format must be one of: excel, csv, pdf")
     if not payload.rows:
         raise HTTPException(status_code=400, detail="No rows to export")
+
+    drawing_ids = {row.drawing_id for row in payload.rows}
+    drawings = db.query(models.Drawing).filter(
+        models.Drawing.project_id == project_id,
+        models.Drawing.id.in_(drawing_ids),
+    ).all()
+    if {drawing.id for drawing in drawings} != drawing_ids:
+        raise HTTPException(status_code=400, detail="Export contains a drawing outside this project")
+    for drawing in drawings:
+        require_confirmed_scale(drawing)
 
     rows = [r.model_dump() for r in payload.rows]
     title = payload.title or f"{project.name} — Takeoff Export"
@@ -329,6 +342,8 @@ async def export_drawing(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Drawing not found"
         )
+
+    require_confirmed_scale(drawing)
     
     # Get latest takeoff result
     result = db.query(models.TakeoffResult).filter(
@@ -416,6 +431,7 @@ async def export_project(
     # For simplicity, export first drawing (can be extended to include all)
     # In production, you'd combine all drawings into one report
     first_drawing = drawings[0]
+    require_confirmed_scale(first_drawing)
     result = db.query(models.TakeoffResult).filter(
         models.TakeoffResult.drawing_id == first_drawing.id
     ).order_by(models.TakeoffResult.created_at.desc()).first()
