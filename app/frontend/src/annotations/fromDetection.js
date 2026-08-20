@@ -8,12 +8,12 @@
 import { getRoomColor } from '../mock/mockAI';
 import { computeMeasuredValue, rectFromBbox } from './geometry';
 
-function finalize(annotation) {
-  annotation.measuredValue = computeMeasuredValue(annotation);
+function finalize(annotation, measurementContext) {
+  annotation.measuredValue = computeMeasuredValue(annotation, measurementContext);
   return annotation;
 }
 
-function roomToAnnotation(room, detectionMeta) {
+function roomToAnnotation(room, detectionMeta, measurementContext) {
   return finalize({
     id: room.id,
     type: 'area',
@@ -27,10 +27,10 @@ function roomToAnnotation(room, detectionMeta) {
       aiReportedArea: room.area, // kept for audit only — never used as measuredValue
       ...detectionMeta,
     },
-  });
+  }, measurementContext);
 }
 
-function wallSegmentToAnnotation(seg, detectionMeta) {
+function wallSegmentToAnnotation(seg, detectionMeta, measurementContext) {
   return finalize({
     id: seg.id,
     type: 'line',
@@ -45,7 +45,7 @@ function wallSegmentToAnnotation(seg, detectionMeta) {
       confidence: seg.confidence,
       ...detectionMeta,
     },
-  });
+  }, measurementContext);
 }
 
 const DEFAULT_SYMBOL_LABEL = { doors: 'Door', windows: 'Window', mep: 'Fixture' };
@@ -53,7 +53,7 @@ const DEFAULT_SYMBOL_LABEL = { doors: 'Door', windows: 'Window', mep: 'Fixture' 
 // Doors / windows / MEP symbols all carry a bbox in the real detection engine
 // (mock data derives one from x/y/width when it's missing). Modeled as
 // `count` shapes: a placed symbol with a footprint, worth 1 unit each.
-function symbolToAnnotation(item, layerId, detectionMeta) {
+function symbolToAnnotation(item, layerId, detectionMeta, measurementContext) {
   const bbox = item.bbox ?? [
     item.x - (item.width ?? 20) / 2,
     item.y - 10,
@@ -76,14 +76,14 @@ function symbolToAnnotation(item, layerId, detectionMeta) {
       widthInches: item.width,
       ...detectionMeta,
     },
-  });
+  }, measurementContext);
 }
 
 /**
- * @param {object} detection - result of runTakeoffAI() / GET /takeoff/drawings/:id/results
+ * @param {object} detection - AUTODETECT response / GET /takeoff/drawings/:id/results
  * @returns {import('./types').Annotation[]}
  */
-export function annotationsFromDetection(detection) {
+export function annotationsFromDetection(detection, measurementContext = null) {
   if (!detection) return [];
 
   const detectionMeta = {
@@ -91,14 +91,14 @@ export function annotationsFromDetection(detection) {
     aiModelVersion: detection.ai_model_version ?? detection.aiModelVersion ?? 'unknown',
   };
 
-  const rooms = (detection.rooms ?? []).map((r) => roomToAnnotation(r, detectionMeta));
-  const doors = (detection.doors ?? []).map((d) => symbolToAnnotation(d, 'doors', detectionMeta));
-  const windows = (detection.windows ?? []).map((w) => symbolToAnnotation(w, 'windows', detectionMeta));
-  const mep = (detection.mep ?? []).map((m) => symbolToAnnotation(m, 'mep', detectionMeta));
+  const rooms = (detection.rooms ?? []).map((r) => roomToAnnotation(r, detectionMeta, measurementContext));
+  const doors = (detection.doors ?? []).map((d) => symbolToAnnotation(d, 'doors', detectionMeta, measurementContext));
+  const windows = (detection.windows ?? []).map((w) => symbolToAnnotation(w, 'windows', detectionMeta, measurementContext));
+  const mep = (detection.mep ?? []).map((m) => symbolToAnnotation(m, 'mep', detectionMeta, measurementContext));
   // wall_segments: true vectorized centerlines (wallVectorization.js / backend's
   // ai/wall_vectorization.py), typed exterior/interior — see CanvasFull for the
   // matching data-driven render, which replaced the old hardcoded SVG lines.
-  const walls = (detection.wall_segments ?? []).map((w) => wallSegmentToAnnotation(w, detectionMeta));
+  const walls = (detection.wall_segments ?? []).map((w) => wallSegmentToAnnotation(w, detectionMeta, measurementContext));
 
   return [...rooms, ...doors, ...windows, ...mep, ...walls];
 }

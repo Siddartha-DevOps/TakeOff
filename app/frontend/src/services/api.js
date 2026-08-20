@@ -54,7 +54,12 @@ export default api;
 // Auth API
 export const authAPI = {
   login: (email, password) => api.post('/api/auth/login', { email, password }),
-  signup: (email, password, full_name) => api.post('/api/auth/signup', { email, password, full_name }),
+  signup: (email, password, full_name, organization_name) => api.post('/api/auth/signup', {
+    email,
+    password,
+    full_name,
+    organization_name: organization_name || undefined,
+  }),
   getCurrentUser: () => api.get('/api/auth/me'),
 };
 
@@ -132,6 +137,10 @@ export const uploadsAPI = {
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  // Real raster AI takeoff — triggers YOLOv8-seg in the background
+  // (routes/takeoff_routes.py _run_ai_analysis). Poll getResults for the result;
+  // marks the drawing FAILED (no fabricated data) when no model is installed.
+  analyze: (drawingId) => api.post(`/api/takeoff/drawings/${drawingId}/analyze`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
   // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
   // view (memory/TOGAL_PARITY_REAUDIT.md #19).
@@ -289,6 +298,25 @@ export const teamAPI = {
   // Public — no auth token yet, the invitee doesn't have an account
   previewInvite: (token) => api.get(`/api/team/invites/${token}/preview`),
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
+};
+
+// Classification-library templates — reusable org-level condition sets
+// (routes/classification_routes.py).
+export const classificationAPI = {
+  list: () => api.get('/api/classifications/templates'),
+  seed: () => api.post('/api/classifications/templates/seed'),
+  create: (payload) => api.post('/api/classifications/templates', payload),
+  remove: (id) => api.delete(`/api/classifications/templates/${id}`),
+  apply: (templateId, projectId) => api.post(`/api/classifications/templates/${templateId}/apply/${projectId}`),
+};
+
+// External collaboration — share a project with people who have no account
+// (routes/sharing_routes.py). resolve() is the PUBLIC guest endpoint.
+export const sharingAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/shares`),
+  create: (projectId, payload) => api.post(`/api/projects/${projectId}/shares`, payload),
+  revoke: (shareId) => api.delete(`/api/shares/${shareId}`),
+  resolve: (token) => api.get(`/api/shared/${token}`),
 };
 
 // ML ops — model registry (eval_routes) + active-learning review queue

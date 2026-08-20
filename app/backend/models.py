@@ -706,3 +706,88 @@ class IntegrationConnection(Base):
     __table_args__ = (
         Index("ux_integration_org_provider", "organization_id", "provider", unique=True),
     )
+
+
+class ProjectShare(Base):
+    """External collaboration — share a project with someone who has no account.
+
+    A tokenized link grants scoped, account-free access (view or comment), like
+    Togal's "collaborate with users outside your account." The token is the
+    bearer credential; guests never authenticate. Revoke or expire to cut access.
+    """
+    __tablename__ = "project_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True)          # optional — link can be email-less
+    role = Column(String(20), nullable=False, default="viewer")  # 'viewer' | 'commenter'
+    revoked = Column(Boolean, nullable=False, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    project = relationship("Project")
+
+
+class ClassificationTemplate(Base):
+    """A reusable, org-level library of classifications (Togal's "classification
+    library template"). Each item is a named measurable condition (trade, unit,
+    annotation type, color) an estimator applies to a project in one click,
+    creating Condition rows. `data` is a JSON list of items.
+    """
+    __tablename__ = "classification_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    data = Column(Text, nullable=False, default="[]")   # JSON: [{name, trade, annotation_type, unit, color, waste_percent}]
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class ActivityLog(Base):
+    """General org-scoped audit trail — who did what, when (enterprise ask).
+
+    Complements the scoped correction/handoff logs with a single activity feed.
+    `details` is optional JSON (name avoids SQLAlchemy's reserved `metadata`).
+    """
+    __tablename__ = "activity_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String(50), nullable=False)          # 'login' | 'share.created' | 'template.applied' | ...
+    entity_type = Column(String(50), nullable=True)      # 'project' | 'share' | ...
+    entity_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)                # optional JSON
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class SSOConnection(Base):
+    """Per-org SAML SSO configuration (enterprise auth). One row per org.
+
+    Stores IdP metadata (entity id, SSO URL, x509 cert — all public) so the login
+    flow can redirect to the IdP and validate assertions. Disabled until
+    `enabled` is set and the IdP fields are filled.
+    """
+    __tablename__ = "sso_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(20), nullable=False, default="saml")
+    enabled = Column(Boolean, nullable=False, default=False)
+    idp_entity_id = Column(String(255), nullable=True)
+    idp_sso_url = Column(String(500), nullable=True)
+    idp_x509_cert = Column(Text, nullable=True)          # IdP signing cert (public)
+    sp_entity_id = Column(String(255), nullable=True)    # our SP identifier
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_sso_connections_org", "organization_id", unique=True),
+    )
