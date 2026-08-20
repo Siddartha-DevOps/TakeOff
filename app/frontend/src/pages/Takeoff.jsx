@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
@@ -11,8 +11,7 @@ import ShareModal from '../components/ShareModal';
 import HelpPanel from '../components/HelpPanel';
 import OnboardingChecklist from '../components/OnboardingChecklist';
 import ClassificationModal from '../components/ClassificationModal';
-import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
-import { SAMPLE_PROJECTS } from '../mock/mockData';
+import { getRoomColor } from '../mock/mockAI';
 import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
@@ -42,10 +41,15 @@ const LAYER_CONFIG = [
   { key: 'walls', label: 'Walls', color: '#eab308' },
 ];
 
+const isScaleConfirmed = (info) => (
+  Boolean(info?.scale_ratio && ['manual', 'ocr'].includes(info?.scale_source))
+);
+
 export default function Takeoff() {
   const { id } = useParams();
   const nav = useNavigate();
   const [project, setProject] = useState(null);
+  const [projectError, setProjectError] = useState('');
   const [drawings, setDrawings] = useState([]);
   const [loadingProject, setLoadingProject] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
@@ -55,9 +59,6 @@ export default function Takeoff() {
   const [layers, setLayers] = useState({ rooms: true, doors: true, windows: true, walls: true });
   const [selectedId, setSelectedId] = useState(null);
   const [tab, setTab] = useState('quantities');
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const dragRef = useRef(null);
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -82,6 +83,7 @@ export default function Takeoff() {
   const [pendingCalPoints, setPendingCalPoints] = useState(null); // {point1, point2} awaiting a distance
   const [calibratingBusy, setCalibratingBusy] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  const [manualTool, setManualTool] = useState(null);
 
   // Conditions + box-select assignment. See routes/condition_routes.py.
   const [conditions, setConditions] = useState([]);
@@ -116,7 +118,6 @@ export default function Takeoff() {
     if (project) {
       fetchDrawings();
       fetchConditions();
-      runAnalysis();
     }
     // eslint-disable-next-line
   }, [project]);
@@ -124,12 +125,13 @@ export default function Takeoff() {
   async function fetchProject() {
     try {
       setLoadingProject(true);
+      setProjectError('');
       const response = await projectsAPI.get(id);
       setProject(response.data);
     } catch (error) {
       console.error('Failed to fetch project:', error);
-      const mockProject = SAMPLE_PROJECTS.find((p) => p.id === id) || SAMPLE_PROJECTS[0];
-      setProject(mockProject);
+      setProject(null);
+      setProjectError(error.response?.data?.detail || 'This project could not be loaded.');
     } finally {
       setLoadingProject(false);
     }
@@ -138,7 +140,15 @@ export default function Takeoff() {
   async function fetchDrawings() {
     try {
       const response = await uploadsAPI.listDrawings(id);
-      setDrawings(response.data || []);
+      const projectDrawings = response.data || [];
+      setDrawings(projectDrawings);
+      if (projectDrawings.length > 0) {
+        selectDrawing(projectDrawings[0]);
+      } else {
+        setSelectedDrawing(null);
+        setDetection(null);
+        setStatus('idle');
+      }
     } catch (error) {
       console.error('Failed to fetch drawings:', error);
       setDrawings([]);
@@ -257,11 +267,7 @@ export default function Takeoff() {
     setDrawings((prev) => [...newDrawings, ...prev]);
     setShowUpload(false);
     const primary = newDrawings[0];
-    setSelectedDrawing(primary);
-    setSuggestionDismissed(false);
-    fetchScaleInfo(primary.id);
-    fetchRevisions(primary.id);
-    runAnalysisForDrawing(primary);
+    if (primary) selectDrawing(primary);
   };
 
   async function fetchRevisions(drawingId) {
@@ -325,67 +331,119 @@ export default function Takeoff() {
     };
   };
 
-  const runAnalysisForDrawing = async (drawing) => {
+  // Poll the backend for a persisted AI result (the raster /analyze path runs
+  // asynchronously). Returns a UI-ready detection, or null if the job fails /
+  // times out / no model is installed — never fabricated data.
+  const pollForResult = async (drawingId, drawing) => {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      try {
+        const { data } = await takeoffAPI.getResults(drawingId);
+        if (data && data.detection_data) {
+          const det = typeof data.detection_data === 'string'
+            ? JSON.parse(data.detection_data) : data.detection_data;
+          let quantities = [];
+          try {
+            quantities = typeof data.quantities_data === 'string'
+              ? JSON.parse(data.quantities_data) : (data.quantities_data || []);
+          } catch { quantities = []; }
+          return {
+            rooms: det.rooms || [], walls: det.walls || [], doors: det.doors || [],
+            windows: det.windows || [], summary: det.summary || {},
+            quantities, method: 'raster',
+            scale: '—', sheet: drawing?.sheet_name || drawing?.original_filename || '',
+            processingTimeMs: data.processing_time_ms || 0,
+          };
+        }
+        if (data && data.processing_status === 'failed') return null;  // model unavailable / errored
+      } catch (error) {
+        // 404 / transient — keep waiting until the deadline
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return null;
+  };
+
+  const runAnalysisForDrawing = async (drawing, confirmedScaleInfo = scaleInfo) => {
+    if (!isScaleConfirmed(confirmedScaleInfo)) {
+      setDetection(null);
+      setStatus('needs_scale');
+      setProgress(null);
+      return;
+    }
     setStatus('processing');
     setProgress({ msg: 'Reading vector geometry from the plan…', pct: 30 });
 
-    // Real vector AUTODETECT first (exact, no weights). Falls back to the mock
-    // only when the sheet isn't a vector PDF or the call fails — same
-    // real-first/fallback pattern this app uses for chat.
+    // Real vector AUTODETECT first (exact, no weights) for vector PDFs. Anything
+    // else falls through to the real raster AI model below — never to mock data.
     let result = null;
-    let fromVector = false;
     if ((drawing.file_type || '').toUpperCase() === 'PDF') {
       try {
         const { data } = await takeoffAPI.autodetect(drawing.id);
         if (data && data.method === 'vector' && data.is_vector !== false) {
           result = mapAutodetect(data, drawing);
-          fromVector = true;
         }
       } catch (error) {
-        console.warn('AUTODETECT unavailable, falling back:', error);
+        console.warn('AUTODETECT unavailable, falling back to raster AI:', error);
       }
     }
     if (!result) {
-      result = await runTakeoffAI({ onProgress: setProgress, seed: drawing.id });
+      // No vector geometry (scanned PDF or JPG/PNG/TIFF) → real raster AI model,
+      // which runs asynchronously. Poll for the persisted result; NEVER fabricate.
+      // If the model isn't installed the job fails → honest "unavailable" state.
+      setProgress({ msg: 'Running AI detection on this sheet…', pct: 60 });
+      try {
+        await takeoffAPI.analyze(drawing.id);
+      } catch (error) {
+        console.warn('AI analyze trigger failed:', error);
+      }
+      result = await pollForResult(drawing.id, drawing);
+      if (!result) {
+        setDetection(null);
+        setStatus('unavailable');
+        setProgress(null);
+        return;
+      }
     }
 
     setDetection(result);
-    annotationStore.loadFromDetection(result);
+    annotationStore.loadFromDetection(result, {
+      scaleRatio: confirmedScaleInfo.scale_ratio,
+      fileType: drawing.file_type,
+    });
     setStatus('ready');
-
-    // The vector AUTODETECT endpoint already persisted a TakeoffResult; only the
-    // mock/fallback path needs to save here (avoids a duplicate row + usage count).
-    if (!fromVector) {
-      try {
-        await takeoffAPI.saveResults(drawing.id, {
-          detection_data: JSON.stringify(result),
-          quantities_data: JSON.stringify(result.summary || {}),
-          confidence_scores: JSON.stringify({ avg: 0.95 }),
-          processing_time_ms: result.processingTimeMs || 1500,
-        });
-      } catch (error) {
-        console.error('Failed to save AI results:', error);
-      }
-    }
+    // Both real paths (vector AUTODETECT and raster /analyze) persist their own
+    // TakeoffResult server-side, so there's nothing to save from the client here.
+    // (The old client-side save existed only for the removed mock path.)
   };
 
-  const selectDrawing = (drawing) => {
+  const selectDrawing = async (drawing) => {
     setSelectedDrawing(drawing);
+    setDetection(null);
+    annotationStore.loadFromDetection(null);
+    setManualTool(null);
     setCalibrating(false);
     setPendingCalPoints(null);
     setSuggestionDismissed(false);
-    fetchScaleInfo(drawing.id);
+    setScaleInfo(null);
     fetchRevisions(drawing.id);
-    runAnalysisForDrawing(drawing);
+    const info = await fetchScaleInfo(drawing.id);
+    if (isScaleConfirmed(info)) {
+      runAnalysisForDrawing(drawing, info);
+    } else {
+      setStatus('needs_scale');
+    }
   };
 
   async function fetchScaleInfo(drawingId) {
     try {
       const res = await scaleAPI.get(drawingId);
       setScaleInfo(res.data);
+      return res.data;
     } catch (error) {
       console.error('Failed to fetch scale info:', error);
       setScaleInfo(null);
+      return null;
     }
   }
 
@@ -407,6 +465,7 @@ export default function Takeoff() {
       });
       setScaleInfo(res.data);
       setPendingCalPoints(null);
+      runAnalysisForDrawing(selectedDrawing, res.data);
     } catch (error) {
       console.error('Calibration failed:', error);
       alert(error.response?.data?.detail || 'Failed to calibrate scale. Please try again.');
@@ -420,6 +479,7 @@ export default function Takeoff() {
     try {
       const res = await scaleAPI.acceptSuggestion(selectedDrawing.id);
       setScaleInfo(res.data);
+      runAnalysisForDrawing(selectedDrawing, res.data);
     } catch (error) {
       console.error('Failed to accept scale suggestion:', error);
     }
@@ -559,20 +619,60 @@ export default function Takeoff() {
       layerId: 'search',
       source: 'manual',
       meta: { label: result.label_hint, similarity: result.similarity, fromSearch: true },
+    }, {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+    });
+  }
+
+  function activateManualTool(tool) {
+    if (!selectedDrawing || !isScaleConfirmed(scaleInfo)) return;
+    setManualTool((current) => (current === tool ? null : tool));
+    setCalibrating(false);
+    setCommentMode(false);
+    setSelectMode(false);
+  }
+
+  function addManualTakeoff({ type, geometry }) {
+    if (!selectedDrawing || !isScaleConfirmed(scaleInfo)) return;
+    const uniquePart = window.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const colors = { area: '#ec4899', line: '#06b6d4', count: '#f97316' };
+    annotationStore.addAnnotation({
+      id: `manual_${type}_${uniquePart}`,
+      type,
+      geometry,
+      layerId: 'manual',
+      source: 'manual',
+      style: {
+        stroke: colors[type],
+        fill: colors[type],
+        fillOpacity: type === 'area' ? 0.2 : undefined,
+        strokeWidth: type === 'line' ? 3 : 2,
+      },
+      meta: { label: `Manual ${type}`, drawingId: selectedDrawing.id },
+    }, {
+      scaleRatio: scaleInfo.scale_ratio,
+      fileType: selectedDrawing.file_type,
     });
   }
 
   async function runAnalysis() {
-    setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
-    const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
-    setDetection(res);
-    annotationStore.loadFromDetection(res);
-    setStatus('ready');
+    // Route to the single real analysis path (vector AUTODETECT → raster AI).
+    if (!selectedDrawing) return;
+    if (!isScaleConfirmed(scaleInfo)) {
+      setStatus('needs_scale');
+      return;
+    }
+    return runAnalysisForDrawing(selectedDrawing, scaleInfo);
   }
 
   async function handleExport(format) {
     if (!selectedDrawing && !id) {
       alert('No drawing or project selected');
+      return;
+    }
+    if (selectedDrawing && !isScaleConfirmed(scaleInfo)) {
+      alert("Confirm this drawing's scale before exporting measured quantities.");
       return;
     }
     try {
@@ -607,16 +707,6 @@ export default function Takeoff() {
       setExporting(false);
     }
   }
-
-  function zoomBy(delta) { setZoom((z) => Math.max(0.5, Math.min(3, z + delta))); }
-  function resetView() { setZoom(1); setPan({ x: 0, y: 0 }); }
-
-  function onMouseDown(e) { dragRef.current = { x: e.clientX, y: e.clientY, sx: pan.x, sy: pan.y }; }
-  function onMouseMove(e) {
-    if (!dragRef.current) return;
-    setPan({ x: dragRef.current.sx + (e.clientX - dragRef.current.x), y: dragRef.current.sy + (e.clientY - dragRef.current.y) });
-  }
-  function onMouseUp() { dragRef.current = null; }
 
   const annotationsById = useMemo(() => {
     const map = new Map();
@@ -667,6 +757,29 @@ export default function Takeoff() {
     () => Array.from(conditionCostTotals.values()).reduce((sum, v) => sum + v, 0),
     [conditionCostTotals]
   );
+  const scaleConfirmed = isScaleConfirmed(scaleInfo);
+
+  if (loadingProject) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300 gap-2">
+        <Loader2 className="w-5 h-5 animate-spin" /> Loading project…
+      </div>
+    );
+  }
+
+  if (projectError || !project) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+        <div className="max-w-md text-center">
+          <div className="text-lg font-semibold text-slate-900">Project unavailable</div>
+          <p className="mt-2 text-sm text-slate-600">{projectError || 'This project does not exist or you no longer have access.'}</p>
+          <button onClick={() => nav('/app')} className="mt-5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">
+            Return to dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900">
@@ -681,7 +794,7 @@ export default function Takeoff() {
             {drawings.length > 0 ? `${drawings.length} drawing${drawings.length > 1 ? 's' : ''} · ` : ''}
             {selectedDrawing
               ? (scaleInfo?.scale_label ? `Scale ${scaleInfo.scale_label}` : 'Scale not calibrated')
-              : 'Scale 1/8" = 1\'-0"'}
+              : 'No drawing selected'}
           </div>
         </div>
         {selectedDrawing && (
@@ -791,11 +904,17 @@ export default function Takeoff() {
           <div className="w-px h-5 bg-slate-700" />
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
-          <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
+          <button
+            onClick={runAnalysis}
+            disabled={!selectedDrawing || !scaleConfirmed}
+            title={!selectedDrawing ? 'Select a drawing first' : !scaleConfirmed ? 'Confirm the drawing scale first' : 'Run takeoff again'}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          ><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
           <div className="relative">
             <button
               onClick={() => setShowExportMenu(!showExportMenu)}
-              disabled={exporting}
+              disabled={exporting || !selectedDrawing || !scaleConfirmed}
+              title={!selectedDrawing ? 'Select a drawing first' : !scaleConfirmed ? 'Confirm the drawing scale before export' : 'Export takeoff quantities'}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 disabled:opacity-50"
             >
               {exporting ? (
@@ -931,12 +1050,11 @@ export default function Takeoff() {
               </div>
             </>
           )}
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Mock Sheets</div>
-          <div className="space-y-0.5">
-            {['A-001 Cover', 'A-101 Level 12', 'A-102 Level 13', 'A-201 Elevations', 'M-101 HVAC', 'E-101 Power'].map((s, i) => (
-              <button key={s} className={`w-full text-left px-2 py-1.5 rounded text-xs ${i === 1 && drawings.length === 0 ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}>{s}</button>
-            ))}
-          </div>
+          {drawings.length === 0 && (
+            <div className="rounded-lg border border-dashed border-slate-700 p-3 text-xs text-slate-500">
+              No drawings yet. Upload a PDF or image to begin.
+            </div>
+          )}
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2 flex items-center gap-1.5"><Layers className="w-3 h-3" /> Detection layers</div>
           <div className="space-y-1">
             {LAYER_CONFIG.map((l) => {
@@ -1019,13 +1137,45 @@ export default function Takeoff() {
           )}
         </aside>
 
-        <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+        <main className="relative bg-slate-100 overflow-hidden">
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
+          {status === 'needs_scale' && selectedDrawing && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-lg">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-3">
+                <Ruler className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-900">
+                  <div className="font-semibold">Confirm the drawing scale before takeoff.</div>
+                  Accept the detected scale below, or calibrate it by selecting two points with a known distance.
+                  <button onClick={() => setCalibrating(true)} className="mt-2 block font-semibold text-amber-800 underline">
+                    Calibrate manually
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {status === 'unavailable' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-md">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-800">
+                  <div className="font-semibold">AI auto-detect isn’t available for this sheet yet.</div>
+                  Vector PDFs are read directly; scanned images need the trained model installed.
+                  You can measure this sheet manually with the takeoff tools in the meantime.
+                </div>
+                <button onClick={() => setStatus('ready')} className="ml-1 text-amber-500 hover:text-amber-700">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
           {selectedDrawing ? (
             <div className="absolute inset-0">
               <DrawingRenderer
                 drawing={selectedDrawing}
                 detection={detection}
+                annotations={annotationStore.annotations}
+                manualTool={manualTool}
+                onManualAnnotation={addManualTakeoff}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}
@@ -1050,36 +1200,19 @@ export default function Takeoff() {
               )}
             </div>
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center" onMouseDown={selectMode ? undefined : onMouseDown}>
-              <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: dragRef.current ? 'none' : 'transform 180ms ease' }}>
-                <CanvasFull
-                  detection={detection}
-                  layers={layers}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  selectMode={selectMode}
-                  selectedIds={selectedIds}
-                  annotationsById={annotationsById}
-                  conditionsById={conditionsById}
-                  onBoxSelect={handleBoxSelect}
-                  onContextMenuRequest={handleContextMenuRequest}
-                />
+            <div className="absolute inset-0 flex items-center justify-center p-6">
+              <div className="max-w-sm text-center">
+                <div className="mx-auto w-12 h-12 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center">
+                  <Upload className="w-5 h-5 text-slate-500" />
+                </div>
+                <h2 className="mt-4 text-base font-semibold text-slate-900">Upload your first drawing</h2>
+                <p className="mt-1 text-sm text-slate-600">Takeoff results are shown only for real project drawings. Upload a PDF, PNG, JPG, or TIFF to begin.</p>
+                <button onClick={() => setShowUpload(true)} className="mt-4 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">
+                  Upload drawing
+                </button>
               </div>
             </div>
           )}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 p-1 rounded-xl bg-white border border-slate-200 shadow-lg">
-            {!selectedDrawing && (
-              <>
-                <ToolBtn active={selectMode} onClick={() => { setSelectMode((v) => !v); setSelectedIds([]); }}><MousePointer2 className="w-4 h-4" /></ToolBtn>
-                <div className="w-px h-5 bg-slate-200 mx-1" />
-              </>
-            )}
-            <ToolBtn onClick={() => zoomBy(-0.2)}><ZoomOut className="w-4 h-4" /></ToolBtn>
-            <div className="mono text-xs px-2 text-slate-700 w-14 text-center">{Math.round(zoom * 100)}%</div>
-            <ToolBtn onClick={() => zoomBy(0.2)}><ZoomIn className="w-4 h-4" /></ToolBtn>
-            <div className="w-px h-5 bg-slate-200 mx-1" />
-            <ToolBtn onClick={resetView}><Maximize2 className="w-4 h-4" /></ToolBtn>
-          </div>
           {status === 'ready' && (
             <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm text-xs font-medium text-slate-800">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -1116,6 +1249,48 @@ export default function Takeoff() {
               onCancel={() => setPendingCalPoints(null)}
               onConfirm={submitCalibration}
             />
+          )}
+          {selectedDrawing && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
+              {manualTool && (
+                <div className="px-3 py-1.5 rounded-full bg-slate-950/90 text-white text-[11px] shadow-lg">
+                  {manualTool === 'area' && 'Click each corner, then double-click or press Enter to finish · Esc cancels'}
+                  {manualTool === 'line' && 'Click the start and end points · Esc cancels'}
+                  {manualTool === 'count' && 'Click each item to place a count · Esc clears preview'}
+                </div>
+              )}
+              <div className="flex items-center gap-1 p-1.5 rounded-xl bg-white border border-slate-200 shadow-xl">
+                <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Manual takeoff</span>
+                {ANNOTATION_TYPES.map((tool) => (
+                  <button
+                    key={tool.value}
+                    type="button"
+                    aria-pressed={manualTool === tool.value}
+                    disabled={!scaleConfirmed}
+                    onClick={() => activateManualTool(tool.value)}
+                    title={scaleConfirmed ? `Draw ${tool.label}` : 'Confirm the drawing scale first'}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      manualTool === tool.value
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {tool.label}
+                  </button>
+                ))}
+                {manualTool && (
+                  <button
+                    type="button"
+                    onClick={() => setManualTool(null)}
+                    className="ml-1 p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    title="Close manual takeoff tools"
+                    aria-label="Close manual takeoff tools"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
           )}
           {selectMode && selectedIds.length > 0 && !contextMenu && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
@@ -1179,17 +1354,6 @@ export default function Takeoff() {
         />
       )}
     </div>
-  );
-}
-
-function ToolBtn({ children, onClick, active = false }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`w-8 h-8 rounded-md flex items-center justify-center ${active ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'hover:bg-slate-100 text-slate-700'}`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -2499,20 +2663,16 @@ function ChatPanel({ detection, drawing }) {
     setMessages((m) => [...m, { role: 'user', text: q, time: 'now' }]);
     setInput(''); setSending(true);
     try {
-      if (drawing) {
-        // Real TakeOff.CHAT — RAG over this sheet's detections, conditions,
-        // human corrections, and OCR (routes/ai_routes.py).
-        const res = await chatAPI.send(drawing.id, q, history);
-        setMessages((m) => [...m, { role: 'assistant', text: res.data.answer, time: 'now', citations: res.data.citations }]);
-      } else {
-        // No real Sheet selected (demo canvas) — nothing to ground a real
-        // chat in yet, same scoping as scale calibration/corrections.
-        const res = await askTakeoffChat(q);
-        setMessages((m) => [...m, { role: 'assistant', text: res.answer, time: 'now', citations: res.citations }]);
-      }
+      if (!drawing) throw new Error('Select a real drawing before using TakeOff.CHAT.');
+      // Real TakeOff.CHAT — RAG over this sheet's detections, conditions,
+      // human corrections, and OCR (routes/ai_routes.py).
+      const res = await chatAPI.send(drawing.id, q, history);
+      setMessages((m) => [...m, { role: 'assistant', text: res.data.answer, time: 'now', citations: res.data.citations }]);
     } catch (error) {
       const detail = error.response?.data?.detail;
-      const text = error.response?.status === 503
+      const text = !drawing
+        ? 'Select a real drawing before using TakeOff.CHAT.'
+        : error.response?.status === 503
         ? "TakeOff.CHAT isn't configured yet — the server is missing its Claude API key."
         : (detail || "Something went wrong answering that. Please try again.");
       setMessages((m) => [...m, { role: 'assistant', text, time: 'now' }]);
@@ -2523,9 +2683,7 @@ function ChatPanel({ detection, drawing }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
-  const suggestions = drawing
-    ? ['How many rooms?', 'Total paintable area?', 'Draft a Scope of Work', 'Draft an RFP', 'Draft an RFI']
-    : ['How many rooms?', 'Total paintable area?', 'Generate a scope of work', 'Any door irregularities?'];
+  const suggestions = ['How many rooms?', 'Total paintable area?', 'Draft a Scope of Work', 'Draft an RFP', 'Draft an RFI'];
 
   return (
     <div className="h-full flex flex-col">
