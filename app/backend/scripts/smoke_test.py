@@ -131,8 +131,22 @@ def main() -> int:
               f"(engine says {EXPECTED_ROOM_SQFT})")
         assert abs(sqft - EXPECTED_ROOM_SQFT) < 1.0, f"area mismatch: {sqft} vs {EXPECTED_ROOM_SQFT}"
 
-        print("\n✅ SMOKE TEST PASSED — vector AUTODETECT persists to PostGIS and "
-              "ST_Area on the stored geometry matches the engine's measurement.")
+        # ── 6. AI Search live: index detections + pgvector text search ──
+        from clip_embeddings import (
+            embeddings_backend, embed_text, index_project_from_detections, search_embeddings,
+        )
+        n_idx = index_project_from_detections(db, project.id)
+        results = search_embeddings(db, project.id, embed_text("find all doors"), top_k=5)
+        top_label = results[0][0].label_hint if results else None
+        door_hits = sum(1 for r in results if r[0].label_hint == "door")
+        print(f"[search] backend={embeddings_backend()} indexed={n_idx} "
+              f"top='{top_label}' door_hits={door_hits}")
+        assert n_idx == 7, f"expected 7 embeddings, got {n_idx}"
+        assert top_label == "door", f"text search 'doors' should rank a door first, got {top_label}"
+        assert door_hits == 3, f"expected all 3 doors returned, got {door_hits}"
+
+        print("\n✅ SMOKE TEST PASSED — vector AUTODETECT persists to PostGIS, ST_Area "
+              "matches the engine, and AI text search returns the right detections.")
         return 0
     except Exception as exc:
         print(f"\n❌ SMOKE TEST FAILED: {exc}")
@@ -145,6 +159,7 @@ def main() -> int:
             if ids["drawing"]:
                 db.execute(text("DELETE FROM measurements WHERE detection_id IN "
                                 "(SELECT id FROM detections WHERE drawing_id=:d)"), {"d": ids["drawing"]})
+                db.execute(text("DELETE FROM drawing_embeddings WHERE drawing_id=:d"), {"d": ids["drawing"]})
                 db.execute(text("DELETE FROM detections WHERE drawing_id=:d"), {"d": ids["drawing"]})
                 db.execute(text("DELETE FROM drawings WHERE id=:d"), {"d": ids["drawing"]})
             if ids["project"]:

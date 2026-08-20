@@ -13,14 +13,17 @@ Every public function here either returns cleanly (index_drawing_embeddings
 clear message — never a crash.
 """
 
+from __future__ import annotations
+
 import os
 import sys
-from typing import Optional
+import hashlib
+import math
+import re
+from typing import Optional, TYPE_CHECKING
 
-from geoalchemy2.elements import WKTElement
-from sqlalchemy.orm import Session
-
-import models
+if TYPE_CHECKING:  # keep the pure-embedding functions importable without the DB/ML stack
+    from sqlalchemy.orm import Session
 
 EMBEDDING_DIM = 512  # CLIP ViT-B/32
 GEOM_SRID = 0        # plan-space pixels, matches Detection/Measurement
@@ -53,23 +56,81 @@ def _load_clip():
     return _clip_model, _clip_preprocess
 
 
-def embed_image_patch(patch_bgr) -> list:
-    """patch_bgr: HxWx3 numpy array, BGR (as returned by ai/preprocessing.load_drawing)."""
-    import torch
-    from PIL import Image as PILImage
+def embeddings_backend() -> str:
+    """Which encoder AI Search uses: real 'clip' when installed, else 'lite'.
 
-    model, preprocess = _load_clip()
-    pil = PILImage.fromarray(patch_bgr[:, :, ::-1])  # BGR -> RGB
-    tensor = preprocess(pil).unsqueeze(0).to(_clip_device)
-    with torch.no_grad():
-        emb = model.encode_image(tensor)
-        emb = emb / emb.norm(dim=-1, keepdim=True)
-    return emb[0].cpu().tolist()
+    The 'lite' backend is a dependency-free label/text feature-hashing embedding
+    (below). It makes text search + count LIVE anywhere — no torch, no weights,
+    no network — by matching a query against each detection's class label in a
+    shared, normalized vector space that pgvector cosine-searches exactly like
+    the CLIP path. CLIP is a drop-in *semantic* upgrade (also enables true
+    visual/pattern search on arbitrary regions) when the GPU stack is present.
+    """
+    return "clip" if clip_available() else "lite"
+
+
+# ── Lite (dependency-free) embedding backend ──────────────────────────
+# Feature hashing (the "hashing trick"): map a string's tokens + char 3-grams
+# into a fixed 512-dim L2-normalized vector. Two strings that share tokens/grams
+# (e.g. "doors" and "Door") land close in cosine space, so a text query matches
+# the labels of the detections it names — fuzzy, deterministic, zero-dependency.
+_STOPWORDS = frozenset({
+    "find", "all", "the", "a", "an", "show", "me", "of", "with", "every",
+    "get", "list", "where", "are", "is", "in", "on", "and", "to", "for", "any",
+})
+
+
+def _tokens(text: str) -> list:
+    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOPWORDS]
+
+
+def _lite_text_vector(text: str, dim: int = EMBEDDING_DIM) -> list:
+    vec = [0.0] * dim
+    grams: list = []
+    for tok in _tokens(text):
+        grams.append(tok)                      # whole token
+        s = f"#{tok}#"
+        for i in range(len(s) - 2):            # char 3-grams (fuzzy: doors ~ door)
+            grams.append(s[i:i + 3])
+    for g in grams:
+        h = int(hashlib.md5(g.encode()).hexdigest(), 16)
+        vec[h % dim] += 1.0 if (h >> 8) & 1 else -1.0
+    norm = math.sqrt(sum(v * v for v in vec))
+    return [v / norm for v in vec] if norm > 0 else vec
+
+
+def embed_label(label: str) -> list:
+    """Embedding for a detection's class label — the index side of text search.
+    Uses CLIP's text encoder when available (so it shares CLIP's image space),
+    otherwise the lite feature-hash vector."""
+    return embed_text(label)
+
+
+def embed_image_patch(patch_bgr, label: Optional[str] = None) -> list:
+    """Embed a detection patch. CLIP encodes the pixels; the lite backend
+    anchors on the patch's class `label` (label-based search — no pixels needed),
+    returning a neutral zero vector only when neither pixels-model nor label
+    exist."""
+    if clip_available():
+        import torch
+        from PIL import Image as PILImage
+
+        model, preprocess = _load_clip()
+        pil = PILImage.fromarray(patch_bgr[:, :, ::-1])  # BGR -> RGB
+        tensor = preprocess(pil).unsqueeze(0).to(_clip_device)
+        with torch.no_grad():
+            emb = model.encode_image(tensor)
+            emb = emb / emb.norm(dim=-1, keepdim=True)
+        return emb[0].cpu().tolist()
+    return _lite_text_vector(label) if label else [0.0] * EMBEDDING_DIM
 
 
 def embed_text(query: str) -> list:
-    """CLIP's image and text encoders share one embedding space, so a text
-    query searches the same DrawingEmbedding rows an image-patch query does."""
+    """Embed a text query. CLIP's image and text encoders share one space, so a
+    text query searches the same DrawingEmbedding rows an image-patch query does;
+    the lite backend matches the query against detection labels."""
+    if not clip_available():
+        return _lite_text_vector(query)
     import torch
     import clip as clip_lib
 
@@ -81,7 +142,8 @@ def embed_text(query: str) -> list:
     return emb[0].cpu().tolist()
 
 
-def _bbox_to_wkt_polygon(bbox) -> WKTElement:
+def _bbox_to_wkt_polygon(bbox) -> "WKTElement":
+    from geoalchemy2.elements import WKTElement
     x1, y1, x2, y2 = bbox
     ring = f"{x1} {y1}, {x2} {y1}, {x2} {y2}, {x1} {y2}, {x1} {y1}"
     return WKTElement(f"POLYGON(({ring}))", srid=GEOM_SRID)
@@ -108,17 +170,17 @@ def index_drawing_embeddings(
     detection_geometry.persist_detection_geometries() stores as PostGIS
     geometry, so every embedded patch is also a real Detection row.
 
-    Returns 0 (not an error) if CLIP isn't installed — callers already
-    treat this as best-effort, same as persist_detection_geometries.
+    With the lite backend (no CLIP) this indexes by label — no image load
+    needed — so search still goes live; with CLIP it embeds the actual pixels.
     """
-    if not clip_available():
-        return 0
-
-    ai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai")
-    sys.path.insert(0, ai_dir)
-    from preprocessing import load_drawing
-
-    img = load_drawing(file_path, page_number=0)
+    import models
+    use_clip = clip_available()
+    img = None
+    if use_clip:
+        ai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai")
+        sys.path.insert(0, ai_dir)
+        from preprocessing import load_drawing
+        img = load_drawing(file_path, page_number=0)
 
     items = [(r["id"], r.get("label", "Room"), r["bbox"]) for r in (detection.get("rooms") or [])]
     for layer_key, default_label in _SYMBOL_DEFAULTS.items():
@@ -127,12 +189,15 @@ def index_drawing_embeddings(
 
     created = 0
     for annotation_id, label, bbox in items:
-        x1, y1, x2, y2 = [int(v) for v in bbox]
-        x1, y1 = max(x1, 0), max(y1, 0)
-        patch = img[y1:max(y2, y1 + 1), x1:max(x2, x1 + 1)]
-        if patch.size == 0:
-            continue
-        embedding = embed_image_patch(patch)
+        if use_clip and img is not None:
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            x1, y1 = max(x1, 0), max(y1, 0)
+            patch = img[y1:max(y2, y1 + 1), x1:max(x2, x1 + 1)]
+            if patch.size == 0:
+                continue
+            embedding = embed_image_patch(patch, label)
+        else:
+            embedding = embed_image_patch(None, label)  # lite: label-anchored
         db.add(models.DrawingEmbedding(
             project_id=project_id,
             drawing_id=drawing_id,
@@ -140,6 +205,38 @@ def index_drawing_embeddings(
             label_hint=label,
             geom=_bbox_to_wkt_polygon(bbox),
             embedding=embedding,
+        ))
+        created += 1
+
+    db.commit()
+    return created
+
+
+def index_project_from_detections(db: Session, project_id: int, replace: bool = True) -> int:
+    """Backfill DrawingEmbedding rows from a project's existing Detection rows,
+    label-anchored, so AI text search + count go live over already-analyzed
+    drawings without reprocessing any images (works with the lite or CLIP-text
+    backend). Reuses each Detection's PostGIS geom so results carry geometry.
+
+    Returns the number of embeddings written.
+    """
+    import models
+    if replace:
+        db.query(models.DrawingEmbedding).filter(
+            models.DrawingEmbedding.project_id == project_id
+        ).delete()
+        db.flush()
+
+    created = 0
+    for det in db.query(models.Detection).filter(models.Detection.project_id == project_id).all():
+        label = det.class_label or "detection"
+        db.add(models.DrawingEmbedding(
+            project_id=project_id,
+            drawing_id=det.drawing_id,
+            annotation_id=det.annotation_id,
+            label_hint=label,
+            geom=det.geom,
+            embedding=embed_label(label),
         ))
         created += 1
 
@@ -158,6 +255,7 @@ def search_embeddings(db: Session, project_id: int, query_embedding: list, top_k
     "Add as Count/Area").
     """
     from sqlalchemy import func
+    import models
 
     q = db.query(
         models.DrawingEmbedding,
