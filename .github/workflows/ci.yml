@@ -37,7 +37,7 @@ jobs:
       - name: Install Python deps (engine + db + test)
         run: |
           python -m pip install -q \
-            pymupdf shapely numpy pytest \
+            fastapi pymupdf shapely numpy pytest \
             sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
             "passlib[bcrypt]" "bcrypt==4.0.1" \
             openpyxl reportlab
