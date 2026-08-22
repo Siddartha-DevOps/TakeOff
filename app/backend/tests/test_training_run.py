@@ -7,6 +7,7 @@ import pytest
 from ml.training.config import TASK_WEIGHTS, TrainConfig
 from ml.training.run_training import (
     build_train_plan,
+    prepare_ultralytics_data_yaml,
     promote_weights,
     resolve_best_weights,
     run,
@@ -99,6 +100,22 @@ def test_run_raises_when_gate_fails(tmp_path):
     # No dataset -> run() must refuse before importing ultralytics (never fakes weights).
     with pytest.raises(RuntimeError, match="training blocked"):
         run(TrainConfig(), tmp_path / "missing.yaml", require_deps=False)
+
+
+def test_runtime_yaml_resolves_portable_dataset_root(tmp_path):
+    dataset = tmp_path / "spaces_v1"
+    dataset.mkdir()
+    source = dataset / "data.yaml"
+    source.write_text(
+        "path: .\ntrain: images/train\nval: images/val\nnc: 1\nnames: [living]\n"
+    )
+
+    runtime = prepare_ultralytics_data_yaml(source, tmp_path / "runtime" / "data.yaml")
+
+    text = runtime.read_text()
+    assert f'path: {dataset.resolve().as_posix()!r}'.replace("'", '"') in text
+    assert "train: images/train" in text
+    assert source.read_text().startswith("path: .\n")
 
 
 # --- weights promotion -----------------------------------------------------
