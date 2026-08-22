@@ -17,8 +17,11 @@ ultralytics/GPU, so this module imports and tests on a CPU-only CI box.
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +78,34 @@ def promote_weights(best: str | Path, target: str | Path) -> Path:
     return target
 
 
+def prepare_ultralytics_data_yaml(data_yaml: str | Path, destination: str | Path) -> Path:
+    """Write a runtime YAML whose dataset root is absolute.
+
+    TakeOff's portable datasets use ``path: .`` relative to ``data.yaml``. The
+    Ultralytics loader instead resolves a relative ``path`` from the process
+    working directory, which can silently point outside the dataset. Preserve
+    the portable source file and give Ultralytics a temporary normalized copy.
+    """
+    source = Path(data_yaml).resolve()
+    text = source.read_text(encoding="utf-8-sig")
+    match = re.search(r"(?m)^path:\s*(.*?)\s*$", text)
+    root_value = match.group(1).strip().strip("'\"") if match else ""
+    dataset_root = Path(root_value) if root_value else source.parent
+    if not dataset_root.is_absolute():
+        dataset_root = (source.parent / dataset_root).resolve()
+
+    absolute_path_line = f"path: {json.dumps(dataset_root.as_posix())}"
+    if match:
+        text = text[:match.start()] + absolute_path_line + text[match.end():]
+    else:
+        text = absolute_path_line + "\n" + text
+
+    output = Path(destination)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8")
+    return output
+
+
 def run(config: TrainConfig, data_yaml: str | Path, *, promote: bool = True,
         require_deps: bool = True) -> dict:
     """Gate → train (ultralytics, lazy) → promote best.pt. Returns a result dict.
@@ -91,11 +122,13 @@ def run(config: TrainConfig, data_yaml: str | Path, *, promote: bool = True,
     from ai.inference.device import resolve_device
 
     device = resolve_device(config.device).device
-    kwargs = config.train_kwargs(data_yaml, device=device)
     print(f"[train] task={config.task} device={device} epochs={config.epochs} imgsz={config.imgsz}")
 
     model = YOLO(config.base_model)
-    results = model.train(**kwargs)
+    with tempfile.TemporaryDirectory(prefix="takeoff-data-") as runtime_dir:
+        runtime_yaml = prepare_ultralytics_data_yaml(data_yaml, Path(runtime_dir) / "data.yaml")
+        kwargs = config.train_kwargs(runtime_yaml, device=device)
+        results = model.train(**kwargs)
 
     best = resolve_best_weights(results.save_dir)
     if best is None:
