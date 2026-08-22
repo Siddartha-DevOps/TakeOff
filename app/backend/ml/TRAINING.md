@@ -16,9 +16,10 @@ slowly).
 | 4 | CLIP ViT-B/32 | ❌ Install | install, bulk-encode sheets into pgvector |
 | 5 | OCR (Tesseract) | ❌ Install | install the system binary — works immediately |
 
-> **Just want it copy-paste?** Open **`ml/notebooks/train_spaces_colab.ipynb`** in
-> Google Colab (or RunPod/Jupyter) on a GPU runtime and run the cells top to
-> bottom — it does steps 1 (space model) end to end and hands you `best.pt`.
+> **Just want it copy-paste?** Use **`ml/notebooks/train_spaces_kaggle.ipynb`**
+> on Kaggle or **`ml/notebooks/train_spaces_colab.ipynb`** on Google Colab.
+> Both verify the private ResPlan archive and stop after a one-epoch smoke run by
+> default. Review that output before enabling the full-training cell.
 
 ## Prerequisites (once)
 - NVIDIA GPU + drivers (CUDA 12.x); 16 GB+ VRAM is comfortable.
