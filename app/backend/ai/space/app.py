@@ -51,7 +51,7 @@ model = YOLO(model_path)
 model.to("cuda")
 
 
-@spaces.GPU(duration=45)
+@spaces.GPU(duration=15)
 def predict_spaces(image_path: str, confidence: float, iou: float):
     if not image_path:
         raise gr.Error("Upload a floor-plan image first")
