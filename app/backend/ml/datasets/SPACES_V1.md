@@ -56,3 +56,24 @@ be reproduced exactly.
 
 After this passes, run the one-epoch smoke training command. Do not use the test
 split for training decisions; it is the final unbiased accuracy check.
+
+## Build from ResPlan
+
+ResPlan is vector-only and is used for commercially compatible pretraining. The
+converter downloads the pinned official GitHub release, verifies its checksum,
+renders monochrome inputs, preserves the canonical splits, excludes supplied
+augmentations, and removes semantic-layout collisions across splits:
+
+```bash
+python -m ml.datasets.acquire_resplan \
+  --source data/resplan/source \
+  --out data/spaces_v1 \
+  --created-at "2026-08-22T00:00:00Z"
+python -m ml.datasets.validate_spaces \
+  --data data/spaces_v1/data.yaml \
+  --require-groups \
+  --manifest data/spaces_v1/spaces-v1.manifest.json
+```
+
+Attribution: ResPlan by the ResPlan authors, data licensed CC BY 4.0. The
+generated `source_metadata.json` pins the upstream commit and source hashes.
