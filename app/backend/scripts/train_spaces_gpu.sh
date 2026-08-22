@@ -8,14 +8,14 @@
 # It chains the whole pipeline with a readiness gate before each heavy stage, so
 # it fails loudly and early rather than halfway through a multi-hour train:
 #
-#   deps -> dataset (CubiCasa5K) -> data audit -> preflight -> smoke -> full train
+#   deps -> dataset (ResPlan) -> data audit -> preflight -> smoke -> full train
 #        -> golden eval + gate -> serving verify
 #
 # Override any of these via env, e.g.:  EPOCHS=50 IMGSZ=1024 bash scripts/train_spaces_gpu.sh
 set -euo pipefail
 
 TASK="${TASK:-spaces}"
-DATA_ROOT="${DATA_ROOT:-data/cubicasa5k}"          # extracted CubiCasa5K tree
+DATA_SOURCE="${DATA_SOURCE:-data/resplan/source}"   # pinned official ResPlan source
 DATASET_OUT="${DATASET_OUT:-data/spaces_v1}"       # converted YOLO-seg dataset
 EPOCHS="${EPOCHS:-100}"
 IMGSZ="${IMGSZ:-1280}"
@@ -30,18 +30,14 @@ echo "==> [1/7] Installing ML dependencies"
 pip install --quiet torch --index-url "$CUDA_INDEX_URL"
 pip install --quiet -r requirements-ml.txt
 
-echo "==> [2/7] Acquiring CubiCasa5K (skipped if already extracted)"
-if [ ! -d "$DATA_ROOT" ]; then
-  python -c "from ml.datasets.acquire_cubicasa import download_cubicasa; download_cubicasa('cubicasa5k.zip')"
-  mkdir -p "$DATA_ROOT"
-  unzip -q cubicasa5k.zip -d "$DATA_ROOT"
-fi
+echo "==> [2/7] Acquiring pinned official ResPlan source (skips existing verified files)"
 
 echo "==> [3/7] Converting to a versioned YOLO-seg dataset"
-python -m ml.datasets.acquire_cubicasa --root "$DATA_ROOT" --out "$DATASET_OUT" --created-at "$CREATED_AT"
+python -m ml.datasets.acquire_resplan --source "$DATA_SOURCE" --out "$DATASET_OUT" \
+  --created-at "$CREATED_AT"
 
 echo "==> [4/7] Preflight: can we train? (deps + dataset)"
-python -m ml.datasets.validate_spaces --data "$DATASET_OUT/data.yaml" \
+python -m ml.datasets.validate_spaces --data "$DATASET_OUT/data.yaml" --require-groups \
   --manifest "$DATASET_OUT/spaces-v1.manifest.json"
 python -m ml.preflight --data "$DATASET_OUT/data.yaml" --require train
 

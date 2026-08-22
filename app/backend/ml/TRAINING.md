@@ -22,7 +22,7 @@ slowly).
 
 ## Prerequisites (once)
 - NVIDIA GPU + drivers (CUDA 12.x); 16 GB+ VRAM is comfortable.
-- Python 3.11, `git`, `unzip`, ~15 GB free disk (CubiCasa5K is ~5 GB).
+- Python 3.11, `git`, ~5 GB free disk for source data, renders, and weights.
 - Repo checked out; **run everything from `app/backend/`**.
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu121   # match your CUDA
@@ -36,13 +36,15 @@ python -m ml.preflight        # shows exactly what's present/missing
 The core model: outlines and classifies rooms/spaces. Everything downstream
 (measurement, quantities, BOQ, assemblies) consumes its output.
 
-### Get data — public (zero effort) or your own (better accuracy)
-**Public CubiCasa5K** (CC-BY-4.0, 5,000 plans) — fully automatic:
+### Get data — ResPlan pretraining or your own drawings
+**ResPlan** (CC BY 4.0 geometry data, 17,000 plans) — fully automatic:
 ```bash
-python -c "from ml.datasets.acquire_cubicasa import download_cubicasa; download_cubicasa('cubicasa5k.zip')"
-unzip -q cubicasa5k.zip -d data/cubicasa5k
-python -m ml.datasets.acquire_cubicasa --root data/cubicasa5k --out data/spaces_v1 --created-at "$(date -u +%FT%TZ)"
+python -m ml.datasets.acquire_resplan --source data/resplan/source --out data/spaces_v1 --created-at "$(date -u +%FT%TZ)"
 ```
+The converter pins and verifies the official source, renders monochrome plans,
+preserves canonical splits, excludes supplied augmentations, and removes
+cross-split semantic layout collisions. ResPlan is pretraining data; production
+accuracy still requires fine-tuning on representative customer drawings.
 **Your own plans** (recommended for production accuracy) — label ~150–400 sheets,
 keep ~20–40 aside as a held-out golden set:
 ```bash

@@ -16,6 +16,9 @@ app/frontend/.env.local
 # User-uploaded drawings (local-disk fallback storage — see storage.py)
 app/backend/routes/uploads/
 
+# Local ML datasets and downloaded source archives
+app/backend/data/
+
 # Python
 __pycache__/
 *.pyc

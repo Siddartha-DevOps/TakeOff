@@ -100,8 +100,8 @@ through the normal path and looks like "a bad model." Here it is a distinct
   not use, publish, or reference it as a commercial asset.
 - **RPLAN, Structured3D — research/non-commercial Terms of Use**, and both
   forbid redistribution. Not for the commercial model, not re-hostable.
-- **ResPlan — CC BY 4.0 (commercial-safe).** Optional *pretraining* only; it is
-  vector-only and would need rendering to images. On the shelf for now.
+- **ResPlan — CC BY 4.0 (commercial-safe).** Selected for *pretraining*; its
+  vector geometry is rendered to images by `ml.datasets.acquire_resplan`.
 - **Commercial training data = the owner's 5,000 proprietary CAD floor plans**
   (vector + polygon room masks) — the Route B dataset below.
 

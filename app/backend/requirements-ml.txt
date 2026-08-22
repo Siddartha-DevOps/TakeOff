@@ -19,6 +19,7 @@ ultralytics>=8.2,<9            # YOLOv8/v11-seg train + predict
 opencv-python-headless>=4.9,<5 # rasterization / preprocessing (cv2)
 pillow>=10.2                   # image IO
 numpy>=1.26                    # (also in requirements.txt; pinned compatibly)
+shapely>=2.0,<3                # ResPlan vector geometry conversion
 
 # --- OCR (title-block + scale text) --------------------------------------
 pytesseract>=0.3.10            # requires the system `tesseract-ocr` binary
