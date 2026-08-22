@@ -59,6 +59,7 @@ bash scripts/train_spaces_gpu.sh          # deps→data→preflight→smoke→tr
 ```
 Or step by step:
 ```bash
+python -m ml.datasets.validate_spaces --data data/spaces_v1/data.yaml --require-groups --manifest data/spaces_v1/spaces-v1.manifest.json
 python -m ml.preflight --data data/spaces_v1/data.yaml --require train
 python -m ml.training.run_training --data data/spaces_v1/data.yaml --task spaces --smoke --no-promote
 python -m ml.training.run_training --data data/spaces_v1/data.yaml --task spaces --epochs 100 --imgsz 1280

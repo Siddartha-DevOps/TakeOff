@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from ml.preflight import run_preflight
+from ml.datasets.validate_spaces import validate_spaces_dataset
 from ml.training.config import TrainConfig
 
 
@@ -41,6 +42,9 @@ def build_train_plan(config: TrainConfig, data_yaml: str | Path, *, require_deps
         blockers.append(f"dataset not found: {data_yaml}")
     elif ds.get("n_label_files", 0) == 0:
         blockers.append("dataset has no label files")
+    elif config.task == "spaces":
+        audit = validate_spaces_dataset(data_yaml)
+        blockers.extend(f"dataset quality: {error}" for error in audit.errors)
     if require_deps:
         for dep in ("torch", "ultralytics"):
             if not readiness.dependencies.get(dep):

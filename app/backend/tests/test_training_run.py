@@ -56,9 +56,16 @@ def test_train_kwargs_shape_and_device_override():
 
 # --- gating (build_train_plan) --------------------------------------------
 def _dataset(tmp_path):
-    (tmp_path / "labels" / "train").mkdir(parents=True)
-    (tmp_path / "labels" / "train" / "a.txt").write_text("0 0 0 1 0 1 1")
-    (tmp_path / "data.yaml").write_text("nc: 1\nnames:\n  0: living\n")
+    for split, content in (("train", b"train-image"), ("val", b"val-image")):
+        (tmp_path / "images" / split).mkdir(parents=True)
+        (tmp_path / "labels" / split).mkdir(parents=True)
+        (tmp_path / "images" / split / f"{split}.png").write_bytes(content)
+        (tmp_path / "labels" / split / f"{split}.txt").write_text(
+            "0 0.1 0.1 0.9 0.1 0.9 0.9 0.1 0.9"
+        )
+    (tmp_path / "data.yaml").write_text(
+        f"path: {tmp_path}\ntrain: images/train\nval: images/val\nnc: 1\nnames:\n  0: living\n"
+    )
     return tmp_path / "data.yaml"
 
 
@@ -71,6 +78,14 @@ def test_plan_blocks_on_missing_dataset(tmp_path):
 def test_plan_ready_with_dataset_when_deps_not_required(tmp_path):
     plan = build_train_plan(TrainConfig(), _dataset(tmp_path), require_deps=False)
     assert plan["ready"] is True and plan["blockers"] == []
+
+
+def test_plan_blocks_malformed_spaces_polygon(tmp_path):
+    data = _dataset(tmp_path)
+    (tmp_path / "labels" / "train" / "train.txt").write_text("0 0.1 0.1 0.2 0.2")
+    plan = build_train_plan(TrainConfig(), data, require_deps=False)
+    assert plan["ready"] is False
+    assert any("dataset quality" in blocker for blocker in plan["blockers"])
 
 
 def test_plan_blocks_on_missing_deps(tmp_path):
