@@ -18,8 +18,16 @@ ignored). They are produced by the training pipeline
 (`training/train_yolov8_seg.py` → `ml/training/retrain.py`) and delivered here by
 one of:
 
-1. **Volume mount / init-container** in production (`ai/inference/Dockerfile`
-   mounts `/models`), pulling the ACTIVE `ModelVersion`'s artifact.
+1. **Private Hugging Face provisioning** in production. Set the variables below;
+   startup verifies the pinned SHA-256 and atomically installs the artifact.
+   An already-verified volume copy is reused without network access.
+   ```bash
+   AI_MODEL_PATH=/models/best.pt
+   AI_MODEL_REPO_ID=Siddartha96/takeoff-spaces-yolov8m-seg
+   AI_MODEL_FILENAME=best.pt
+   AI_MODEL_SHA256=2cc2cfffaa294f9915a2fddab9812f06b10450e8149e75d5d3361f5b792c9acd
+   HF_TOKEN=<a-token-with-read-access>
+   ```
 2. **Manual copy** after a training run: `cp runs/.../best.pt models/best.pt`.
 
 ## Behavior without weights (by design — no mock)

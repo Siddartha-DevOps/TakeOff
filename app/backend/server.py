@@ -10,21 +10,36 @@ from routes import auth_routes, project_routes, upload_routes, takeoff_routes, b
 # the ORM mapper registry resolves before the app starts handling requests.
 import models
 
-# ── NEW: Import AI engine ─────────────────────────────────────────
-# Drop best.pt into backend/models/ after Colab training completes
-try:
-    from ai.inference_api import TakeoffAIInference
-    AI_MODEL_PATH = os.environ.get("AI_MODEL_PATH", "models/best.pt")
-    ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
-    print(f"[TakeOff.ai] AI engine loaded: {AI_MODEL_PATH}")
-except Exception as e:
-    ai_engine = None
-    print(f"[TakeOff.ai] AI engine not loaded (mock mode): {e}")
-# ──────────────────────────────────────────────────────────────────
-
-# Load environment variables
+# Load environment variables before model provisioning and AI initialization.
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Provision and import the AI engine. Weights are never committed to git: a GPU
+# deployment either mounts AI_MODEL_PATH or pulls the checksum-pinned private
+# Hugging Face artifact configured below.
+try:
+    from ai.inference.artifacts import provision_hf_model
+    from ai.inference_api import TakeoffAIInference
+    _configured_model_path = Path(os.environ.get("AI_MODEL_PATH", "models/best.pt"))
+    AI_MODEL_PATH = str(
+        _configured_model_path
+        if _configured_model_path.is_absolute()
+        else ROOT_DIR / _configured_model_path
+    )
+    if os.environ.get("AI_MODEL_REPO_ID"):
+        provision_hf_model(
+            AI_MODEL_PATH,
+            repo_id=os.environ["AI_MODEL_REPO_ID"],
+            filename=os.environ.get("AI_MODEL_FILENAME", "best.pt"),
+            expected_sha256=os.environ.get("AI_MODEL_SHA256", ""),
+            token=os.environ.get("HF_TOKEN"),
+        )
+    ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
+    status = "loaded" if ai_engine.available else "unavailable"
+    print(f"[TakeOff.ai] AI engine {status}: {AI_MODEL_PATH}")
+except Exception as e:
+    ai_engine = None
+    print(f"[TakeOff.ai] AI engine unavailable (no mock fallback): {e}")
 
 # Schema is Alembic-owned now (run `alembic upgrade head` before starting
 # the server — see backend/alembic/). Base.metadata.create_all() used to run
