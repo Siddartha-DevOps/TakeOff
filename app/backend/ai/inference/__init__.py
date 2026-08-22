@@ -34,6 +34,7 @@ from .engine import (
     TakeoffAIInference,
     TakeoffAnalysis,
 )
+from .remote_space import RemoteInferenceError, RemoteSpaceInference
 
 __all__ = [
     "CLASSES",
@@ -43,4 +44,6 @@ __all__ = [
     "ModelUnavailableError",
     "TakeoffAIInference",
     "TakeoffAnalysis",
+    "RemoteInferenceError",
+    "RemoteSpaceInference",
 ]
