@@ -8,7 +8,7 @@
 # It chains the whole pipeline with a readiness gate before each heavy stage, so
 # it fails loudly and early rather than halfway through a multi-hour train:
 #
-#   deps -> dataset (CubiCasa5K) -> preflight -> smoke(1 epoch) -> full train
+#   deps -> dataset (CubiCasa5K) -> data audit -> preflight -> smoke -> full train
 #        -> golden eval + gate -> serving verify
 #
 # Override any of these via env, e.g.:  EPOCHS=50 IMGSZ=1024 bash scripts/train_spaces_gpu.sh
@@ -41,6 +41,8 @@ echo "==> [3/7] Converting to a versioned YOLO-seg dataset"
 python -m ml.datasets.acquire_cubicasa --root "$DATA_ROOT" --out "$DATASET_OUT" --created-at "$CREATED_AT"
 
 echo "==> [4/7] Preflight: can we train? (deps + dataset)"
+python -m ml.datasets.validate_spaces --data "$DATASET_OUT/data.yaml" \
+  --manifest "$DATASET_OUT/spaces-v1.manifest.json"
 python -m ml.preflight --data "$DATASET_OUT/data.yaml" --require train
 
 echo "==> [5/7] Smoke run (1 epoch, no promotion) — verifies the pipeline"
