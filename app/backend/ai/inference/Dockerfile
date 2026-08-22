@@ -10,7 +10,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     TORCH_HOME=/models/torch \
-    AI_MODEL_PATH=/models/best.pt
+    AI_MODEL_PATH=/models/best.pt \
+    AI_MODEL_REPO_ID=Siddartha96/takeoff-spaces-yolov8m-seg \
+    AI_MODEL_FILENAME=best.pt \
+    AI_MODEL_SHA256=2cc2cfffaa294f9915a2fddab9812f06b10450e8149e75d5d3361f5b792c9acd
 
 # System deps: python, and the OpenCV/PyMuPDF runtime libs + tesseract for OCR.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,14 +28,15 @@ WORKDIR /app
 RUN pip3 install --no-cache-dir \
         torch --index-url https://download.pytorch.org/whl/cu121 \
     && pip3 install --no-cache-dir \
-        ultralytics opencv-python-headless numpy shapely pymupdf pillow pytesseract
+        ultralytics opencv-python-headless numpy shapely pymupdf pillow pytesseract \
+        huggingface_hub
 
 # App code (the inference package + its geometry/OCR siblings).
 COPY . /app/
 
-# Weights are mounted at runtime (a volume or an init-container that pulls from
-# the model registry), never baked into the image:
-#   docker run --gpus all -v /host/models:/models takeoff-inference
+# Weights are never baked into the image. Mount a populated volume, or provide
+# HF_TOKEN so server startup pulls the pinned private Hub artifact atomically:
+#   docker run --gpus all -e HF_TOKEN -v /host/models:/models takeoff-inference
 VOLUME ["/models"]
 
 # Smoke check: the package imports and reports device without a GPU present.
