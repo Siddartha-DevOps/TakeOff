@@ -32,3 +32,11 @@ services:
         value: "true"                # creates alex@acme.com / password123 on first deploy
       - key: CORS_ORIGINS
         value: "https://take-off-omega.vercel.app"
+      - key: AI_INFERENCE_SPACE_ID
+        value: "Siddartha96/takeoff-spaces-inference"
+      - key: AI_INFERENCE_API_NAME
+        value: "/predict_spaces"
+      - key: AI_INFERENCE_TIMEOUT_SECONDS
+        value: "90"
+      - key: HF_TOKEN
+        sync: false                 # private Space access token; enter in Render, never commit it

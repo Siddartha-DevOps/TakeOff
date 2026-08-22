@@ -134,7 +134,26 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                 os.close(fd)
                 cv2.imwrite(raster_path, raster_img)
             except ImportError:
-                pass  # heavy stack unavailable — fall back to the raw path, same as before this change
+                # Render's lightweight API image intentionally excludes cv2,
+                # but remote Gradio inference still needs a raster image. Use
+                # the already-installed PyMuPDF dependency for PDF pages so a
+                # scanned/vector PDF is never uploaded to an Image component.
+                if str(local_path).lower().endswith(".pdf"):
+                    import fitz
+
+                    fd, raster_path = tempfile.mkstemp(suffix=".png")
+                    os.close(fd)
+                    try:
+                        with fitz.open(local_path) as document:
+                            if page_number < 0 or page_number >= len(document):
+                                raise ValueError(f"PDF page {page_number} is out of range")
+                            page = document[page_number]
+                            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                            pixmap.save(raster_path)
+                    except Exception:
+                        if os.path.exists(raster_path):
+                            os.remove(raster_path)
+                        raise
 
             try:
                 # Step 1: YOLOv8 inference

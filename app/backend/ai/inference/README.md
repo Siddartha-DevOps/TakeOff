@@ -19,6 +19,7 @@ import the same names (`TakeoffAIInference`, `TakeoffAnalysis`, `CLASSES`) from
 | `confidence.py` | #9 confidence | per-class thresholds, NMS, temperature calibration, ECE | none |
 | `tiling.py` | large drawings | overlapping tile grid + cross-seam NMS merge | none |
 | `benchmark.py` | #7 benchmarking | latency percentiles + throughput, injectable clock | none |
+| `remote_space.py` | hosted inference | private Gradio/ZeroGPU adapter preserving `TakeoffAnalysis` | gradio_client (lightweight) |
 
 Every logic core is pure NumPy/stdlib and unit-tested
 (`tests/test_inference_*.py`, 31 tests). torch/ultralytics/cv2 are imported
@@ -73,8 +74,19 @@ ece = expected_calibration_error(scores, accepted_flags)
 
 ## Where the real model runs
 
-Training and inference weights are produced on a GPU box (see `ml/` and
-`ai/inference/Dockerfile`), then dropped at `models/best.pt`. This repo/CI
-never runs torch — it tests the pure logic and imports the lazy paths. Install a
-checkpoint and `analyze()` switches from `ModelUnavailableError` to real
-detections with zero code change.
+The lightweight Render API uses `RemoteSpaceInference` when
+`AI_INFERENCE_SPACE_ID` is set. It calls the named endpoint on a private Gradio
+Space with `HF_TOKEN`; the token stays server-side. The returned stable JSON is
+translated into the same `TakeoffAnalysis` consumed by persistence and spatial
+reasoning, so routes and the frontend do not branch on deployment topology.
+
+```bash
+AI_INFERENCE_SPACE_ID=Siddartha96/takeoff-spaces-inference
+AI_INFERENCE_API_NAME=/predict_spaces
+AI_INFERENCE_TIMEOUT_SECONDS=90
+HF_TOKEN=<read-token-with-access-to-the-private-space>
+```
+
+GPU deployments can continue using a local checkpoint produced by `ml/` and
+loaded from `models/best.pt`. This repo/CI never needs to run torch: it tests
+the pure logic and both adapters' transport contracts.
