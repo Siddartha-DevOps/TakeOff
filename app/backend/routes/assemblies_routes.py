@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import permissions
 from auth import get_current_user
 from database import get_db
 from estimating.assemblies import ASSEMBLY_LIBRARY, expand_takeoff
@@ -301,7 +302,7 @@ async def list_custom_assemblies(
 
 @router.post("/assemblies/seed")
 async def seed_assemblies(
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Seed this org's assemblies from the code library (skips keys it already has)."""
@@ -328,7 +329,7 @@ async def seed_assemblies(
 @router.post("/assemblies/custom")
 async def create_assembly(
     body: AssemblyIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Create a custom assembly for this org (key must be unique per org)."""
@@ -367,7 +368,7 @@ def _own_assembly(assembly_id: int, current_user, db) -> "models.Assembly":
 async def update_assembly(
     assembly_id: int,
     body: AssemblyIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Replace a custom assembly's fields + components."""
@@ -382,7 +383,7 @@ async def update_assembly(
 @router.delete("/assemblies/custom/{assembly_id}")
 async def delete_assembly(
     assembly_id: int,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     db.delete(_own_assembly(assembly_id, current_user, db))
@@ -429,7 +430,7 @@ async def list_cost_books(
 @router.post("/cost-books")
 async def create_cost_book(
     body: CostBookIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     book = models.CostBook(
@@ -459,7 +460,7 @@ def _own_cost_book(cost_book_id: int, current_user, db) -> "models.CostBook":
 async def update_cost_book(
     cost_book_id: int,
     body: CostBookIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     book = _own_cost_book(cost_book_id, current_user, db)
@@ -473,7 +474,7 @@ async def update_cost_book(
 @router.delete("/cost-books/{cost_book_id}")
 async def delete_cost_book(
     cost_book_id: int,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     db.delete(_own_cost_book(cost_book_id, current_user, db))

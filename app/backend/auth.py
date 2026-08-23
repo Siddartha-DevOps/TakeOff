@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import os
@@ -10,6 +10,7 @@ import logging
 import secrets
 from database import get_db
 import models
+from request_authorization import request_method_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,20 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
+
+def enforce_request_role(user: models.User, method: str) -> None:
+    """Keep VIEWER accounts read-only across the entire authenticated API.
+
+    This check lives at the authentication boundary so a newly added write
+    route cannot accidentally forget its role dependency.  Routes that need
+    stronger ADMIN/OWNER permissions still add ``permissions.require_role``.
+    """
+    if not request_method_allowed(user.role, method):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Viewer accounts have read-only access",
+        )
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -79,6 +94,7 @@ def decode_token(token: str):
         return None
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> models.User:
@@ -105,5 +121,6 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    
+
+    enforce_request_role(user, request.method)
     return user

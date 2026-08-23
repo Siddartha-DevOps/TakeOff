@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import permissions
 from audit import record_activity
 from auth import get_current_user
 from database import get_db
@@ -54,7 +55,7 @@ async def get_sso(
 @router.put("")
 async def upsert_sso(
     body: SSOConfigIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Create/update this org's SAML config (admin action; audited)."""

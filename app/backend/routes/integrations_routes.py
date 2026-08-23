@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import permissions
 from auth import get_current_user
 from database import get_db
 from integrations import (
@@ -53,7 +54,7 @@ class ConnectRequest(BaseModel):
 async def connect(
     provider_key: str,
     body: ConnectRequest,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Begin a connection.
@@ -100,7 +101,7 @@ async def connect(
 @router.delete("/{connection_id}")
 async def disconnect(
     connection_id: int,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     conn = (
