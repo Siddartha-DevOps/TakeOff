@@ -5,6 +5,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import OpenSeadragon from "openseadragon";
 import { uploadsAPI } from "../services/api";
 import { getAuthToken } from "../services/session.js";
+import { snapPoint } from "../annotations/geometry.js";
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
@@ -40,12 +41,70 @@ const MANUAL_STYLE = {
   count: { stroke: '#f97316', fill: '#f97316', unit: 'ea' },
 };
 
-function ManualTakeoffOverlay({ annotations, draftPoints, hoverPoint, tool, screenPointFor, planScale = 1 }) {
+function ManualTakeoffOverlay({
+  annotations, draftPoints, hoverPoint, tool, screenPointFor, planPointForScreen,
+  planScale = 1, selectedAnnotationId, onSelectAnnotation, onUpdateGeometry,
+  snapPlanPoint,
+}) {
+  const [drag, setDrag] = useState(null);
+  const [dragPreview, setDragPreview] = useState(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
   const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
 
+  useEffect(() => {
+    if (!drag) return undefined;
+    const handleMove = (event) => {
+      const raw = planPointForScreen?.(event.clientX, event.clientY);
+      if (!raw) return;
+      if (drag.mode === 'vertex') {
+        const anchor = drag.originalGeometry[drag.vertexIndex === 0 ? 1 : drag.vertexIndex - 1] || null;
+        const point = snapPlanPoint ? snapPlanPoint(raw, anchor, drag.annotationId) : raw;
+        setDragPreview(drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item)));
+      } else {
+        let dx = raw[0] - drag.startPoint[0];
+        let dy = raw[1] - drag.startPoint[1];
+        if (snapPlanPoint && drag.originalGeometry[0]) {
+          const translatedFirst = [drag.originalGeometry[0][0] + dx, drag.originalGeometry[0][1] + dy];
+          const snappedFirst = snapPlanPoint(translatedFirst, null, drag.annotationId);
+          dx += snappedFirst[0] - translatedFirst[0];
+          dy += snappedFirst[1] - translatedFirst[1];
+        }
+        setDragPreview(drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]));
+      }
+    };
+    const handleUp = () => {
+      if (dragPreview) onUpdateGeometry?.(drag.annotationId, dragPreview);
+      setDrag(null);
+      setDragPreview(null);
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [drag, dragPreview, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
+
+  const beginDrag = (event, annotation, mode, vertexIndex = null) => {
+    if (tool !== 'select') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectAnnotation?.(annotation.id);
+    const startPoint = planPointForScreen?.(event.clientX, event.clientY);
+    if (!startPoint) return;
+    setDragPreview(annotation.geometry.map((point) => [...point]));
+    setDrag({
+      annotationId: annotation.id,
+      mode,
+      vertexIndex,
+      startPoint,
+      originalGeometry: annotation.geometry.map((point) => [...point]),
+    });
+  };
+
   const renderShape = (annotation) => {
-    const points = annotation.geometry.map(toScreen).filter(Boolean);
+    const geometry = drag?.annotationId === annotation.id && dragPreview ? dragPreview : annotation.geometry;
+    const points = geometry.map(toScreen).filter(Boolean);
     if (points.length === 0) return null;
     const style = { ...MANUAL_STYLE[annotation.type], ...annotation.style };
     const center = points.reduce((acc, point) => ({ x: acc.x + point.x / points.length, y: acc.y + point.y / points.length }), { x: 0, y: 0 });
@@ -55,13 +114,18 @@ function ManualTakeoffOverlay({ annotations, draftPoints, hoverPoint, tool, scre
     return (
       <g key={annotation.id}>
         {annotation.type === 'area' && (
-          <polygon points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill={style.fill} fillOpacity="0.2" stroke={style.stroke} strokeWidth="2" />
+          <polygon points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill={style.fill} fillOpacity="0.2" stroke={style.stroke} strokeWidth={selectedAnnotationId === annotation.id ? "4" : "2"}
+            style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'line' && (
-          <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth="3" />
+          <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedAnnotationId === annotation.id ? "6" : "3"}
+            style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'count' && (
-          <g>
+          <g style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')}>
             <circle cx={center.x} cy={center.y} r="8" fill={style.fill} stroke="#fff" strokeWidth="2" />
             <path d={`M ${center.x - 4} ${center.y} H ${center.x + 4} M ${center.x} ${center.y - 4} V ${center.y + 4}`} stroke="#fff" strokeWidth="1.5" />
           </g>
@@ -70,6 +134,11 @@ function ManualTakeoffOverlay({ annotations, draftPoints, hoverPoint, tool, scre
           style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
           {label}
         </text>
+        {tool === 'select' && selectedAnnotationId === annotation.id && points.map((point, index) => (
+          <circle key={`handle-${index}`} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
+            style={{ pointerEvents: 'all', cursor: 'grab' }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'vertex', index)} />
+        ))}
       </g>
     );
   };
@@ -113,7 +182,7 @@ function ManualTakeoffOverlay({ annotations, draftPoints, hoverPoint, tool, scre
  * @param {Array<{id:number,x:number,y:number,resolved:boolean}>} [props.commentPins]
  *   - persisted comment pins on this drawing, in plan-space.
  * @param {(id:number) => void} [props.onPinClick]
- * @param {'area'|'line'|'count'|null} [props.manualTool]
+ * @param {'select'|'area'|'line'|'count'|null} [props.manualTool]
  * @param {import('../annotations/types').Annotation[]} [props.annotations]
  * @param {(shape:{type:string,geometry:number[][]}) => void} [props.onManualAnnotation]
  */
@@ -123,6 +192,7 @@ export default function DrawingRenderer({
   remoteCursors = [], commentPins = [], onPinClick,
   detection = null,
   manualTool = null, annotations = [], onManualAnnotation,
+  selectedAnnotationId = null, onSelectAnnotation, onUpdateAnnotationGeometry,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -144,6 +214,8 @@ export default function DrawingRenderer({
   const manualToolRef = useRef(manualTool);
   const manualPointsRef = useRef(manualPoints);
   const onManualAnnotationRef = useRef(onManualAnnotation);
+  const annotationsRef = useRef(annotations);
+  const snapToleranceRef = useRef(8);
 
   useEffect(() => {
     calibratingRef.current = calibrating;
@@ -168,10 +240,30 @@ export default function DrawingRenderer({
     onManualAnnotationRef.current = onManualAnnotation;
   }, [onManualAnnotation]);
 
-  const finishManualArea = useCallback(() => {
+  useEffect(() => {
+    annotationsRef.current = annotations;
+  }, [annotations]);
+
+  const snapManualPoint = useCallback((point, anchor = null, excludedId = null) => {
+    const vertices = annotationsRef.current
+      .filter((annotation) => annotation.source === 'manual' && annotation.id !== excludedId)
+      .flatMap((annotation) => annotation.geometry || []);
+    return snapPoint(point, {
+      anchor,
+      vertices,
+      tolerance: snapToleranceRef.current,
+      angleStep: anchor ? 45 : 0,
+    });
+  }, []);
+
+  const finishManualShape = useCallback((finalPoint = null) => {
+    const tool = manualToolRef.current;
     const points = manualPointsRef.current;
-    if (manualToolRef.current !== 'area' || points.length < 3) return;
-    onManualAnnotationRef.current?.({ type: 'area', geometry: points });
+    const geometry = finalPoint ? [...points, finalPoint] : points;
+    if (tool === 'area' && geometry.length < 3) return;
+    if (tool === 'line' && geometry.length < 2) return;
+    if (tool !== 'area' && tool !== 'line') return;
+    onManualAnnotationRef.current?.({ type: tool, geometry });
     manualPointsRef.current = [];
     setManualPoints([]);
     setManualHoverPoint(null);
@@ -185,16 +277,23 @@ export default function DrawingRenderer({
         setManualPoints([]);
         setManualHoverPoint(null);
       } else if (event.key === 'Enter') {
-        finishManualArea();
+        finishManualShape();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [manualTool, finishManualArea]);
+  }, [manualTool, finishManualShape]);
 
-  const handleManualPlanClick = useCallback((point, isDoubleClick = false) => {
+  const handleManualPlanClick = useCallback((rawPoint, isDoubleClick = false) => {
     const tool = manualToolRef.current;
     if (!tool) return false;
+    if (tool === 'select') {
+      onSelectAnnotation?.(null);
+      return true;
+    }
+
+    const anchor = manualPointsRef.current[manualPointsRef.current.length - 1] || null;
+    const point = snapManualPoint(rawPoint, anchor);
 
     if (tool === 'count') {
       onManualAnnotationRef.current?.({ type: 'count', geometry: [point] });
@@ -202,22 +301,21 @@ export default function DrawingRenderer({
     }
 
     if (tool === 'line') {
-      const start = manualPointsRef.current[0];
-      if (!start) {
-        manualPointsRef.current = [point];
-        setManualPoints([point]);
+      if (isDoubleClick && manualPointsRef.current.length >= 1) {
+        finishManualShape(point);
       } else {
-        onManualAnnotationRef.current?.({ type: 'line', geometry: [start, point] });
-        manualPointsRef.current = [];
-        setManualPoints([]);
-        setManualHoverPoint(null);
+        setManualPoints((prev) => {
+          const next = [...prev, point];
+          manualPointsRef.current = next;
+          return next;
+        });
       }
       return true;
     }
 
     if (tool === 'area') {
       if (isDoubleClick && manualPointsRef.current.length >= 3) {
-        finishManualArea();
+        finishManualShape();
       } else {
         setManualPoints((prev) => {
           const next = [...prev, point];
@@ -228,7 +326,7 @@ export default function DrawingRenderer({
       return true;
     }
     return false;
-  }, [finishManualArea]);
+  }, [finishManualShape, onSelectAnnotation, snapManualPoint]);
 
   // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a sheet split
   // from a multi-page PDF has its own page_number (0-indexed) even though
@@ -337,6 +435,9 @@ export default function DrawingRenderer({
       const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
       const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
       const point = [imagePoint.x / planScale, imagePoint.y / planScale];
+      const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(event.position.x + 12, event.position.y));
+      const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
+      snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
 
       if (commentModeRef.current) {
         onCommentClick?.(point);
@@ -381,6 +482,16 @@ export default function DrawingRenderer({
     const viewportPoint = viewer.viewport.imageToViewportCoordinates(x, y);
     const pixel = viewer.viewport.pixelFromPoint(viewportPoint, true);
     return { x: pixel.x, y: pixel.y };
+  }
+
+  function osdScreenToPlanPoint(clientX, clientY) {
+    const viewer = osdViewerRef.current;
+    if (!viewer || !osdContainerRef.current) return null;
+    const rect = osdContainerRef.current.getBoundingClientRect();
+    const viewportPoint = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(clientX - rect.left, clientY - rect.top));
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    return [imagePoint.x / planScale, imagePoint.y / planScale];
   }
 
   function handleOsdPointerMove(e) {
@@ -459,6 +570,7 @@ export default function DrawingRenderer({
   function handlePlanClick(e, rect, nativeWidth, nativeHeight) {
     if (!nativeWidth || !nativeHeight) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
+    snapToleranceRef.current = (nativeWidth / Math.max(rect.width, 1)) * 12;
 
     if (commentMode) {
       onCommentClick?.(point);
@@ -676,7 +788,12 @@ export default function DrawingRenderer({
                 hoverPoint={manualHoverPoint}
                 tool={manualTool}
                 screenPointFor={osdScreenPointFor}
+                planPointForScreen={osdScreenToPlanPoint}
                 planScale={planScale}
+                selectedAnnotationId={selectedAnnotationId}
+                onSelectAnnotation={onSelectAnnotation}
+                onUpdateGeometry={onUpdateAnnotationGeometry}
+                snapPlanPoint={snapManualPoint}
               />
               <CollabOverlay screenPointFor={canonicalScreenPointFor} />
             </>
@@ -795,12 +912,24 @@ export default function DrawingRenderer({
               <>
                 {/* Untiled PDF canvas is in PDF points — same space the engine emits. */}
                 <DetectionShapes screenPointFor={pdfScreenPointFor} planScale={1} />
-                <ManualTakeoffOverlay
+              <ManualTakeoffOverlay
                   annotations={annotations}
                   draftPoints={manualPoints}
                   hoverPoint={manualHoverPoint}
                   tool={manualTool}
                   screenPointFor={pdfScreenPointFor}
+                  planPointForScreen={(clientX, clientY) => {
+                    if (!pageWrapRef.current || !pageNativeSize) return null;
+                    const rect = pageWrapRef.current.getBoundingClientRect();
+                    return [
+                      ((clientX - rect.left) / rect.width) * pageNativeSize.width,
+                      ((clientY - rect.top) / rect.height) * pageNativeSize.height,
+                    ];
+                  }}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onUpdateGeometry={onUpdateAnnotationGeometry}
+                  snapPlanPoint={snapManualPoint}
                 />
                 <CollabOverlay screenPointFor={pdfScreenPointFor} />
               </>
@@ -844,6 +973,18 @@ export default function DrawingRenderer({
             const rect = canvasRef.current.getBoundingClientRect();
             return planToFixedScreenPoint(rect, canvasRef.current.width, canvasRef.current.height, x, y);
           }}
+          planPointForScreen={(clientX, clientY) => {
+            if (!canvasRef.current) return null;
+            const rect = canvasRef.current.getBoundingClientRect();
+            return [
+              ((clientX - rect.left) / rect.width) * canvasRef.current.width,
+              ((clientY - rect.top) / rect.height) * canvasRef.current.height,
+            ];
+          }}
+          selectedAnnotationId={selectedAnnotationId}
+          onSelectAnnotation={onSelectAnnotation}
+          onUpdateGeometry={onUpdateAnnotationGeometry}
+          snapPlanPoint={snapManualPoint}
         />
         <CollabOverlay
           screenPointFor={(x, y) => {

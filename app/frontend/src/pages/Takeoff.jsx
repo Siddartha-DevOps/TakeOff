@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library, Undo2, Redo2 } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
 import IndiaBOQPanel from '../components/IndiaBOQPanel';
@@ -86,6 +86,7 @@ export default function Takeoff() {
   const [calibratingBusy, setCalibratingBusy] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const [manualTool, setManualTool] = useState(null);
+  const [selectedManualAnnotationId, setSelectedManualAnnotationId] = useState(null);
 
   // Conditions + box-select assignment. See routes/condition_routes.py.
   const [conditions, setConditions] = useState([]);
@@ -135,6 +136,31 @@ export default function Takeoff() {
     }, 700);
     return () => window.clearTimeout(timer);
   }, [annotationStore.annotations, annotationReadyDrawingId, selectedDrawing]);
+
+  useEffect(() => {
+    setSelectedManualAnnotationId(null);
+  }, [selectedDrawing?.id]);
+
+  useEffect(() => {
+    const handleEditorShortcut = (event) => {
+      const tag = event.target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || event.target?.isContentEditable) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) annotationStore.redo();
+        else annotationStore.undo();
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        annotationStore.redo();
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedManualAnnotationId) {
+        event.preventDefault();
+        annotationStore.deleteAnnotation(selectedManualAnnotationId);
+        setSelectedManualAnnotationId(null);
+      }
+    };
+    window.addEventListener('keydown', handleEditorShortcut);
+    return () => window.removeEventListener('keydown', handleEditorShortcut);
+  }, [annotationStore, selectedManualAnnotationId]);
 
   async function fetchProject() {
     try {
@@ -659,6 +685,20 @@ export default function Takeoff() {
     setCalibrating(false);
     setCommentMode(false);
     setSelectMode(false);
+    if (tool !== 'select') setSelectedManualAnnotationId(null);
+  }
+
+  function updateManualGeometry(annotationId, geometry) {
+    annotationStore.updateGeometry(annotationId, geometry, {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+    });
+  }
+
+  function deleteSelectedManualAnnotation() {
+    if (!selectedManualAnnotationId) return;
+    annotationStore.deleteAnnotation(selectedManualAnnotationId);
+    setSelectedManualAnnotationId(null);
   }
 
   function addManualTakeoff({ type, geometry }) {
@@ -1204,6 +1244,9 @@ export default function Takeoff() {
                 annotations={annotationStore.annotations}
                 manualTool={manualTool}
                 onManualAnnotation={addManualTakeoff}
+                selectedAnnotationId={selectedManualAnnotationId}
+                onSelectAnnotation={setSelectedManualAnnotationId}
+                onUpdateAnnotationGeometry={updateManualGeometry}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}
@@ -1282,13 +1325,26 @@ export default function Takeoff() {
             <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
               {manualTool && (
                 <div className="px-3 py-1.5 rounded-full bg-slate-950/90 text-white text-[11px] shadow-lg">
+                  {manualTool === 'select' && 'Click a shape to select · drag the shape or its vertices · Delete removes it'}
                   {manualTool === 'area' && 'Click each corner, then double-click or press Enter to finish · Esc cancels'}
-                  {manualTool === 'line' && 'Click the start and end points · Esc cancels'}
+                  {manualTool === 'line' && 'Click line points, then double-click or Enter · snaps to vertices and 45° angles'}
                   {manualTool === 'count' && 'Click each item to place a count · Esc clears preview'}
                 </div>
               )}
               <div className="flex items-center gap-1 p-1.5 rounded-xl bg-white border border-slate-200 shadow-xl">
                 <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Manual takeoff</span>
+                <button
+                  type="button"
+                  aria-pressed={manualTool === 'select'}
+                  disabled={!scaleConfirmed}
+                  onClick={() => activateManualTool('select')}
+                  title="Select, move, or edit annotation vertices"
+                  className={`p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    manualTool === 'select' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <MousePointer2 className="w-4 h-4" />
+                </button>
                 {ANNOTATION_TYPES.map((tool) => (
                   <button
                     key={tool.value}
@@ -1306,6 +1362,19 @@ export default function Takeoff() {
                     {tool.label}
                   </button>
                 ))}
+                <div className="w-px h-6 bg-slate-200 mx-0.5" />
+                <button type="button" onClick={annotationStore.undo} disabled={!annotationStore.canUndo}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Undo (Ctrl+Z)" aria-label="Undo">
+                  <Undo2 className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={annotationStore.redo} disabled={!annotationStore.canRedo}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Redo (Ctrl+Y)" aria-label="Redo">
+                  <Redo2 className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={deleteSelectedManualAnnotation} disabled={!selectedManualAnnotationId}
+                  className="p-2 rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-30" title="Delete selected (Delete)" aria-label="Delete selected annotation">
+                  <Trash2 className="w-4 h-4" />
+                </button>
                 {manualTool && (
                   <button
                     type="button"
