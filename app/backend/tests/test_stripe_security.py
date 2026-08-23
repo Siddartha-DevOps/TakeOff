@@ -26,9 +26,9 @@ def test_webhook_uses_configured_secret(monkeypatch):
         captured.update(body=body, signature=signature, secret=secret)
         return expected
 
-    monkeypatch.setattr(stripe_security.stripe.Webhook, "construct_event", fake_construct)
-
-    result = stripe_security.construct_verified_event(b'{"id":"evt_1"}', "sig_1")
+    result = stripe_security.construct_verified_event(
+        b'{"id":"evt_1"}', "sig_1", verifier=fake_construct
+    )
 
     assert result is expected
     assert captured == {
