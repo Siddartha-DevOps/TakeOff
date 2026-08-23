@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { computeMeasuredValue, planUnitsToFeet } from './geometry.js';
+import { deserializeAnnotations } from './serialize.js';
 
 test('converts PDF plan points to linear feet at architectural scale', () => {
   assert.equal(planUnitsToFeet(72, 96, 'PDF'), 8);
@@ -30,4 +31,11 @@ test('count annotations always measure one item', () => {
     scaleRatio: 96,
     fileType: 'PDF',
   }), 1);
+});
+
+test('persisted annotations recompute measurements with the drawing scale', () => {
+  const [annotation] = deserializeAnnotations([{
+    id: 'manual-line-1', type: 'line', geometry: [[0, 0], [72, 0]], measuredValue: 999,
+  }], { scaleRatio: 96, fileType: 'PDF' });
+  assert.equal(annotation.measuredValue, 8);
 });

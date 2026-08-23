@@ -15,8 +15,8 @@ export function useAnnotationStore() {
     setAnnotations(annotationsFromDetection(detection, measurementContext));
   }, []);
 
-  const loadFromJSON = useCallback((json) => {
-    setAnnotations(deserializeAnnotations(json));
+  const loadFromJSON = useCallback((json, measurementContext = null) => {
+    setAnnotations(deserializeAnnotations(json, measurementContext));
   }, []);
 
   const toJSON = useCallback(() => serializeAnnotations(annotations), [annotations]);

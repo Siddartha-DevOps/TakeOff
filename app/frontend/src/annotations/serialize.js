@@ -2,7 +2,7 @@
 // On ingest, measuredValue is always recomputed rather than trusted from the payload —
 // this guards deserialize the same way fromDetection.js guards AI ingest.
 
-import { computeMeasuredValue } from './geometry';
+import { computeMeasuredValue } from './geometry.js';
 
 /** @param {import('./types').Annotation[]} annotations */
 export function serializeAnnotations(annotations) {
@@ -13,8 +13,8 @@ export function serializeAnnotations(annotations) {
  * @param {string | object[]} json
  * @returns {import('./types').Annotation[]}
  */
-export function deserializeAnnotations(json) {
+export function deserializeAnnotations(json, measurementContext = null) {
   const parsed = typeof json === 'string' ? JSON.parse(json) : json;
   if (!Array.isArray(parsed)) return [];
-  return parsed.map((a) => ({ ...a, measuredValue: computeMeasuredValue(a) }));
+  return parsed.map((a) => ({ ...a, measuredValue: computeMeasuredValue(a, measurementContext) }));
 }

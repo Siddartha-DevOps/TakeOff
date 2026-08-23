@@ -76,6 +76,7 @@ export default function Takeoff() {
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
+  const [annotationReadyDrawingId, setAnnotationReadyDrawingId] = useState(null);
 
   // Scale calibration — persisted per Sheet (Drawing). See routes/scale_routes.py.
   const [scaleInfo, setScaleInfo] = useState(null);
@@ -121,6 +122,18 @@ export default function Takeoff() {
     }
     // eslint-disable-next-line
   }, [project]);
+
+  // Persist the unified annotation document after every settled edit. Loading
+  // a different sheet clears the ready id first, so its temporary empty state
+  // can never overwrite the previous sheet.
+  useEffect(() => {
+    if (!selectedDrawing || annotationReadyDrawingId !== selectedDrawing.id) return undefined;
+    const timer = window.setTimeout(() => {
+      takeoffAPI.saveAnnotations(selectedDrawing.id, annotationStore.annotations)
+        .catch((error) => console.error('Failed to save annotations:', error));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [annotationStore.annotations, annotationReadyDrawingId, selectedDrawing]);
 
   async function fetchProject() {
     try {
@@ -407,10 +420,22 @@ export default function Takeoff() {
     }
 
     setDetection(result);
-    annotationStore.loadFromDetection(result, {
+    const measurementContext = {
       scaleRatio: confirmedScaleInfo.scale_ratio,
       fileType: drawing.file_type,
-    });
+    };
+    try {
+      const saved = await takeoffAPI.getAnnotations(drawing.id);
+      if (saved.data?.saved) {
+        annotationStore.loadFromJSON(saved.data.annotations, measurementContext);
+      } else {
+        annotationStore.loadFromDetection(result, measurementContext);
+      }
+    } catch (error) {
+      console.warn('Persisted annotations unavailable; using detection result:', error);
+      annotationStore.loadFromDetection(result, measurementContext);
+    }
+    setAnnotationReadyDrawingId(drawing.id);
     setStatus('ready');
     // Both real paths (vector AUTODETECT and raster /analyze) persist their own
     // TakeoffResult server-side, so there's nothing to save from the client here.
@@ -419,6 +444,7 @@ export default function Takeoff() {
 
   const selectDrawing = async (drawing) => {
     setSelectedDrawing(drawing);
+    setAnnotationReadyDrawingId(null);
     setDetection(null);
     annotationStore.loadFromDetection(null);
     setManualTool(null);
