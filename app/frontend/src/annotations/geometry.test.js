@@ -1,8 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeMeasuredValue, planUnitsToFeet } from './geometry.js';
+import { computeMeasuredValue, planUnitsToFeet, snapPoint } from './geometry.js';
 import { deserializeAnnotations } from './serialize.js';
+
+test('snaps to a nearby existing vertex before applying angle snapping', () => {
+  assert.deepEqual(snapPoint([9.5, 10.5], {
+    anchor: [0, 0], vertices: [[10, 10]], tolerance: 2,
+  }), [10, 10]);
+});
+
+test('snaps a segment to 45 degree increments', () => {
+  const result = snapPoint([10, 8], { anchor: [0, 0], angleStep: 45 });
+  assert.ok(Math.abs(result[0] - result[1]) < 1e-9);
+});
 
 test('converts PDF plan points to linear feet at architectural scale', () => {
   assert.equal(planUnitsToFeet(72, 96, 'PDF'), 8);

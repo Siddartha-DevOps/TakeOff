@@ -47,6 +47,36 @@ export function rectsIntersect([ax1, ay1, ax2, ay2], [bx1, by1, bx2, by2]) {
   return ax1 <= bx2 && ax2 >= bx1 && ay1 <= by2 && ay2 >= by1;
 }
 
+/** Snap a plan-space point to an existing vertex or a fixed angle. */
+export function snapPoint(point, {
+  anchor = null,
+  vertices = [],
+  tolerance = 0,
+  angleStep = 45,
+} = {}) {
+  const [x, y] = point;
+  let nearest = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const vertex of vertices) {
+    const distance = Math.hypot(vertex[0] - x, vertex[1] - y);
+    if (distance <= tolerance && distance < nearestDistance) {
+      nearest = vertex;
+      nearestDistance = distance;
+    }
+  }
+  // Joining existing geometry takes priority over the angle guide.
+  if (nearest) return [...nearest];
+  if (!anchor || !Number.isFinite(angleStep) || angleStep <= 0) return [x, y];
+
+  const dx = x - anchor[0];
+  const dy = y - anchor[1];
+  const distance = Math.hypot(dx, dy);
+  if (distance === 0) return [x, y];
+  const step = (angleStep * Math.PI) / 180;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return [anchor[0] + Math.cos(angle) * distance, anchor[1] + Math.sin(angle) * distance];
+}
+
 /**
  * The single source of truth for `measuredValue`. Called on every geometry
  * mutation and on ingest (AI output, deserialize) so AI and manual shapes are
