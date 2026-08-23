@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import permissions
 from auth import get_current_user
 from classification import default_template, items_to_conditions, validate_items
 from database import get_db
@@ -69,7 +70,7 @@ async def list_templates(
 @router.post("/templates")
 async def create_template(
     body: TemplateIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     t = models.ClassificationTemplate(
@@ -86,7 +87,7 @@ async def create_template(
 
 @router.post("/templates/seed")
 async def seed_default(
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Create the built-in 'Standard classifications' template for this org."""
@@ -106,7 +107,7 @@ async def seed_default(
 async def update_template(
     template_id: int,
     body: TemplateIn,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     t = _own_template(template_id, current_user, db)
@@ -120,7 +121,7 @@ async def update_template(
 @router.delete("/templates/{template_id}")
 async def delete_template(
     template_id: int,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     db.delete(_own_template(template_id, current_user, db))
