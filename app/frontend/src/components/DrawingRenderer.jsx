@@ -4,6 +4,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import OpenSeadragon from "openseadragon";
 import { uploadsAPI } from "../services/api";
+import { getAuthToken } from "../services/session.js";
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
@@ -295,7 +296,7 @@ export default function DrawingRenderer({
     if (!tileMeta || !drawing || !osdContainerRef.current) return undefined;
 
     const apiUrl = import.meta.env.VITE_BACKEND_URL || '';
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     const tileSource = {
       width: tileMeta.width,
       height: tileMeta.height,
@@ -407,7 +408,7 @@ export default function DrawingRenderer({
     // everything else) — fetch it as an authenticated blob instead and
     // point the <img> at an object URL.
     const apiUrl = import.meta.env.VITE_BACKEND_URL || '';
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     let objectUrl;
 
     fetch(`${apiUrl}/api/uploads/drawings/${drawing.id}/file`, {
@@ -716,7 +717,7 @@ export default function DrawingRenderer({
   // Render PDF
   if (drawing.file_type === 'PDF') {
     const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
 
     return (
