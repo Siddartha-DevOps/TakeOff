@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import os
 import logging
 from pathlib import Path
@@ -37,6 +38,7 @@ from routes import (
 # Import models so every relationship("ClassName") string reference across
 # the ORM mapper registry resolves before the app starts handling requests.
 import models
+from startup import auto_migrate_enabled, run_database_migrations
 
 # Load environment variables before model provisioning and AI initialization.
 ROOT_DIR = Path(__file__).parent
@@ -83,12 +85,25 @@ except Exception as e:
 # things a migration can (e.g. `CREATE EXTENSION postgis`, dropping enum
 # types on rollback). Schema changes now only happen through `alembic upgrade`.
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Apply schema migrations before the service accepts API traffic."""
+    if auto_migrate_enabled():
+        run_database_migrations()
+    else:
+        logging.getLogger(__name__).info(
+            "AUTO_MIGRATE is disabled; expecting an external migration job"
+        )
+    yield
+
+
 # Create FastAPI app
 app = FastAPI(
     title="TakeOff.ai API",
     description="Backend API for TakeOff.ai SaaS platform",
     version="1.0.0",
     redirect_slashes=False,
+    lifespan=lifespan,
 )
 
 # CORS middleware

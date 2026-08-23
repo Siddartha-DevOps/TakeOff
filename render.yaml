@@ -30,6 +30,8 @@ services:
         value: production
       - key: SEED_ON_START
         value: "true"                # creates alex@acme.com / password123 on first deploy
+      - key: AUTO_MIGRATE
+        value: "true"                # also protects native/direct-Uvicorn Render services
       - key: CORS_ORIGINS
         value: "https://take-off-omega.vercel.app"
       - key: AI_INFERENCE_SPACE_ID
