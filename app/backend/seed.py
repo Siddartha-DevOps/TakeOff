@@ -1,37 +1,31 @@
 """
 Database seeding script - creates test users and sample data
 """
-from sqlalchemy.orm import Session
-from database import SessionLocal, engine, Base
+from sqlalchemy import func
+from database import SessionLocal
 import models
 from auth import get_password_hash
-from datetime import datetime, timezone
+from auth_identity import normalize_email
 
 def seed_database():
     """Seed the database with initial data"""
 
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-
     db = SessionLocal()
 
     try:
-        # Check if data already exists
-        existing_orgs = db.query(models.Organization).count()
-        if existing_orgs > 0:
-            print("✅ Database already seeded")
-            return
+        print("🌱 Ensuring demo data exists...")
 
-        print("🌱 Seeding database...")
-
-        # Create organizations
-        org1 = models.Organization(name="ACME Construction")
-        org2 = models.Organization(name="BuildRight LLC")
-        db.add_all([org1, org2])
-        db.commit()
-        db.refresh(org1)
-        db.refresh(org2)
-        print(f"✅ Created {2} organizations")
+        # Idempotent by natural keys. Another real organization in the same
+        # database must never suppress creation of the documented demo login.
+        org1 = db.query(models.Organization).filter(models.Organization.name == "ACME Construction").first()
+        org2 = db.query(models.Organization).filter(models.Organization.name == "BuildRight LLC").first()
+        if org1 is None:
+            org1 = models.Organization(name="ACME Construction")
+            db.add(org1)
+        if org2 is None:
+            org2 = models.Organization(name="BuildRight LLC")
+            db.add(org2)
+        db.flush()
 
         # Create test users (from /app/memory/test_credentials.md if exists)
         test_users = [
@@ -39,39 +33,41 @@ def seed_database():
                 "email": "alex@acme.com",
                 "password": "password123",
                 "full_name": "Alex Rivera",
-                "organization_id": org1.id
+                "organization_id": org1.id,
+                "role": models.UserRole.OWNER,
             },
             {
                 "email": "priya@buildr.com",
                 "password": "password123",
                 "full_name": "Priya Patel",
-                "organization_id": org2.id
+                "organization_id": org2.id,
+                "role": models.UserRole.OWNER,
             },
             {
                 "email": "demo@takeoff.ai",
                 "password": "demo2025",
                 "full_name": "Demo User",
-                "organization_id": org1.id
+                "organization_id": org1.id,
+                "role": models.UserRole.MEMBER,
             }
         ]
 
         db_users = []
         for user_data in test_users:
-            hashed_password = get_password_hash(user_data["password"])
-            user = models.User(
-                email=user_data["email"],
-                hashed_password=hashed_password,
-                full_name=user_data["full_name"],
-                organization_id=user_data["organization_id"],
-                is_active=True
-            )
-            db.add(user)
+            email = normalize_email(user_data["email"])
+            user = db.query(models.User).filter(func.lower(models.User.email) == email).first()
+            if user is None:
+                user = models.User(
+                    email=email,
+                    hashed_password=get_password_hash(user_data["password"]),
+                    full_name=user_data["full_name"],
+                    organization_id=user_data["organization_id"],
+                    role=user_data["role"],
+                    is_active=True,
+                )
+                db.add(user)
             db_users.append(user)
-
-        db.commit()
-        for user in db_users:
-            db.refresh(user)
-        print(f"✅ Created {len(db_users)} test users")
+        db.flush()
 
         # Create sample projects
         sample_projects = [
@@ -102,13 +98,15 @@ def seed_database():
         ]
 
         for project_data in sample_projects:
-            project = models.Project(**project_data)
-            db.add(project)
+            exists = db.query(models.Project).filter(
+                models.Project.organization_id == project_data["organization_id"],
+                models.Project.name == project_data["name"],
+            ).first()
+            if exists is None:
+                db.add(models.Project(**project_data))
 
         db.commit()
-        print(f"✅ Created {len(sample_projects)} sample projects")
-
-        print("🎉 Database seeded successfully!")
+        print("🎉 Demo data is ready")
 
     except Exception as e:
         print(f"❌ Error seeding database: {e}")
