@@ -22,13 +22,13 @@ import numpy as np
 from .device import DeviceInfo, resolve_device
 from .tiling import run_tiled
 
-# Space + symbol class map (unchanged ids — matches training data.yaml and the
-# old inference_api.CLASSES so persisted results stay compatible).
+# ResPlan spaces-v1 class order. Symbols are handled by detect_symbols.py and
+# must never share this ID namespace: class 4 in the trained spaces model is a
+# balcony, not the legacy "wall" label.
 CLASSES = {
     0: "living",    1: "bedroom",  2: "bathroom",
-    3: "kitchen",   4: "wall",     5: "door",
-    6: "window",    7: "balcony",  8: "front_door",
-    9: "stair",     10: "storage",
+    3: "kitchen",   4: "balcony",  5: "stair",
+    6: "storage",
 }
 
 # A page wider/taller than this (px) is tiled by default (large-drawing path).
@@ -267,7 +267,14 @@ class InferenceEngine:
         for i, (box, cls_id, conf_val) in enumerate(zip(
             r.boxes.xyxy.tolist(), r.boxes.cls.tolist(), r.boxes.conf.tolist()
         )):
-            name = CLASSES.get(int(cls_id), "unknown")
+            class_id = int(cls_id)
+            names = getattr(r, "names", None)
+            if isinstance(names, dict):
+                name = names.get(class_id, CLASSES.get(class_id, "unknown"))
+            elif isinstance(names, (list, tuple)) and class_id < len(names):
+                name = names[class_id]
+            else:
+                name = CLASSES.get(class_id, "unknown")
             x1, y1, x2, y2 = box
             det = {
                 "id": f"{name[0]}{i}", "label": name,

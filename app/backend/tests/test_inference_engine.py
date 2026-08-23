@@ -74,3 +74,35 @@ def test_takeoff_analysis_defaults_backcompat():
         windows=[], walls=[], balconies=[], summary={}, quantities=[], confidence_avg=0.0,
     )
     assert a.model_available is True and a.status == "ok" and a.device == "cpu"
+
+
+class _Values:
+    def __init__(self, values):
+        self._values = values
+
+    def tolist(self):
+        return self._values
+
+
+class _Boxes:
+    xyxy = _Values([[0, 0, 10, 10]])
+    cls = _Values([4])
+    conf = _Values([0.9])
+
+
+def test_result_uses_model_embedded_class_names_not_legacy_ids():
+    result = type("Result", (), {
+        "boxes": _Boxes(), "masks": None,
+        "names": {0: "living", 1: "bedroom", 2: "bathroom", 3: "kitchen", 4: "balcony"},
+    })()
+
+    [detection] = InferenceEngine._results_to_dets(result)
+    assert detection["label"] == "balcony"
+    assert detection["label"] != "wall"
+
+
+def test_spaces_fallback_map_matches_resplan_training_order():
+    assert CLASSES == {
+        0: "living", 1: "bedroom", 2: "bathroom", 3: "kitchen",
+        4: "balcony", 5: "stair", 6: "storage",
+    }
