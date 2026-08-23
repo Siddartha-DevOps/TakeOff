@@ -14,6 +14,14 @@ from typing import List, Optional
 import schemas
 import models
 import storage
+from upload_security import (
+    ALLOWED_EXTENSIONS,
+    UploadValidationError,
+    file_extension,
+    max_upload_bytes,
+    validate_file_signature,
+    validate_upload_metadata,
+)
 from auth import get_current_user
 from database import get_db
 from ratelimit import RateLimit
@@ -33,7 +41,7 @@ router = APIRouter(prefix="/uploads", tags=["Uploads"])
 
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tiff", "tif"}
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 def _tiles_dir(project_id: int, drawing_id: int) -> Path:
@@ -76,7 +84,7 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_numbe
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
 
 def get_file_extension(filename: str) -> str:
-    return filename.rsplit(".", 1)[1].lower() if "." in filename else ""
+    return file_extension(filename)
 
 def is_allowed_file(filename: str) -> bool:
     return get_file_extension(filename) in ALLOWED_EXTENSIONS
@@ -191,13 +199,19 @@ async def upload_drawing(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if not is_allowed_file(file.filename):
+    try:
+        file_ext = validate_upload_metadata(file.filename, file.content_type)
+    except UploadValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            detail=str(exc),
+        )
+    if storage.object_storage_required() and not storage.storage_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Durable object storage is required but not configured",
         )
 
-    file_ext = get_file_extension(file.filename)
     unique_filename = f"{uuid.uuid4()}.{file_ext}"
     file_path = UPLOAD_DIR / str(project_id)
     file_path.mkdir(exist_ok=True)
@@ -205,15 +219,39 @@ async def upload_drawing(
 
     try:
         async with aiofiles.open(full_path, 'wb') as f:
-            content = await file.read()
-            await f.write(content)
-        file_size = len(content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+            file_size = 0
+            prefix = b""
+            while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+                file_size += len(chunk)
+                if file_size > max_upload_bytes():
+                    raise HTTPException(status_code=413, detail="Upload exceeds the configured size limit")
+                if len(prefix) < 16:
+                    prefix += chunk[:16 - len(prefix)]
+                await f.write(chunk)
+        validate_file_signature(file.filename, prefix)
+
+        persisted_path = str(full_path)
+        persisted_filename = unique_filename
+        if storage.storage_available():
+            key = storage.make_key(project_id, file.filename)
+            storage.upload_file(key, str(full_path), file.content_type)
+            full_path.unlink(missing_ok=True)
+            persisted_path = storage.to_uri(key)
+            persisted_filename = key.rsplit("/", 1)[-1]
+    except HTTPException:
+        full_path.unlink(missing_ok=True)
+        raise
+    except UploadValidationError as exc:
+        full_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        full_path.unlink(missing_ok=True)
+        logger.exception("Failed to persist drawing upload")
+        raise HTTPException(status_code=500, detail="Failed to save file")
 
     return ingest_plan_set(
         db, background_tasks, project_id,
-        file_path=str(full_path), filename=unique_filename, original_filename=file.filename,
+        file_path=persisted_path, filename=persisted_filename, original_filename=file.filename,
         file_size=file_size, file_ext=file_ext, sheet_name=sheet_name, scale=scale,
     )
 
@@ -222,9 +260,10 @@ async def upload_drawing(
 # #12. This is the CLAUDE.md §2/§3-guardrail-correct path: the browser
 # uploads the file bytes straight to object storage using a short-lived
 # presigned URL, never proxying them through this API server the way
-# upload_drawing() above does. That legacy endpoint stays exactly as-is
-# (unremoved, unchanged) as the local-disk fallback for any environment
-# without S3_BUCKET configured — see storage.py's graceful-degradation note.
+# upload_drawing() above does. The legacy endpoint remains for compatibility,
+# but it streams with a hard size limit and persists to object storage when
+# configured. Production refuses its local-disk fallback because Render's
+# filesystem is ephemeral.
 class PresignUploadRequest(BaseModel):
     filename: str
     content_type: str = "application/octet-stream"
@@ -243,10 +282,12 @@ async def presign_drawing_upload(
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if not is_allowed_file(payload.filename):
+    try:
+        validate_upload_metadata(payload.filename, payload.content_type)
+    except UploadValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            detail=str(exc),
         )
     if not storage.storage_available():
         raise HTTPException(
@@ -255,7 +296,9 @@ async def presign_drawing_upload(
         )
 
     key = storage.make_key(project_id, payload.filename)
-    presigned = storage.generate_presigned_upload(key, payload.content_type)
+    presigned = storage.generate_presigned_upload(
+        key, payload.content_type, max_bytes=max_upload_bytes()
+    )
     return {"key": key, "upload_url": presigned["url"], "fields": presigned["fields"]}
 
 
@@ -287,10 +330,12 @@ async def confirm_drawing_upload(
     ).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    if not is_allowed_file(payload.original_filename):
+    try:
+        file_ext = validate_upload_metadata(payload.original_filename, None)
+    except UploadValidationError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"File type not allowed. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+            detail=str(exc),
         )
     if not storage.storage_available():
         raise HTTPException(status_code=503, detail="Object storage isn't configured (S3_BUCKET unset).")
@@ -299,12 +344,21 @@ async def confirm_drawing_upload(
     # tenant's object or an arbitrary key.
     if not payload.key.startswith(f"drawings/{project_id}/"):
         raise HTTPException(status_code=400, detail="Key does not belong to this project")
+    if file_extension(payload.key) != file_ext:
+        raise HTTPException(status_code=400, detail="Storage key and filename types do not match")
 
     head = storage.object_head(payload.key)
     if head is None:
         raise HTTPException(status_code=404, detail="Object not found in storage — did the upload complete?")
+    if head.get("ContentLength", 0) > max_upload_bytes():
+        raise HTTPException(status_code=413, detail="Upload exceeds the configured size limit")
+    try:
+        validate_upload_metadata(payload.original_filename, head.get("ContentType"))
+        validate_file_signature(payload.original_filename, storage.read_prefix(payload.key))
+    except UploadValidationError as exc:
+        storage.delete_object(payload.key)
+        raise HTTPException(status_code=400, detail=str(exc))
 
-    file_ext = get_file_extension(payload.original_filename)
     return ingest_plan_set(
         db, background_tasks, project_id,
         file_path=storage.to_uri(payload.key), filename=payload.key.rsplit("/", 1)[-1],

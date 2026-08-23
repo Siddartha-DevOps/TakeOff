@@ -10,10 +10,10 @@ URLs rather than proxying full files through this API server.
 Configured entirely via env vars, all optional:
   S3_BUCKET, S3_ENDPOINT_URL (set for R2 / MinIO / any non-default-AWS
   endpoint), S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_REGION (default
-  us-east-1). Unset S3_BUCKET means storage_available() is False and every
-  route falls back to the pre-existing local-disk behavior — same
-  graceful-degradation rule this backend already applies to every other
-  optional dependency (cv2/PIL/fitz/CLIP), except here the *package*
+  us-east-1). Unset S3_BUCKET means storage_available() is False. Development
+  may use the local-disk fallback, but production/staging (or an explicit
+  REQUIRE_OBJECT_STORAGE=true) rejects uploads rather than acknowledge files
+  that will disappear from an ephemeral instance. The *package*
   (boto3) is already a plain requirements.txt dependency per CLAUDE.md §2
   (object storage access isn't "heavy ML"); it's only credentials/bucket
   that are commonly unset in a given environment.
@@ -56,6 +56,14 @@ def storage_available() -> bool:
     except ImportError:
         return False
     return _config() is not None
+
+
+def object_storage_required() -> bool:
+    """Default to durable uploads in production, with an explicit override."""
+    configured = os.environ.get("REQUIRE_OBJECT_STORAGE")
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("ENVIRONMENT", "development").strip().lower() in {"production", "prod", "staging"}
 
 
 def _client():
@@ -115,6 +123,18 @@ def upload_bytes(key: str, data: bytes, content_type: Optional[str] = None) -> N
     client, bucket = _client()
     extra = {"ContentType": content_type} if content_type else {}
     client.put_object(Bucket=bucket, Key=key, Body=data, **extra)
+
+
+def upload_file(key: str, file_path: str, content_type: Optional[str] = None) -> None:
+    client, bucket = _client()
+    extra = {"ContentType": content_type} if content_type else None
+    client.upload_file(file_path, bucket, key, ExtraArgs=extra or {})
+
+
+def read_prefix(key: str, size: int = 16) -> bytes:
+    client, bucket = _client()
+    response = client.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{size - 1}")
+    return response["Body"].read(size)
 
 
 def object_head(key: str) -> Optional[dict]:

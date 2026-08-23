@@ -44,3 +44,17 @@ services:
         sync: false                 # private Space access token; enter in Render, never commit it
       - key: STRIPE_WEBHOOK_SECRET
         sync: false                 # Stripe endpoint signing secret (whsec_...); webhooks fail closed when unset
+      - key: REQUIRE_OBJECT_STORAGE
+        value: "true"               # never acknowledge uploads that would disappear on Render's ephemeral disk
+      - key: UPLOAD_MAX_BYTES
+        value: "104857600"          # 100 MiB hard limit for proxy and presigned uploads
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false                 # set for Cloudflare R2/MinIO; leave blank for AWS S3
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "us-east-1"
