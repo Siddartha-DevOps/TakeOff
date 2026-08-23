@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { authAPI } from '../services/api';
+import { clearSession, getAuthToken, getSessionUser, storeSession } from '../services/session.js';
 
 const AuthContext = createContext(null);
 
@@ -16,10 +17,10 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // Load user from localStorage on mount
+  // Session-scoped storage avoids leaving a seven-day bearer token on disk.
   useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    const savedUser = localStorage.getItem('user');
+    const token = getAuthToken();
+    const savedUser = getSessionUser();
     
     if (token && savedUser) {
       try {
@@ -28,8 +29,7 @@ export const AuthProvider = ({ children }) => {
         setIsAuthenticated(true);
       } catch (e) {
         console.error('Failed to parse saved user', e);
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('user');
+        clearSession();
       }
     }
     setLoading(false);
@@ -52,8 +52,7 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.login(email, password);
       const { access_token, user: userData } = response.data;
       
-      localStorage.setItem('auth_token', access_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      storeSession(access_token, userData);
       
       setUser(userData);
       setIsAuthenticated(true);
@@ -70,8 +69,7 @@ export const AuthProvider = ({ children }) => {
       const response = await authAPI.signup(email, password, fullName, organizationName);
       const { access_token, user: userData } = response.data;
       
-      localStorage.setItem('auth_token', access_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      storeSession(access_token, userData);
       
       setUser(userData);
       setIsAuthenticated(true);
@@ -84,8 +82,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = () => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('user');
+    clearSession();
     setUser(null);
     setIsAuthenticated(false);
   };
@@ -95,8 +92,7 @@ export const AuthProvider = ({ children }) => {
   // returns the same Token shape as login/signup so the newly-created
   // member lands straight in the app instead of having to log in again.
   const loginWithSession = (accessToken, userData) => {
-    localStorage.setItem('auth_token', accessToken);
-    localStorage.setItem('user', JSON.stringify(userData));
+    storeSession(accessToken, userData);
     setUser(userData);
     setIsAuthenticated(true);
   };

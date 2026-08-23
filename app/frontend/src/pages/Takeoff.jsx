@@ -17,6 +17,7 @@ import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
 import { boundsOf, rectsIntersect } from '../annotations/geometry';
+import { getSessionUser } from '../services/session.js';
 
 // AIA Uniform Drawing System discipline colors, matching
 // ai/title_block_ocr.py's DISCIPLINE_CODES — just enough to give the
@@ -108,7 +109,7 @@ export default function Takeoff() {
   const [activeCommentId, setActiveCommentId] = useState(null); // pin popover currently open
   const wsRef = useRef(null);
   const lastCursorSentRef = useRef(0);
-  const selfUserId = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}').id; } catch { return null; } })();
+  const selfUserId = (() => { try { return JSON.parse(getSessionUser() || '{}').id; } catch { return null; } })();
 
   useEffect(() => {
     fetchProject();
@@ -173,7 +174,8 @@ export default function Takeoff() {
   // their own drawing_id so remote cursors are filtered client-side).
   useEffect(() => {
     if (!id) return undefined;
-    const ws = new WebSocket(collabAPI.wsUrl(id));
+    const connection = collabAPI.wsConnection(id);
+    const ws = new WebSocket(connection.url, connection.protocols);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { clearSession, getAuthToken } from './session.js';
 
 // Vite uses import.meta.env, not process.env
 // In production VITE_BACKEND_URL MUST be set (Vercel env). Only fall back to
@@ -23,7 +24,7 @@ const api = axios.create({
 // Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -39,8 +40,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401 || error.response?.status === 403) {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('user');
+      clearSession();
       if (window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -278,12 +278,15 @@ export const handoffAPI = {
 // Real-time collaboration — presence/cursors (WebSocket, see useCollabSocket
 // in pages/Takeoff.jsx) + durable pinned comments (REST, routes/realtime_routes.py)
 export const collabAPI = {
-  wsUrl: (projectId) => {
+  wsConnection: (projectId) => {
     const httpBase =
       import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const wsBase = httpBase.replace(/^http/, 'ws');
-    const token = localStorage.getItem('auth_token');
-    return `${wsBase}/api/ws/projects/${projectId}?token=${encodeURIComponent(token || '')}`;
+    const token = getAuthToken();
+    return {
+      url: `${wsBase}/api/ws/projects/${projectId}`,
+      protocols: token ? ['takeoff-auth', token] : ['takeoff-auth'],
+    };
   },
   listComments: (projectId, params) => api.get(`/api/collab/projects/${projectId}/comments`, { params }),
   createComment: (projectId, comment) => api.post(`/api/collab/projects/${projectId}/comments`, comment),
