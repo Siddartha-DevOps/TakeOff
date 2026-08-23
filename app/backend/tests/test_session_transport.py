@@ -20,3 +20,10 @@ def test_websocket_url_does_not_contain_a_bearer_query_parameter():
     source = (FRONTEND / "services" / "api.js").read_text(encoding="utf-8")
     assert "?token=" not in source
     assert "protocols: token ? ['takeoff-auth', token]" in source
+
+
+def test_legacy_persistent_credentials_are_purged_on_module_load():
+    source = (FRONTEND / "services" / "session.js").read_text(encoding="utf-8")
+    assert "purgeLegacyPersistentCredentials();" in source
+    assert "localStorage.removeItem(TOKEN_KEY)" in source
+    assert "localStorage.removeItem(USER_KEY)" in source
