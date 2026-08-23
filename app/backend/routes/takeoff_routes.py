@@ -551,6 +551,47 @@ async def get_detection_results(
     return result
 
 
+@router.get("/drawings/{drawing_id}/annotations")
+async def get_annotation_state(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return {
+        "drawing_id": drawing_id,
+        "saved": drawing.annotations_data is not None,
+        "annotations": json.loads(drawing.annotations_data) if drawing.annotations_data else [],
+    }
+
+
+@router.put("/drawings/{drawing_id}/annotations")
+async def save_annotation_state(
+    drawing_id: int,
+    payload: schemas.AnnotationStateUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    encoded = json.dumps(payload.annotations, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Annotation document exceeds 5 MiB")
+    drawing.annotations_data = encoded
+    db.commit()
+    return {"drawing_id": drawing_id, "saved": True, "count": len(payload.annotations)}
+
+
 @router.get("/drawings/{drawing_id}/detections")
 async def list_drawing_detections(
     drawing_id: int,

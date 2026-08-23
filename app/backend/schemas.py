@@ -207,3 +207,7 @@ class TakeoffResult(TakeoffResultCreate):
         from_attributes = True
 
 
+class AnnotationStateUpdate(BaseModel):
+    annotations: List[Dict[str, Any]]
+
+

@@ -147,6 +147,10 @@ class Drawing(Base):
     ocr_scale_text = Column(String(255), nullable=True)  # raw matched OCR text, e.g. '1/8" = 1\'-0"'
     ocr_scale_confidence = Column(Float, nullable=True)
 
+    # User-reviewed unified annotation document (AI + manual shapes). Kept on
+    # Drawing so it survives new AI result rows and page refreshes.
+    annotations_data = Column(Text, nullable=True)
+
     processing_status = Column(SQLEnum(ProcessingStatus), default=ProcessingStatus.PENDING)
     uploaded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at = Column(DateTime(timezone=True), nullable=True)
