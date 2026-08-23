@@ -42,3 +42,5 @@ services:
         value: "90"
       - key: HF_TOKEN
         sync: false                 # private Space access token; enter in Render, never commit it
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false                 # Stripe endpoint signing secret (whsec_...); webhooks fail closed when unset
