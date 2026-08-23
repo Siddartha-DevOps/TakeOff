@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import os
 import logging
@@ -39,6 +40,8 @@ from routes import (
 # the ORM mapper registry resolves before the app starts handling requests.
 import models
 from startup import auto_migrate_enabled, run_database_migrations
+from database import engine
+from healthcheck import database_ready
 
 # Load environment variables before model provisioning and AI initialization.
 ROOT_DIR = Path(__file__).parent
@@ -163,13 +166,24 @@ app.post("/api/webhook/stripe")(stripe_webhook)
 @app.get("/api/health")
 async def health_check():
     ai_available = bool(ai_engine and getattr(ai_engine, "available", False))
-    return {
-        "status": "healthy",
+    db_available = database_ready(engine)
+    payload = {
+        "status": "healthy" if db_available else "unhealthy",
         "service": "TakeOff.ai API",
         "version": "1.0.0",
+        "database": "ready" if db_available else "unavailable",
         "ai_engine": "loaded" if ai_available else "unavailable",
         "ai_backend": getattr(ai_engine, "backend", "local") if ai_engine else None,
     }
+    if not db_available:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/api/live")
+async def liveness_check():
+    """Process-only probe; readiness lives at /api/health."""
+    return {"status": "alive", "service": "TakeOff.ai API"}
 
 
 @app.get("/api")
