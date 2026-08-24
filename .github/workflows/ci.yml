@@ -40,7 +40,7 @@ jobs:
             fastapi pymupdf shapely numpy pytest \
             sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
             "passlib[bcrypt]" "bcrypt==4.0.1" \
-            openpyxl reportlab
+            openpyxl reportlab cryptography
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head

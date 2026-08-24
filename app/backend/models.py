@@ -686,9 +686,9 @@ class IntegrationConnection(Base):
     One row per (org, provider). Stores OAuth/API credentials and account
     identity so quantities/estimates can be pushed to the provider.
 
-    SECURITY: access_token/refresh_token are secrets. This scaffold stores them
-    as text; production must encrypt at rest (app-level envelope encryption or a
-    secrets manager) — enforced before any real credentials are stored.
+    SECURITY: access_token/refresh_token contain versioned Fernet ciphertext.
+    Provider adapters only receive a short-lived decrypted view; API responses
+    expose only the boolean ``has_credentials`` flag.
     """
     __tablename__ = "integration_connections"
 
@@ -698,8 +698,8 @@ class IntegrationConnection(Base):
     status = Column(String(20), nullable=False, default="disconnected")  # disconnected|connected|error
     external_account_id = Column(String(255), nullable=True)
     external_account_name = Column(String(255), nullable=True)
-    access_token = Column(Text, nullable=True)         # SECRET — encrypt in production
-    refresh_token = Column(Text, nullable=True)        # SECRET — encrypt in production
+    access_token = Column(Text, nullable=True)         # enc:v1 Fernet ciphertext
+    refresh_token = Column(Text, nullable=True)        # enc:v1 Fernet ciphertext
     token_expires_at = Column(DateTime(timezone=True), nullable=True)
     config = Column(Text, nullable=True)               # JSON: provider-specific settings
     last_error = Column(String(500), nullable=True)
