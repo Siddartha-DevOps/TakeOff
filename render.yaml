@@ -44,6 +44,8 @@ services:
         sync: false                 # private Space access token; enter in Render, never commit it
       - key: STRIPE_WEBHOOK_SECRET
         sync: false                 # Stripe endpoint signing secret (whsec_...); webhooks fail closed when unset
+      - key: INTEGRATION_ENCRYPTION_KEYS
+        sync: false                 # comma-separated Fernet key ring; first key encrypts, remaining keys support rotation
       - key: REQUIRE_OBJECT_STORAGE
         value: "true"               # never acknowledge uploads that would disappear on Render's ephemeral disk
       - key: UPLOAD_MAX_BYTES

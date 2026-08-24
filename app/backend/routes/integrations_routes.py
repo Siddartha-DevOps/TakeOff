@@ -18,6 +18,11 @@ from sqlalchemy.orm import Session
 import models
 import permissions
 from auth import get_current_user
+from credential_crypto import (
+    CredentialEncryptionError,
+    encrypt_credential,
+    normalize_credential,
+)
 from database import get_db
 from integrations import (
     NotConfiguredError,
@@ -27,6 +32,38 @@ from integrations import (
 )
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
+
+
+class _DecryptedConnection:
+    """Read-only credential view passed to provider adapters.
+
+    The SQLAlchemy entity always keeps ciphertext, preventing an autoflush from
+    accidentally writing a decrypted token back to the database.
+    """
+
+    def __init__(self, source, access_token, refresh_token):
+        self._source = source
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+
+    def __getattr__(self, name):
+        return getattr(self._source, name)
+
+
+def _provider_connection(conn: models.IntegrationConnection, db: Session):
+    """Decrypt credentials and opportunistically rotate legacy/old-key rows."""
+    try:
+        access, encrypted_access, access_changed = normalize_credential(conn.access_token)
+        refresh, encrypted_refresh, refresh_changed = normalize_credential(conn.refresh_token)
+    except CredentialEncryptionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if access_changed:
+        conn.access_token = encrypted_access
+    if refresh_changed:
+        conn.refresh_token = encrypted_refresh
+    if access_changed or refresh_changed:
+        db.commit()
+    return _DecryptedConnection(conn, access, refresh)
 
 
 @router.get("")
@@ -92,7 +129,10 @@ async def connect(
     conn.status = "connected"
     conn.external_account_name = body.account_name
     if body.api_key:
-        conn.access_token = body.api_key   # SECRET — encrypt at rest in production
+        try:
+            conn.access_token = encrypt_credential(body.api_key)
+        except CredentialEncryptionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     db.commit()
     db.refresh(conn)
     return connection_to_dict(conn)
@@ -150,7 +190,8 @@ async def push_estimate(
         .first()
     )
     try:
-        result = provider.push_estimate(conn, snapshot)
+        provider_conn = _provider_connection(conn, db) if conn else None
+        result = provider.push_estimate(provider_conn, snapshot)
     except NotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
