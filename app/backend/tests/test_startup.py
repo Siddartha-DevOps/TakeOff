@@ -1,4 +1,6 @@
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +66,40 @@ def test_unversioned_current_schema_is_stamped_at_head():
 def test_partial_baseline_fails_closed():
     with pytest.raises(RuntimeError, match="partial pre-Alembic"):
         startup.infer_legacy_revision({"users", "organizations"}, {})
+
+
+def test_partial_legacy_repair_is_only_selected_for_unversioned_partial_baseline():
+    assert startup.needs_partial_legacy_repair({"users", "organizations"}) is True
+    assert startup.needs_partial_legacy_repair(set()) is False
+    assert startup.needs_partial_legacy_repair(set(startup._BASELINE_TABLES)) is False
+    assert startup.needs_partial_legacy_repair({"alembic_version", "users"}) is False
+
+
+def test_partial_legacy_schema_is_repaired_verified_and_stamped(monkeypatch):
+    engine = object()
+    monkeypatch.setitem(sys.modules, "database", SimpleNamespace(engine=engine))
+    current_tables, current_columns = _baseline_schema()
+    for _revision, required_tables, required_columns in startup._REVISION_MARKERS:
+        current_tables.update(required_tables)
+        for table, names in required_columns.items():
+            current_columns.setdefault(table, set()).update(names)
+
+    snapshots = iter([
+        ({"users", "organizations"}, {}),
+        (current_tables, current_columns),
+    ])
+    repaired = []
+    stamped = []
+    monkeypatch.setattr(startup, "_schema_snapshot", lambda _engine: next(snapshots))
+    monkeypatch.setattr(
+        startup, "_repair_partial_legacy_schema", lambda selected: repaired.append(selected)
+    )
+    command = SimpleNamespace(stamp=lambda config, revision: stamped.append((config, revision)))
+
+    startup._stamp_legacy_schema("config", command)
+
+    assert repaired == [engine]
+    assert stamped == [("config", "i7d8e9f0a1b2")]
 
 
 def test_schema_with_revision_gap_fails_closed():

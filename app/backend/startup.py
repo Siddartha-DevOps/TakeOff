@@ -86,10 +86,19 @@ def infer_legacy_revision(tables: set[str], columns: dict[str, set[str]]) -> str
     return highest
 
 
-def _stamp_legacy_schema(config, command) -> None:
-    """Stamp a compatible pre-Alembic schema before normal upgrades."""
+def needs_partial_legacy_repair(tables: set[str]) -> bool:
+    """Return whether an unversioned database has only part of the baseline."""
+
+    return (
+        "alembic_version" not in tables
+        and bool(tables & _BASELINE_TABLES)
+        and not _BASELINE_TABLES <= tables
+    )
+
+
+def _schema_snapshot(engine) -> tuple[set[str], dict[str, set[str]]]:
+    """Read the table/column fingerprint used for legacy schema validation."""
     from sqlalchemy import inspect
-    from database import engine
 
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
@@ -101,6 +110,39 @@ def _stamp_legacy_schema(config, command) -> None:
         table: {column["name"] for column in inspector.get_columns(table)}
         for table in relevant_tables if table in tables
     }
+    return tables, columns
+
+
+def _repair_partial_legacy_schema(engine) -> None:
+    """Complete a schema previously interrupted during ``create_all``.
+
+    SQLAlchemy's ``create_all`` is deliberately used only for this narrowly
+    detected legacy state. It preserves existing tables and rows and creates
+    missing current-model tables. The caller then fingerprints the result and
+    refuses to stamp it unless it exactly represents a known revision.
+    """
+    from sqlalchemy import text
+    from database import Base
+    import models  # noqa: F401 - registers every model on Base.metadata
+
+    logger.warning(
+        "Detected partial pre-Alembic TakeOff schema; creating missing model tables"
+    )
+    with engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.create_all(bind=engine, checkfirst=True)
+
+
+def _stamp_legacy_schema(config, command) -> None:
+    """Stamp a compatible pre-Alembic schema before normal upgrades."""
+    from database import engine
+
+    tables, columns = _schema_snapshot(engine)
+    if needs_partial_legacy_repair(tables):
+        _repair_partial_legacy_schema(engine)
+        tables, columns = _schema_snapshot(engine)
+
     revision = infer_legacy_revision(tables, columns)
     if revision:
         logger.warning(
