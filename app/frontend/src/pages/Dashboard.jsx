@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Sparkles, LayoutDashboard, FolderOpen, Users, Settings, LogOut, Search, Plus, MoreVertical, Upload, Bell, HelpCircle, ArrowUpRight, Loader2, Gauge } from 'lucide-react';
 import * as LIcons from 'lucide-react';
-import { DASHBOARD_ACTIVITY } from '../mock/mockData';
-import { projectsAPI, paymentsAPI } from '../services/api';
+import { projectsAPI, paymentsAPI, activityAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import CreateProjectModal from '../components/CreateProjectModal';
+import { buildDashboardStats, presentActivity } from '../dashboard/dashboardData';
 
 const STATUS_STYLES = {
   active: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
@@ -32,10 +32,14 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [showNewProject, setShowNewProject] = useState(false);
   const [usage, setUsage] = useState(null);
+  const [activity, setActivity] = useState([]);
 
   useEffect(() => {
     fetchProjects();
     paymentsAPI.getUsage().then((res) => setUsage(res.data)).catch(() => setUsage(null));
+    activityAPI.list(6)
+      .then((res) => setActivity(Array.isArray(res.data?.activity) ? res.data.activity : []))
+      .catch(() => setActivity([]));
   }, []);
 
   const fetchProjects = async () => {
@@ -59,6 +63,7 @@ export default function Dashboard() {
         return true;
       })
     : [];
+  const stats = buildDashboardStats(projects, usage);
 
   const handleLogout = () => {
     logout();
@@ -83,7 +88,7 @@ export default function Dashboard() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search projects, sheets or detections..."
+                placeholder="Search projects..."
                 className="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-slate-100 border border-transparent focus:bg-white focus:border-slate-300 focus:ring-2 focus:ring-slate-200 outline-none"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] mono text-slate-500 border border-slate-300 rounded px-1.5 py-0.5">
@@ -122,10 +127,10 @@ export default function Dashboard() {
           </div>
 
           <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Active projects" value={projects.filter(p => p.status === 'active').length.toString()} delta="+1 this week" color="indigo" icon={FolderOpen} />
-            <StatCard label="AI detections (30d)" value="2,418" delta="+18% vs last month" color="violet" icon={Sparkles} />
-            <StatCard label="Hours saved (est.)" value="142h" delta="Team total" color="cyan" icon={LIcons.Clock} />
-            <StatCard label="Bids submitted" value="9" delta="3 in review" color="emerald" icon={LIcons.FileCheck} />
+            <StatCard label="Active projects" value={stats.activeProjects.toString()} delta={`${stats.totalProjects} total projects`} color="indigo" icon={FolderOpen} />
+            <StatCard label="Drawings uploaded" value={stats.drawings.toString()} delta="Across all projects" color="cyan" icon={LIcons.Files} />
+            <StatCard label="AI takeoffs this month" value={stats.aiTakeoffsThisMonth ?? '—'} delta="Current billing month" color="violet" icon={Sparkles} />
+            <StatCard label="Projects this month" value={stats.projectsThisMonth ?? '—'} delta="Current billing month" color="emerald" icon={LIcons.CalendarPlus} />
           </div>
 
           <div className="mt-10 grid grid-cols-1 xl:grid-cols-[1fr_340px] gap-6">
@@ -164,10 +169,13 @@ export default function Dashboard() {
               <section className="rounded-2xl border border-slate-200 bg-white p-5">
                 <h3 className="text-sm font-semibold text-slate-900">Recent activity</h3>
                 <div className="mt-4 space-y-4">
-                  {DASHBOARD_ACTIVITY.map((a, i) => {
+                  {activity.length === 0 ? (
+                    <p className="text-sm text-slate-500">No account activity yet.</p>
+                  ) : activity.map((item) => {
+                    const a = presentActivity(item);
                     const Icon = LIcons[a.icon] || Sparkles;
                     return (
-                      <div key={i} className="flex items-start gap-3">
+                      <div key={a.id ?? `${item.action}-${item.created_at}`} className="flex items-start gap-3">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${ACTIVITY_COLORS[a.color]}`}>
                           <Icon className="w-4 h-4" />
                         </div>

@@ -249,6 +249,11 @@ export const paymentsAPI = {
   getUsage: () => api.get('/api/payments/usage'),
 };
 
+// Organization-scoped audit feed (routes/audit_routes.py).
+export const activityAPI = {
+  list: (limit = 10) => api.get('/api/activity', { params: { limit } }),
+};
+
 // Export API
 export const exportAPI = {
   exportDrawing: (drawingId, format) => api.get(`/api/export/drawings/${drawingId}/${format}`, {
