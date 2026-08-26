@@ -108,11 +108,10 @@ function uploadDrawingViaProxy(projectId, file, metadata) {
   if (metadata?.sheet_name) formData.append('sheet_name', metadata.sheet_name);
   if (metadata?.scale) formData.append('scale', metadata.scale);
 
-  return api.post(`/api/uploads/project/${projectId}/drawings`, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  // Do not set Content-Type manually. The browser must add the multipart
+  // boundary; forcing the bare media type can make FastAPI report a missing
+  // `file` field (422) even though FormData contains it.
+  return api.post(`/api/uploads/project/${projectId}/drawings`, formData);
 }
 
 // Uploads API

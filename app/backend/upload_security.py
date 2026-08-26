@@ -2,7 +2,7 @@
 
 import os
 
-ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tiff", "tif"}
+ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "jfif", "tiff", "tif"}
 DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 _MIME_TYPES = {
@@ -10,6 +10,7 @@ _MIME_TYPES = {
     "png": {"image/png"},
     "jpg": {"image/jpeg", "image/jpg"},
     "jpeg": {"image/jpeg", "image/jpg"},
+    "jfif": {"image/jpeg", "image/jpg"},
     "tif": {"image/tiff"},
     "tiff": {"image/tiff"},
 }
@@ -51,6 +52,7 @@ def validate_file_signature(filename: str, prefix: bytes) -> None:
         "png": prefix.startswith(b"\x89PNG\r\n\x1a\n"),
         "jpg": prefix.startswith(b"\xff\xd8\xff"),
         "jpeg": prefix.startswith(b"\xff\xd8\xff"),
+        "jfif": prefix.startswith(b"\xff\xd8\xff"),
         "tif": prefix.startswith((b"II*\x00", b"MM\x00*")),
         "tiff": prefix.startswith((b"II*\x00", b"MM\x00*")),
     }.get(ext, False)

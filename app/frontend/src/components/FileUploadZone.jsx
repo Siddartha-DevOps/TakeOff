@@ -3,6 +3,17 @@ import { Upload, File, X, Loader2, CheckCircle, AlertCircle } from 'lucide-react
 import { motion, AnimatePresence } from 'framer-motion';
 import { uploadsAPI } from '../services/api';
 
+const ALLOWED_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'jfif', 'tiff', 'tif'];
+
+function uploadErrorMessage(error) {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item) => item?.msg || String(item)).join('; ');
+  }
+  return error.message || 'Upload failed';
+}
+
 export default function FileUploadZone({ projectId, onUploadComplete }) {
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -26,7 +37,7 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
     const droppedFiles = Array.from(e.dataTransfer.files);
     const validFiles = droppedFiles.filter((file) => {
       const ext = file.name.split('.').pop().toLowerCase();
-      return ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'tif'].includes(ext);
+      return ALLOWED_EXTENSIONS.includes(ext);
     });
 
     if (validFiles.length > 0) {
@@ -43,7 +54,10 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
   }, []);
 
   const handleFileInput = (e) => {
-    const selectedFiles = Array.from(e.target.files);
+    const selectedFiles = Array.from(e.target.files).filter((file) => {
+      const ext = file.name.split('.').pop().toLowerCase();
+      return ALLOWED_EXTENSIONS.includes(ext);
+    });
     setFiles((prev) => [
       ...prev,
       ...selectedFiles.map((file) => ({
@@ -118,7 +132,7 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
         setFiles((prev) =>
           prev.map((f) =>
             f.id === fileItem.id
-              ? { ...f, status: 'error', progress: 0, error: error.message }
+              ? { ...f, status: 'error', progress: 0, error: uploadErrorMessage(error) }
               : f
           )
         );
@@ -148,7 +162,7 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
           type="file"
           id="file-upload"
           multiple
-          accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif"
+          accept=".pdf,.png,.jpg,.jpeg,.jfif,.tiff,.tif"
           onChange={handleFileInput}
           className="hidden"
         />
@@ -161,7 +175,7 @@ export default function FileUploadZone({ projectId, onUploadComplete }) {
           </label>
         </h3>
         <p className="mt-1 text-xs text-slate-500">
-          Supports PDF, TIFF, PNG, JPG up to 500MB
+          Supports PDF, TIFF, PNG, JPG/JFIF up to 500MB
         </p>
       </div>
 
