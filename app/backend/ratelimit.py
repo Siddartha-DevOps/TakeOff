@@ -17,6 +17,8 @@ import os
 import time
 from typing import Callable, Optional
 
+from fastapi import HTTPException, Request
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,8 +113,6 @@ def _identity(request) -> str:
 
 def RateLimit(bucket: str, *, limit: int, window_s: int = 60) -> Callable:
     """FastAPI dependency: ``limit`` requests per ``window_s`` per caller, per bucket."""
-    from fastapi import HTTPException, Request
-
     async def dependency(request: Request):
         result = check(get_store(), _identity(request), bucket, limit=limit, window_s=window_s)
         if not result["allowed"]:
