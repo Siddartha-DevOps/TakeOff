@@ -1,6 +1,19 @@
-"""Tests for the rate limiter's decision logic (in-memory store + fake clock)."""
+"""Tests for rate-limit decisions and FastAPI dependency integration."""
 
-from ratelimit import InMemoryStore, check, window_key
+from fastapi import Depends, FastAPI
+
+from ratelimit import InMemoryStore, RateLimit, check, window_key
+
+
+def test_dependency_injects_request_instead_of_exposing_query_parameter():
+    app = FastAPI()
+
+    @app.get("/limited", dependencies=[Depends(RateLimit("test", limit=1))])
+    async def limited():
+        return {"ok": True}
+
+    parameters = app.openapi()["paths"]["/limited"]["get"].get("parameters", [])
+    assert not any(parameter["name"] == "request" for parameter in parameters)
 
 
 def test_window_key_collapses_within_window_and_rolls_over():

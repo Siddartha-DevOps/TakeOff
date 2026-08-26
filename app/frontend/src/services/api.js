@@ -24,6 +24,17 @@ const api = axios.create({
 // Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
+    // The instance defaults to JSON for ordinary API requests. FormData must
+    // not inherit that header: the browser supplies multipart/form-data plus
+    // its generated boundary, which FastAPI needs to parse UploadFile fields.
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      if (typeof config.headers?.delete === 'function') {
+        config.headers.delete('Content-Type');
+      } else if (config.headers) {
+        delete config.headers['Content-Type'];
+      }
+    }
+
     const token = getAuthToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
