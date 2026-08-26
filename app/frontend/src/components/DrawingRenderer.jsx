@@ -7,8 +7,13 @@ import { uploadsAPI } from "../services/api";
 import { getAuthToken } from "../services/session.js";
 import { snapPoint } from "../annotations/geometry.js";
 
-// Configure PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// Keep the PDF.js worker in the Vite bundle. React-PDF 10 uses PDF.js 5,
+// whose worker is an ES module (`.mjs`); the former `.js` CDN URL returns a
+// missing/incompatible worker and makes otherwise valid PDFs fail to load.
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 // Deep Zoom pyramid tiling (tiling.py / routes/upload_routes.py) — closes
 // memory/TOGAL_PARITY_REAUDIT.md #11: rendering a full-resolution PDF page
