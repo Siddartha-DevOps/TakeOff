@@ -12,7 +12,12 @@ from upload_security import (
 
 @pytest.mark.parametrize(
     ("filename", "content_type"),
-    [("plan.pdf", "application/pdf"), ("plan.PNG", "image/png"), ("plan.jpeg", "image/jpeg")],
+    [
+        ("plan.pdf", "application/pdf"),
+        ("plan.PNG", "image/png"),
+        ("plan.jpeg", "image/jpeg"),
+        ("floor plan.jfif", "image/jpeg"),
+    ],
 )
 def test_metadata_accepts_supported_matching_types(filename, content_type):
     assert validate_upload_metadata(filename, content_type)
@@ -34,6 +39,7 @@ def test_metadata_rejects_executable_extension():
         ("plan.pdf", b"%PDF-1.7 rest"),
         ("plan.png", b"\x89PNG\r\n\x1a\nrest"),
         ("plan.jpg", b"\xff\xd8\xffrest"),
+        ("plan.jfif", b"\xff\xd8\xffrest"),
         ("plan.tiff", b"II*\x00rest"),
     ],
 )
