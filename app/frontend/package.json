@@ -7,7 +7,7 @@
     "start": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/annotations/geometry.test.js"
+    "test": "node --test src/annotations/geometry.test.js src/dashboard/dashboardData.test.js"
   },
   "keywords": [],
   "author": "",
