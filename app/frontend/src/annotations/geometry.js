@@ -16,6 +16,30 @@ export function polygonArea(points) {
   return Math.abs(sum) / 2;
 }
 
+export function pointInPolygon([x, y], points) {
+  if (!points || points.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    const onEdge = Math.abs((y - yi) * (xj - xi) - (x - xi) * (yj - yi)) < 1e-7
+      && x >= Math.min(xi, xj) - 1e-7 && x <= Math.max(xi, xj) + 1e-7
+      && y >= Math.min(yi, yj) - 1e-7 && y <= Math.max(yi, yj) + 1e-7;
+    if (onEdge) return true;
+    if (((yi > y) !== (yj > y)) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+export function ringInsidePolygon(ring, outer) {
+  if (!ring || ring.length < 3 || !outer || outer.length < 3) return false;
+  return ring.every((point, index) => {
+    const next = ring[(index + 1) % ring.length];
+    const midpoint = [(point[0] + next[0]) / 2, (point[1] + next[1]) / 2];
+    return pointInPolygon(point, outer) && pointInPolygon(midpoint, outer);
+  });
+}
+
 export function polylineLength(points) {
   if (!points || points.length < 2) return 0;
   let len = 0;
@@ -25,6 +49,26 @@ export function polylineLength(points) {
     len += Math.hypot(x2 - x1, y2 - y1);
   }
   return len;
+}
+
+export function arcLength(points) {
+  if (!points || points.length !== 3) return polylineLength(points);
+  const [a, b, c] = points;
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-9) return polylineLength(points);
+  const aa = a[0] ** 2 + a[1] ** 2;
+  const bb = b[0] ** 2 + b[1] ** 2;
+  const cc = c[0] ** 2 + c[1] ** 2;
+  const center = [
+    (aa * (b[1] - c[1]) + bb * (c[1] - a[1]) + cc * (a[1] - b[1])) / d,
+    (aa * (c[0] - b[0]) + bb * (a[0] - c[0]) + cc * (b[0] - a[0])) / d,
+  ];
+  const angles = [a, b, c].map(([x, y]) => Math.atan2(y - center[1], x - center[0]));
+  const normalize = (value) => (value + Math.PI * 2) % (Math.PI * 2);
+  const ccwTotal = normalize(angles[2] - angles[0]);
+  const ccwMiddle = normalize(angles[1] - angles[0]);
+  const sweep = ccwMiddle <= ccwTotal ? ccwTotal : Math.PI * 2 - ccwTotal;
+  return Math.hypot(a[0] - center[0], a[1] - center[1]) * sweep;
 }
 
 export function rectFromBbox([x1, y1, x2, y2]) {
@@ -103,9 +147,9 @@ export function computeMeasuredValue(annotation, measurementContext = null) {
 
   switch (annotation.type) {
     case 'area':
-      return round2(polygonArea(annotation.geometry) * feetPerPlanUnit ** 2);
+      return round2(Math.max(0, polygonArea(annotation.geometry) - (annotation.holes || []).reduce((sum, ring) => sum + polygonArea(ring), 0)) * feetPerPlanUnit ** 2);
     case 'line':
-      return round2(polylineLength(annotation.geometry) * feetPerPlanUnit);
+      return round2((annotation.meta?.curve === 'arc' ? arcLength(annotation.geometry) : polylineLength(annotation.geometry)) * feetPerPlanUnit);
     case 'count':
       return 1;
     default:

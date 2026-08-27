@@ -16,7 +16,8 @@ import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
-import { boundsOf, rectsIntersect } from '../annotations/geometry';
+import { boundsOf, rectsIntersect, ringInsidePolygon } from '../annotations/geometry';
+import { mergeAreaAnnotations } from '../annotations/operations';
 import { getSessionUser } from '../services/session.js';
 
 // AIA Uniform Drawing System discipline colors, matching
@@ -86,7 +87,12 @@ export default function Takeoff() {
   const [calibratingBusy, setCalibratingBusy] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const [manualTool, setManualTool] = useState(null);
-  const [selectedManualAnnotationId, setSelectedManualAnnotationId] = useState(null);
+  const [selectedManualAnnotationIds, setSelectedManualAnnotationIds] = useState([]);
+  const [splitPick, setSplitPick] = useState(null);
+  const annotationClipboardRef = useRef([]);
+  const [showAnnotationHistory, setShowAnnotationHistory] = useState(false);
+  const [annotationVersions, setAnnotationVersions] = useState([]);
+  const [annotationHistoryBusy, setAnnotationHistoryBusy] = useState(false);
 
   // Conditions + box-select assignment. See routes/condition_routes.py.
   const [conditions, setConditions] = useState([]);
@@ -138,7 +144,8 @@ export default function Takeoff() {
   }, [annotationStore.annotations, annotationReadyDrawingId, selectedDrawing]);
 
   useEffect(() => {
-    setSelectedManualAnnotationId(null);
+    setSelectedManualAnnotationIds([]);
+    setSplitPick(null);
   }, [selectedDrawing?.id]);
 
   useEffect(() => {
@@ -152,15 +159,35 @@ export default function Takeoff() {
       } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
         event.preventDefault();
         annotationStore.redo();
-      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedManualAnnotationId) {
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectedManualAnnotationIds.length) {
         event.preventDefault();
-        annotationStore.deleteAnnotation(selectedManualAnnotationId);
-        setSelectedManualAnnotationId(null);
+        annotationClipboardRef.current = selectedManualAnnotationIds
+          .map((annotationId) => annotationStore.annotations.find((annotation) => annotation.id === annotationId))
+          .filter(Boolean)
+          .map((annotation) => JSON.parse(JSON.stringify(annotation)));
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && annotationClipboardRef.current.length) {
+        event.preventDefault();
+        annotationStore.pasteAnnotations(annotationClipboardRef.current, currentMeasurementContext());
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedManualAnnotationIds.length) {
+        event.preventDefault();
+        annotationStore.duplicate(selectedManualAnnotationIds, currentMeasurementContext());
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedManualAnnotationIds.length) {
+        event.preventDefault();
+        annotationStore.deleteAnnotations(selectedManualAnnotationIds);
+        setSelectedManualAnnotationIds([]);
+      } else if (event.key === 'Escape') {
+        setSelectedManualAnnotationIds([]);
+        setSplitPick(null);
+        if (manualTool === 'split' || manualTool === 'hole') setManualTool('select');
       }
     };
     window.addEventListener('keydown', handleEditorShortcut);
     return () => window.removeEventListener('keydown', handleEditorShortcut);
-  }, [annotationStore, selectedManualAnnotationId]);
+  }, [annotationStore, manualTool, selectedManualAnnotationIds, scaleInfo, selectedDrawing]);
+
+  function currentMeasurementContext() {
+    return { scaleRatio: scaleInfo?.scale_ratio, fileType: selectedDrawing?.file_type };
+  }
 
   async function fetchProject() {
     try {
@@ -685,7 +712,8 @@ export default function Takeoff() {
     setCalibrating(false);
     setCommentMode(false);
     setSelectMode(false);
-    if (tool !== 'select') setSelectedManualAnnotationId(null);
+    if (!['select', 'split', 'hole'].includes(tool)) setSelectedManualAnnotationIds([]);
+    if (tool !== 'split') setSplitPick(null);
   }
 
   function updateManualGeometry(annotationId, geometry) {
@@ -696,28 +724,116 @@ export default function Takeoff() {
   }
 
   function deleteSelectedManualAnnotation() {
-    if (!selectedManualAnnotationId) return;
-    annotationStore.deleteAnnotation(selectedManualAnnotationId);
-    setSelectedManualAnnotationId(null);
+    if (!selectedManualAnnotationIds.length) return;
+    annotationStore.deleteAnnotations(selectedManualAnnotationIds);
+    setSelectedManualAnnotationIds([]);
+  }
+
+  function transformManualSelection(transform) {
+    if (!selectedManualAnnotationIds.length) return;
+    annotationStore.transformAnnotations(selectedManualAnnotationIds, transform, currentMeasurementContext());
+  }
+
+  function copyManualSelection() {
+    annotationClipboardRef.current = selectedManualAnnotationIds
+      .map((annotationId) => annotationsById.get(annotationId))
+      .filter(Boolean)
+      .map((annotation) => JSON.parse(JSON.stringify(annotation)));
+  }
+
+  function mergeManualSelection() {
+    const preview = mergeAreaAnnotations(annotationStore.annotations, selectedManualAnnotationIds, currentMeasurementContext());
+    if (!preview.merged) {
+      alert('Only touching or overlapping area annotations can be merged.');
+      return;
+    }
+    annotationStore.mergeAreas(selectedManualAnnotationIds, currentMeasurementContext());
+    setSelectedManualAnnotationIds([preview.merged.id]);
+  }
+
+  function handleSplitVertex(annotationId, vertexIndex) {
+    if (!splitPick || splitPick.annotationId !== annotationId) {
+      setSplitPick({ annotationId, firstIndex: vertexIndex });
+      return;
+    }
+    const annotation = annotationsById.get(annotationId);
+    const low = Math.min(splitPick.firstIndex, vertexIndex);
+    const high = Math.max(splitPick.firstIndex, vertexIndex);
+    if (!annotation || high - low < 2 || (low === 0 && high === annotation.geometry.length - 1)) {
+      alert('Choose two non-adjacent vertices to split the polygon.');
+      setSplitPick(null);
+      return;
+    }
+    annotationStore.splitArea(annotationId, splitPick.firstIndex, vertexIndex, currentMeasurementContext());
+    setSplitPick(null);
+    setSelectedManualAnnotationIds([]);
+    setManualTool('select');
+  }
+
+  function bulkRelabelSelection() {
+    const label = window.prompt('New label for selected annotations:');
+    if (label?.trim()) annotationStore.updateAnnotationsMeta(selectedManualAnnotationIds, { label: label.trim(), reviewed: true });
+  }
+
+  async function openAnnotationHistory() {
+    if (!selectedDrawing) return;
+    setShowAnnotationHistory(true);
+    setAnnotationHistoryBusy(true);
+    try {
+      const response = await takeoffAPI.getAnnotationHistory(selectedDrawing.id);
+      setAnnotationVersions(response.data || []);
+    } catch (error) {
+      console.error('Failed to load annotation history:', error);
+      setAnnotationVersions([]);
+    } finally {
+      setAnnotationHistoryBusy(false);
+    }
+  }
+
+  async function restoreAnnotationVersion(revisionId) {
+    if (!selectedDrawing) return;
+    setAnnotationHistoryBusy(true);
+    try {
+      const response = await takeoffAPI.restoreAnnotationHistory(selectedDrawing.id, revisionId);
+      annotationStore.loadFromJSON(response.data.annotations, currentMeasurementContext());
+      setSelectedManualAnnotationIds([]);
+      setShowAnnotationHistory(false);
+    } catch (error) {
+      alert(error.response?.data?.detail || 'Could not restore this annotation version.');
+    } finally {
+      setAnnotationHistoryBusy(false);
+    }
   }
 
   function addManualTakeoff({ type, geometry }) {
     if (!selectedDrawing || !isScaleConfirmed(scaleInfo)) return;
     const uniquePart = window.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const colors = { area: '#ec4899', line: '#06b6d4', count: '#f97316' };
+    if (type === 'hole') {
+      const targetId = selectedManualAnnotationIds[0];
+      const target = annotationsById.get(targetId);
+      if (!target || !ringInsidePolygon(geometry, target.geometry)) {
+        alert('The entire opening must be drawn inside the selected area.');
+        return;
+      }
+      annotationStore.addHole(targetId, geometry, currentMeasurementContext());
+      setManualTool('select');
+      return;
+    }
+    const annotationType = type === 'arc' ? 'line' : type;
     annotationStore.addAnnotation({
       id: `manual_${type}_${uniquePart}`,
-      type,
+      type: annotationType,
       geometry,
       layerId: 'manual',
       source: 'manual',
       style: {
-        stroke: colors[type],
-        fill: colors[type],
+        stroke: colors[annotationType],
+        fill: colors[annotationType],
         fillOpacity: type === 'area' ? 0.2 : undefined,
-        strokeWidth: type === 'line' ? 3 : 2,
+        strokeWidth: annotationType === 'line' ? 3 : 2,
       },
-      meta: { label: `Manual ${type}`, drawingId: selectedDrawing.id },
+      meta: { label: `Manual ${type}`, drawingId: selectedDrawing.id, ...(type === 'arc' ? { curve: 'arc' } : {}) },
     }, {
       scaleRatio: scaleInfo.scale_ratio,
       fileType: selectedDrawing.file_type,
@@ -1244,9 +1360,11 @@ export default function Takeoff() {
                 annotations={annotationStore.annotations}
                 manualTool={manualTool}
                 onManualAnnotation={addManualTakeoff}
-                selectedAnnotationId={selectedManualAnnotationId}
-                onSelectAnnotation={setSelectedManualAnnotationId}
+                selectedAnnotationIds={selectedManualAnnotationIds}
+                onSelectAnnotation={setSelectedManualAnnotationIds}
                 onUpdateAnnotationGeometry={updateManualGeometry}
+                onTransformSelection={transformManualSelection}
+                onSplitVertex={handleSplitVertex}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}
@@ -1323,12 +1441,32 @@ export default function Takeoff() {
           )}
           {selectedDrawing && (
             <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
+              {selectedManualAnnotationIds.length > 0 && (
+                <div className="flex flex-wrap items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl text-[11px]">
+                  <span className="px-2 font-semibold text-slate-500">{selectedManualAnnotationIds.length} selected</span>
+                  <button type="button" onClick={() => annotationStore.duplicate(selectedManualAnnotationIds, currentMeasurementContext())} className="px-2 py-1.5 rounded hover:bg-slate-100" title="Duplicate (Ctrl+D)">Duplicate</button>
+                  <button type="button" onClick={copyManualSelection} className="px-2 py-1.5 rounded hover:bg-slate-100" title="Copy (Ctrl+C)">Copy</button>
+                  <button type="button" onClick={() => transformManualSelection({ rotation: -15 })} className="px-2 py-1.5 rounded hover:bg-slate-100">↶ 15°</button>
+                  <button type="button" onClick={() => transformManualSelection({ rotation: 15 })} className="px-2 py-1.5 rounded hover:bg-slate-100">↷ 15°</button>
+                  <button type="button" onClick={() => transformManualSelection({ scale: 0.9 })} className="px-2 py-1.5 rounded hover:bg-slate-100">Resize −</button>
+                  <button type="button" onClick={() => transformManualSelection({ scale: 1.1 })} className="px-2 py-1.5 rounded hover:bg-slate-100">Resize +</button>
+                  {selectedManualAnnotationIds.length === 1 && annotationsById.get(selectedManualAnnotationIds[0])?.type === 'area' && <button type="button" onClick={() => activateManualTool('split')} className="px-2 py-1.5 rounded hover:bg-amber-50 text-amber-700">Split</button>}
+                  {selectedManualAnnotationIds.length === 1 && annotationsById.get(selectedManualAnnotationIds[0])?.type === 'area' && <button type="button" onClick={() => activateManualTool('hole')} className="px-2 py-1.5 rounded hover:bg-amber-50 text-amber-700">Cut hole</button>}
+                  {selectedManualAnnotationIds.length > 1 && selectedManualAnnotationIds.every((annotationId) => annotationsById.get(annotationId)?.type === 'area') && <button type="button" onClick={mergeManualSelection} className="px-2 py-1.5 rounded hover:bg-indigo-50 text-indigo-700">Merge</button>}
+                  <button type="button" onClick={bulkRelabelSelection} className="px-2 py-1.5 rounded hover:bg-slate-100">Relabel</button>
+                  <select value="" onChange={(event) => { if (event.target.value) annotationStore.assignCondition(selectedManualAnnotationIds, Number(event.target.value)); }} className="rounded border border-slate-200 px-2 py-1.5 bg-white" aria-label="Move selected annotations to condition"><option value="">Move to condition…</option>{conditions.map((condition) => <option key={condition.id} value={condition.id}>{condition.name}</option>)}</select>
+                  <button type="button" onClick={deleteSelectedManualAnnotation} className="px-2 py-1.5 rounded text-rose-600 hover:bg-rose-50">Delete</button>
+                </div>
+              )}
               {manualTool && (
                 <div className="px-3 py-1.5 rounded-full bg-slate-950/90 text-white text-[11px] shadow-lg">
                   {manualTool === 'select' && 'Click a shape to select · drag the shape or its vertices · Delete removes it'}
                   {manualTool === 'area' && 'Click each corner, then double-click or press Enter to finish · Esc cancels'}
                   {manualTool === 'line' && 'Click line points, then double-click or Enter · snaps to vertices and 45° angles'}
                   {manualTool === 'count' && 'Click each item to place a count · Esc clears preview'}
+                  {manualTool === 'arc' && 'Click the arc start, a point on the curve, and the end'}
+                  {manualTool === 'split' && `Click two non-adjacent polygon vertices${splitPick ? ' · first vertex selected' : ''}`}
+                  {manualTool === 'hole' && 'Click the opening corners, then double-click or press Enter to subtract it'}
                 </div>
               )}
               <div className="flex items-center gap-1 p-1.5 rounded-xl bg-white border border-slate-200 shadow-xl">
@@ -1362,6 +1500,7 @@ export default function Takeoff() {
                     {tool.label}
                   </button>
                 ))}
+                <button type="button" aria-pressed={manualTool === 'arc'} disabled={!scaleConfirmed} onClick={() => activateManualTool('arc')} title="Measure a three-point arc" className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${manualTool === 'arc' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Arc</button>
                 <div className="w-px h-6 bg-slate-200 mx-0.5" />
                 <button type="button" onClick={annotationStore.undo} disabled={!annotationStore.canUndo}
                   className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Undo (Ctrl+Z)" aria-label="Undo">
@@ -1371,7 +1510,11 @@ export default function Takeoff() {
                   className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Redo (Ctrl+Y)" aria-label="Redo">
                   <Redo2 className="w-4 h-4" />
                 </button>
-                <button type="button" onClick={deleteSelectedManualAnnotation} disabled={!selectedManualAnnotationId}
+                <button type="button" onClick={openAnnotationHistory}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100" title="Annotation version history" aria-label="Annotation version history">
+                  <History className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={deleteSelectedManualAnnotation} disabled={!selectedManualAnnotationIds.length}
                   className="p-2 rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-30" title="Delete selected (Delete)" aria-label="Delete selected annotation">
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -1404,6 +1547,18 @@ export default function Takeoff() {
               onCreateAndAssign={createConditionAndAssign}
               onClose={() => setContextMenu(null)}
             />
+          )}
+          {showAnnotationHistory && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-6" onClick={() => setShowAnnotationHistory(false)}>
+              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                <div className="flex items-center justify-between"><div><h3 className="font-semibold text-slate-900">Annotation history</h3><p className="mt-1 text-xs text-slate-500">Restore any of the 50 most recent saved versions.</p></div><button type="button" onClick={() => setShowAnnotationHistory(false)} className="p-2 text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button></div>
+                <div className="mt-4 max-h-80 space-y-2 overflow-auto">
+                  {annotationHistoryBusy && <div className="flex justify-center p-6"><Loader2 className="w-5 h-5 animate-spin text-indigo-600" /></div>}
+                  {!annotationHistoryBusy && annotationVersions.length === 0 && <p className="p-6 text-center text-sm text-slate-500">No saved versions yet.</p>}
+                  {!annotationHistoryBusy && annotationVersions.map((version) => <div key={version.id} className="flex items-center justify-between rounded-lg border border-slate-200 p-3"><div><div className="text-sm font-medium text-slate-800">{version.annotation_count} annotations</div><div className="text-xs text-slate-500">{new Date(version.created_at).toLocaleString()}</div></div><button type="button" onClick={() => restoreAnnotationVersion(version.id)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-50">Restore</button></div>)}
+                </div>
+              </div>
+            </div>
           )}
         </main>
 
@@ -2180,7 +2335,7 @@ function HandoffModal({ projectId, projectName, onClose }) {
   const [auditEvents, setAuditEvents] = useState(null);
   const [auditLoading, setAuditLoading] = useState(false);
 
-  const rowKey = (r) => `${r.trade} ${r.item}`;
+  const rowKey = (r) => `${r.trade}\u0000${r.item}`;
 
   async function loadMappings() {
     setLoading(true);

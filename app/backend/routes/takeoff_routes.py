@@ -587,9 +587,82 @@ async def save_annotation_state(
     encoded = json.dumps(payload.annotations, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Annotation document exceeds 5 MiB")
+    if drawing.annotations_data == encoded:
+        return {"drawing_id": drawing_id, "saved": True, "count": len(payload.annotations), "unchanged": True}
     drawing.annotations_data = encoded
+    db.add(models.AnnotationRevision(
+        drawing_id=drawing_id,
+        created_by_id=current_user.id,
+        annotations_data=encoded,
+        annotation_count=len(payload.annotations),
+    ))
+    db.flush()
+    stale_revisions = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).order_by(models.AnnotationRevision.created_at.desc(), models.AnnotationRevision.id.desc()).offset(50).all()
+    for stale_revision in stale_revisions:
+        db.delete(stale_revision)
     db.commit()
     return {"drawing_id": drawing_id, "saved": True, "count": len(payload.annotations)}
+
+
+@router.get("/drawings/{drawing_id}/annotations/history")
+async def list_annotation_history(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    revisions = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).order_by(models.AnnotationRevision.created_at.desc()).limit(50).all()
+    return [{
+        "id": revision.id,
+        "annotation_count": revision.annotation_count,
+        "created_by_id": revision.created_by_id,
+        "created_at": revision.created_at,
+    } for revision in revisions]
+
+
+@router.post("/drawings/{drawing_id}/annotations/history/{revision_id}/restore")
+async def restore_annotation_history(
+    drawing_id: int,
+    revision_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    revision = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.id == revision_id,
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).first()
+    if not revision:
+        raise HTTPException(status_code=404, detail="Annotation version not found")
+    drawing.annotations_data = revision.annotations_data
+    db.add(models.AnnotationRevision(
+        drawing_id=drawing_id,
+        created_by_id=current_user.id,
+        annotations_data=revision.annotations_data,
+        annotation_count=revision.annotation_count,
+    ))
+    db.flush()
+    stale_revisions = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).order_by(models.AnnotationRevision.created_at.desc(), models.AnnotationRevision.id.desc()).offset(50).all()
+    for stale_revision in stale_revisions:
+        db.delete(stale_revision)
+    db.commit()
+    return {"drawing_id": drawing_id, "restored_from": revision_id, "annotations": json.loads(revision.annotations_data)}
 
 
 @router.get("/drawings/{drawing_id}/detections")

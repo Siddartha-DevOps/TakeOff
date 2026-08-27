@@ -5,6 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { annotationsFromDetection } from './fromDetection';
 import { computeMeasuredValue } from './geometry';
 import { deserializeAnnotations, serializeAnnotations } from './serialize';
+import { addAreaHole, duplicateAnnotations, mergeAreaAnnotations, splitAreaAnnotation, transformAnnotation } from './operations';
 
 export function useAnnotationStore() {
   const [history, setHistory] = useState({ past: [], present: [], future: [] });
@@ -85,6 +86,85 @@ export function useAnnotationStore() {
     commit((prev) => prev.filter((annotation) => annotation.id !== id));
   }, [commit]);
 
+  const deleteAnnotations = useCallback((ids) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.filter((annotation) => !idSet.has(annotation.id)));
+  }, [commit]);
+
+  const updateAnnotationsMeta = useCallback((ids, patch) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.map((annotation) => idSet.has(annotation.id)
+      ? { ...annotation, meta: { ...annotation.meta, ...patch } }
+      : annotation));
+  }, [commit]);
+
+  const transformAnnotations = useCallback((ids, transform, measurementContext = null) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.map((annotation) => idSet.has(annotation.id)
+      ? transformAnnotation(annotation, transform, measurementContext)
+      : annotation));
+  }, [commit]);
+
+  const duplicate = useCallback((ids, measurementContext = null) => {
+    let created = [];
+    commit((prev) => {
+      const result = duplicateAnnotations(prev, ids, {}, measurementContext);
+      created = result.copies;
+      return result.annotations;
+    });
+    return created;
+  }, [commit]);
+
+  const pasteAnnotations = useCallback((clipboard, measurementContext = null) => {
+    commit((prev) => {
+      const copies = clipboard.map((item, index) => {
+        const copy = transformAnnotation(item, { dx: 12, dy: 12 }, measurementContext);
+        return {
+          ...copy,
+          id: `${item.id}_paste_${Date.now()}_${index}`,
+          source: 'manual',
+          meta: { ...copy.meta, duplicatedFrom: item.id },
+        };
+      });
+      return copies.length ? [...prev, ...copies] : prev;
+    });
+  }, [commit]);
+
+  const mergeAreas = useCallback((ids, measurementContext = null) => {
+    let merged = null;
+    commit((prev) => {
+      const result = mergeAreaAnnotations(prev, ids, measurementContext);
+      merged = result.merged;
+      return result.annotations;
+    });
+    return merged;
+  }, [commit]);
+
+  const splitArea = useCallback((id, firstIndex, secondIndex, measurementContext = null) => {
+    let created = [];
+    commit((prev) => {
+      const annotation = prev.find((item) => item.id === id);
+      if (!annotation) return prev;
+      created = splitAreaAnnotation(
+        annotation,
+        firstIndex,
+        secondIndex,
+        (index) => `${id}_split_${Date.now()}_${index}`,
+        measurementContext,
+      );
+      if (created.length !== 2) return prev;
+      return [...prev.filter((item) => item.id !== id), ...created];
+    });
+    return created;
+  }, [commit]);
+
+  const addHole = useCallback((id, ring, measurementContext = null) => {
+    commit((prev) => prev.map((annotation) => {
+      if (annotation.id !== id) return annotation;
+      return addAreaHole(annotation, ring, measurementContext) || annotation;
+    }));
+  }, [commit]);
+
   const undo = useCallback(() => {
     setHistory((current) => {
       if (current.past.length === 0) return current;
@@ -122,6 +202,14 @@ export function useAnnotationStore() {
     addAnnotation,
     updateGeometry,
     deleteAnnotation,
+    deleteAnnotations,
+    updateAnnotationsMeta,
+    transformAnnotations,
+    duplicate,
+    pasteAnnotations,
+    mergeAreas,
+    splitArea,
+    addHole,
     undo,
     redo,
     ...historyState,
