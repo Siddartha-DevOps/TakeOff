@@ -48,13 +48,15 @@ const MANUAL_STYLE = {
 
 function ManualTakeoffOverlay({
   annotations, draftPoints, hoverPoint, tool, screenPointFor, planPointForScreen,
-  planScale = 1, selectedAnnotationId, onSelectAnnotation, onUpdateGeometry,
-  snapPlanPoint,
+  planScale = 1, selectedAnnotationIds = [], onSelectAnnotation, onUpdateGeometry,
+  onTransformSelection, onSplitVertex, snapPlanPoint,
 }) {
   const [drag, setDrag] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
+  const dragDeltaRef = useRef(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
   const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
+  const selectedSet = new Set(selectedAnnotationIds);
 
   useEffect(() => {
     if (!drag) return undefined;
@@ -75,12 +77,15 @@ function ManualTakeoffOverlay({
           dy += snappedFirst[1] - translatedFirst[1];
         }
         setDragPreview(drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]));
+        if (drag.mode === 'selection') dragDeltaRef.current = [dx, dy];
       }
     };
     const handleUp = () => {
-      if (dragPreview) onUpdateGeometry?.(drag.annotationId, dragPreview);
+      if (drag.mode === 'selection' && dragDeltaRef.current) onTransformSelection?.(drag.selectionIds, { dx: dragDeltaRef.current[0], dy: dragDeltaRef.current[1] });
+      else if (dragPreview) onUpdateGeometry?.(drag.annotationId, dragPreview);
       setDrag(null);
       setDragPreview(null);
+      dragDeltaRef.current = null;
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp, { once: true });
@@ -94,13 +99,18 @@ function ManualTakeoffOverlay({
     if (tool !== 'select') return;
     event.preventDefault();
     event.stopPropagation();
-    onSelectAnnotation?.(annotation.id);
+    const nextSelection = event.shiftKey
+      ? (selectedSet.has(annotation.id) ? selectedAnnotationIds.filter((id) => id !== annotation.id) : [...selectedAnnotationIds, annotation.id])
+      : (selectedSet.has(annotation.id) ? selectedAnnotationIds : [annotation.id]);
+    onSelectAnnotation?.(nextSelection);
     const startPoint = planPointForScreen?.(event.clientX, event.clientY);
     if (!startPoint) return;
     setDragPreview(annotation.geometry.map((point) => [...point]));
+    dragDeltaRef.current = null;
     setDrag({
       annotationId: annotation.id,
-      mode,
+      mode: mode === 'shape' && nextSelection.length > 1 ? 'selection' : mode,
+      selectionIds: nextSelection,
       vertexIndex,
       startPoint,
       originalGeometry: annotation.geometry.map((point) => [...point]),
@@ -119,12 +129,14 @@ function ManualTakeoffOverlay({
     return (
       <g key={annotation.id}>
         {annotation.type === 'area' && (
-          <polygon points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill={style.fill} fillOpacity="0.2" stroke={style.stroke} strokeWidth={selectedAnnotationId === annotation.id ? "4" : "2"}
+          <path d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
             style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'line' && (
-          <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedAnnotationId === annotation.id ? "6" : "3"}
+          annotation.meta?.curve === 'arc' && points.length === 3
+            ? <path d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+            : <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
             style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
@@ -139,10 +151,10 @@ function ManualTakeoffOverlay({
           style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
           {label}
         </text>
-        {tool === 'select' && selectedAnnotationId === annotation.id && points.map((point, index) => (
+        {(tool === 'select' || tool === 'split') && selectedSet.has(annotation.id) && points.map((point, index) => (
           <circle key={`handle-${index}`} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
-            style={{ pointerEvents: 'all', cursor: 'grab' }}
-            onPointerDown={(event) => beginDrag(event, annotation, 'vertex', index)} />
+            style={{ pointerEvents: 'all', cursor: tool === 'split' ? 'crosshair' : 'grab' }}
+            onPointerDown={(event) => tool === 'split' ? (event.stopPropagation(), onSplitVertex?.(annotation.id, index)) : beginDrag(event, annotation, 'vertex', index)} />
         ))}
       </g>
     );
@@ -154,7 +166,7 @@ function ManualTakeoffOverlay({
   return (
     <svg className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
       {manualAnnotations.map(renderShape)}
-      {tool === 'area' && previewPoints.length > 0 && (
+      {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
           <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
           {draftPoints.map(toScreen).filter(Boolean).map((point, index) => (
@@ -165,11 +177,36 @@ function ManualTakeoffOverlay({
       {tool === 'line' && previewPoints.length > 0 && (
         <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#06b6d4" strokeWidth="3" strokeDasharray="6 4" />
       )}
+      {tool === 'arc' && previewPoints.length > 0 && (
+        <path d={previewPoints.length === 3 ? arcSvgPath(previewPoints) : `M ${previewPoints.map((p) => `${p.x} ${p.y}`).join(' L ')}`} fill="none" stroke="#06b6d4" strokeWidth="3" strokeDasharray="6 4" />
+      )}
       {tool === 'count' && hoverPoint && previewPoints[0] && (
         <circle cx={previewPoints[0].x} cy={previewPoints[0].y} r="8" fill="#f97316" fillOpacity="0.65" stroke="#fff" strokeWidth="2" />
       )}
     </svg>
   );
+}
+
+function arcSvgPath(points) {
+  if (points.length !== 3) return `M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')}`;
+  const [a, b, c] = points;
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-6) return `M ${a.x} ${a.y} L ${b.x} ${b.y} L ${c.x} ${c.y}`;
+  const aa = a.x ** 2 + a.y ** 2;
+  const bb = b.x ** 2 + b.y ** 2;
+  const cc = c.x ** 2 + c.y ** 2;
+  const center = {
+    x: (aa * (b.y - c.y) + bb * (c.y - a.y) + cc * (a.y - b.y)) / d,
+    y: (aa * (c.x - b.x) + bb * (a.x - c.x) + cc * (b.x - a.x)) / d,
+  };
+  const radius = Math.hypot(a.x - center.x, a.y - center.y);
+  const normalize = (value) => (value + Math.PI * 2) % (Math.PI * 2);
+  const start = Math.atan2(a.y - center.y, a.x - center.x);
+  const middle = normalize(Math.atan2(b.y - center.y, b.x - center.x) - start);
+  const end = normalize(Math.atan2(c.y - center.y, c.x - center.x) - start);
+  const sweep = middle <= end ? 1 : 0;
+  const span = sweep ? end : Math.PI * 2 - end;
+  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${span > Math.PI ? 1 : 0} ${sweep} ${c.x} ${c.y}`;
 }
 
 /**
@@ -197,7 +234,8 @@ export default function DrawingRenderer({
   remoteCursors = [], commentPins = [], onPinClick,
   detection = null,
   manualTool = null, annotations = [], onManualAnnotation,
-  selectedAnnotationId = null, onSelectAnnotation, onUpdateAnnotationGeometry,
+  selectedAnnotationIds = [], onSelectAnnotation, onUpdateAnnotationGeometry,
+  onTransformSelection, onSplitVertex,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -265,9 +303,10 @@ export default function DrawingRenderer({
     const tool = manualToolRef.current;
     const points = manualPointsRef.current;
     const geometry = finalPoint ? [...points, finalPoint] : points;
-    if (tool === 'area' && geometry.length < 3) return;
+    if ((tool === 'area' || tool === 'hole') && geometry.length < 3) return;
     if (tool === 'line' && geometry.length < 2) return;
-    if (tool !== 'area' && tool !== 'line') return;
+    if (tool === 'arc' && geometry.length !== 3) return;
+    if (!['area', 'hole', 'line', 'arc'].includes(tool)) return;
     onManualAnnotationRef.current?.({ type: tool, geometry });
     manualPointsRef.current = [];
     setManualPoints([]);
@@ -292,8 +331,8 @@ export default function DrawingRenderer({
   const handleManualPlanClick = useCallback((rawPoint, isDoubleClick = false) => {
     const tool = manualToolRef.current;
     if (!tool) return false;
-    if (tool === 'select') {
-      onSelectAnnotation?.(null);
+    if (tool === 'select' || tool === 'split') {
+      if (tool === 'select') onSelectAnnotation?.([]);
       return true;
     }
 
@@ -318,7 +357,21 @@ export default function DrawingRenderer({
       return true;
     }
 
-    if (tool === 'area') {
+    if (tool === 'arc') {
+      const next = [...manualPointsRef.current, point];
+      if (next.length === 3) {
+        onManualAnnotationRef.current?.({ type: 'arc', geometry: next });
+        manualPointsRef.current = [];
+        setManualPoints([]);
+        setManualHoverPoint(null);
+      } else {
+        manualPointsRef.current = next;
+        setManualPoints(next);
+      }
+      return true;
+    }
+
+    if (tool === 'area' || tool === 'hole') {
       if (isDoubleClick && manualPointsRef.current.length >= 3) {
         finishManualShape();
       } else {
@@ -795,9 +848,11 @@ export default function DrawingRenderer({
                 screenPointFor={osdScreenPointFor}
                 planPointForScreen={osdScreenToPlanPoint}
                 planScale={planScale}
-                selectedAnnotationId={selectedAnnotationId}
-                onSelectAnnotation={onSelectAnnotation}
-                onUpdateGeometry={onUpdateAnnotationGeometry}
+              selectedAnnotationIds={selectedAnnotationIds}
+              onSelectAnnotation={onSelectAnnotation}
+              onUpdateGeometry={onUpdateAnnotationGeometry}
+              onTransformSelection={onTransformSelection}
+              onSplitVertex={onSplitVertex}
                 snapPlanPoint={snapManualPoint}
               />
               <CollabOverlay screenPointFor={canonicalScreenPointFor} />
@@ -931,9 +986,11 @@ export default function DrawingRenderer({
                       ((clientY - rect.top) / rect.height) * pageNativeSize.height,
                     ];
                   }}
-                  selectedAnnotationId={selectedAnnotationId}
+                  selectedAnnotationIds={selectedAnnotationIds}
                   onSelectAnnotation={onSelectAnnotation}
                   onUpdateGeometry={onUpdateAnnotationGeometry}
+                  onTransformSelection={onTransformSelection}
+                  onSplitVertex={onSplitVertex}
                   snapPlanPoint={snapManualPoint}
                 />
                 <CollabOverlay screenPointFor={pdfScreenPointFor} />
@@ -986,9 +1043,11 @@ export default function DrawingRenderer({
               ((clientY - rect.top) / rect.height) * canvasRef.current.height,
             ];
           }}
-          selectedAnnotationId={selectedAnnotationId}
+          selectedAnnotationIds={selectedAnnotationIds}
           onSelectAnnotation={onSelectAnnotation}
           onUpdateGeometry={onUpdateAnnotationGeometry}
+          onTransformSelection={onTransformSelection}
+          onSplitVertex={onSplitVertex}
           snapPlanPoint={snapManualPoint}
         />
         <CollabOverlay

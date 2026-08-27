@@ -42,6 +42,7 @@ _REVISION_MARKERS = [
     ("g5b6c7d8e9f0", {"classification_templates"}, {}),
     ("h6c7d8e9f0a1", {"activity_logs", "sso_connections"}, {}),
     ("i7d8e9f0a1b2", set(), {"drawings": {"annotations_data"}}),
+    ("j8d9e0f1a2b3", {"annotation_revisions"}, {}),
 ]
 
 

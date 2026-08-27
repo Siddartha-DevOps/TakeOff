@@ -151,6 +151,8 @@ export const takeoffAPI = {
   saveAnnotations: (drawingId, annotations) => api.put(
     `/api/takeoff/drawings/${drawingId}/annotations`, { annotations },
   ),
+  getAnnotationHistory: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/annotations/history`),
+  restoreAnnotationHistory: (drawingId, revisionId) => api.post(`/api/takeoff/drawings/${drawingId}/annotations/history/${revisionId}/restore`),
   // Real raster AI takeoff — triggers YOLOv8-seg in the background
   // (routes/takeoff_routes.py _run_ai_analysis). Poll getResults for the result;
   // marks the drawing FAILED (no fabricated data) when no model is installed.

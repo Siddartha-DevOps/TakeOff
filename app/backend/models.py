@@ -159,6 +159,21 @@ class Drawing(Base):
     project = relationship("Project", back_populates="drawings")
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
+    annotation_revisions = relationship("AnnotationRevision", back_populates="drawing", cascade="all, delete-orphan")
+
+
+class AnnotationRevision(Base):
+    __tablename__ = "annotation_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    annotations_data = Column(Text, nullable=False)
+    annotation_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    drawing = relationship("Drawing", back_populates="annotation_revisions")
+    created_by = relationship("User")
 
 class Detection(Base):
     """
