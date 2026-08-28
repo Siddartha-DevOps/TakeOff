@@ -69,7 +69,11 @@ def test_sesyd_to_yolo_end_to_end(tmp_path, monkeypatch):
         "0 0.100000 0.400000 0.100000 0.400000",  # door: cls_id 0
         "2 0.025000 0.050000 0.050000 0.100000",  # sink: cls_id 2
     ]
-    assert (output_dir / "images" / "plan_0001.png").is_symlink()
+    exported_image = output_dir / "images" / "plan_0001.png"
+    assert exported_image.exists()
+    # POSIX uses a space-efficient symlink. Windows may use the converter's
+    # copy fallback when the process lacks symlink privileges.
+    assert exported_image.is_symlink() or exported_image.read_bytes() == b""
     assert not (output_dir / "labels" / "plan_0003.txt").exists()
 
 

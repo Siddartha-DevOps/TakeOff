@@ -40,12 +40,18 @@ services:
         value: "/predict_spaces"
       - key: AI_INFERENCE_TIMEOUT_SECONDS
         value: "90"
+      - key: AI_SEARCH_TIMEOUT_SECONDS
+        value: "60"
       - key: HF_TOKEN
         sync: false                 # private Space access token; enter in Render, never commit it
       - key: STRIPE_WEBHOOK_SECRET
         sync: false                 # Stripe endpoint signing secret (whsec_...); webhooks fail closed when unset
       - key: INTEGRATION_ENCRYPTION_KEYS
         sync: false                 # comma-separated Fernet key ring; first key encrypts, remaining keys support rotation
+      - key: SENTRY_DSN
+        sync: false                 # optional, but /api/readiness reports whether production error tracking is configured
+      - key: INTERNAL_WEBHOOK_SECRET
+        generateValue: true         # authenticates completion callbacks when a Celery worker is added
       - key: REQUIRE_OBJECT_STORAGE
         value: "true"               # never acknowledge uploads that would disappear on Render's ephemeral disk
       - key: UPLOAD_MAX_BYTES

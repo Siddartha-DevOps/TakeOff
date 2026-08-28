@@ -229,6 +229,8 @@ export const searchAPI = {
       min_similarity: minSimilarity,
       max_matches: maxMatches,
     }),
+  reindex: (projectId) => api.post(`/api/takeoff/projects/${projectId}/search/reindex`),
+  review: (projectId, payload) => api.post(`/api/takeoff/projects/${projectId}/search/review`, payload),
 };
 
 // Drawing Compare — revision overlay/diff, OpenCV-backed (routes/compare_routes.py)

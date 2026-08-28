@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import sys
+import shutil
 from pathlib import Path
 
 # Import the sibling pure-Python module by path rather than relying on the
@@ -108,7 +109,13 @@ def sesyd_to_yolo(sesyd_root: str | Path, output_dir: str | Path) -> dict:
 
         dest_img = images_dir / f"{base}.png"
         if not dest_img.exists():
-            dest_img.symlink_to(img_file.resolve())
+            try:
+                dest_img.symlink_to(img_file.resolve())
+            except OSError:
+                # Windows commonly denies symlink creation without Developer
+                # Mode/admin rights. A real copy keeps dataset preparation
+                # portable and preserves safe reruns.
+                shutil.copy2(img_file, dest_img)
 
         n_images += 1
         n_boxes += len(lines)

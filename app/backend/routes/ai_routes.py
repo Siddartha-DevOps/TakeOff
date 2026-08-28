@@ -15,10 +15,10 @@ which don't collide with anything.
 """
 
 import json
-from typing import Optional
+from typing import Optional, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 # These imports assume the backend dir is in PYTHONPATH
@@ -30,13 +30,12 @@ import models
 from auth import get_current_user
 from database import get_db
 from clip_embeddings import (
-    clip_available,
     embeddings_backend,
-    embed_image_patch,
-    embed_label,
     embed_text,
+    embed_regions,
     embedding_for_detection,
     index_project_from_detections,
+    production_embeddings_available,
     search_embeddings,
     search_embeddings_threshold,
 )
@@ -47,13 +46,6 @@ from ratelimit import RateLimit
 _AI_SEARCH_RL = [Depends(RateLimit("ai_search", limit=30, window_s=60))]
 
 router = APIRouter(prefix="/takeoff", tags=["AI Search & Chat"])
-
-CLIP_UNAVAILABLE_DETAIL = (
-    "AI Search isn't available yet — CLIP model dependencies aren't installed "
-    "on the server (app/requirements.txt's torch + CLIP, kept out of the base "
-    "API image per CLAUDE.md's separate-GPU-service guardrail)."
-)
-
 
 def _require_project(project_id: int, current_user: models.User, db: Session) -> models.Project:
     project = db.query(models.Project).filter(
@@ -69,22 +61,16 @@ def _ensure_index(db: Session, project_id: int) -> int:
     """Make AI Search live on first use: if a project has no embeddings yet,
     backfill them from its existing Detection rows (label-anchored). Cheap no-op
     once populated. Works on the lite backend (no CLIP) or the CLIP-text backend."""
+    if not production_embeddings_available():
+        raise HTTPException(status_code=503, detail=(
+            "Production AI Search is not configured. Set AI_INFERENCE_SPACE_ID and HF_TOKEN "
+            "for the private CLIP service. Label fallback is disabled."
+        ))
     existing = db.query(models.DrawingEmbedding).filter(
-        models.DrawingEmbedding.project_id == project_id
+        models.DrawingEmbedding.project_id == project_id,
+        models.DrawingEmbedding.encoder == embeddings_backend(),
     ).count()
     return index_project_from_detections(db, project_id) if existing == 0 else existing
-
-
-def _label_under_region(db: Session, project_id: int, x1, y1, x2, y2):
-    """Lite fallback for region/pattern search without a pixel model: resolve the
-    drawn box to the detection under it and return its class label."""
-    from sqlalchemy import func
-    wkt = (f"POLYGON(({x1} {y1}, {x2} {y1}, {x2} {y2}, {x1} {y2}, {x1} {y1}))")
-    det = db.query(models.Detection).filter(
-        models.Detection.project_id == project_id,
-        func.ST_Intersects(models.Detection.geom, func.ST_GeomFromText(wkt, 0)),
-    ).first()
-    return det.class_label if det else None
 
 
 def _search_results_to_response(rows) -> list:
@@ -110,7 +96,7 @@ class ImageSearchQuery(BaseModel):
     y1: float
     x2: float
     y2: float
-    top_k: int = 10
+    top_k: int = Field(default=10, ge=1, le=100)
 
 
 @router.post("/projects/{project_id}/search/image", dependencies=_AI_SEARCH_RL)
@@ -137,36 +123,19 @@ async def ai_image_search(
         raise HTTPException(status_code=404, detail="Source drawing not found")
 
     _ensure_index(db, project_id)
-    note = None
-
-    if clip_available():
-        ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
-        sys.path.insert(0, ai_dir)
-        from preprocessing import load_drawing
-
-        img = load_drawing(source_drawing.file_path, page_number=0)
-        x1, y1, x2, y2 = int(query.x1), int(query.y1), int(query.x2), int(query.y2)
-        patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
-        if patch.size == 0:
-            raise HTTPException(status_code=400, detail="Query region is empty")
-        query_embedding = embed_image_patch(patch)
-    else:
-        # Lite backend: no pixel model — pattern-search by the label of the
-        # detection under the drawn region.
-        label = _label_under_region(db, project_id, query.x1, query.y1, query.x2, query.y2)
-        if label is None:
-            return {"query": query.model_dump(), "backend": "lite", "results": [],
-                    "note": "No detection under the drawn region. Lite pattern search matches "
-                            "an existing detection's label; install CLIP for free-form visual search."}
-        query_embedding = embed_label(label)
-        note = f"lite pattern search by label '{label}'"
+    if query.x2 <= query.x1 or query.y2 <= query.y1:
+        raise HTTPException(status_code=400, detail="Query region is empty")
+    try:
+        encoded = embed_regions(source_drawing.file_path, source_drawing.page_number or 0, [{
+            "annotation_id": "query", "bbox": [query.x1, query.y1, query.x2, query.y2]
+        }])
+        query_embedding = encoded[0]["embedding"]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"CLIP region search unavailable: {exc}")
 
     rows = search_embeddings(db, project_id, query_embedding, top_k=query.top_k)
-    resp = {"query": query.model_dump(), "backend": embeddings_backend(),
+    return {"query": query.model_dump(), "backend": embeddings_backend(),
             "results": _search_results_to_response(rows)}
-    if note:
-        resp["note"] = note
-    return resp
 
 
 # ──────────────────────────────────────────────────────────────
@@ -174,7 +143,7 @@ async def ai_image_search(
 # ──────────────────────────────────────────────────────────────
 class TextSearchQuery(BaseModel):
     query: str
-    top_k: int = 10
+    top_k: int = Field(default=10, ge=1, le=100)
 
 
 @router.post("/projects/{project_id}/search/text", dependencies=_AI_SEARCH_RL)
@@ -195,11 +164,18 @@ async def ai_text_search(
         raise HTTPException(status_code=400, detail="query must not be empty")
 
     indexed = _ensure_index(db, project_id)  # live on first use: backfill from detections
-    query_embedding = embed_text(body.query.strip())
+    try:
+        query_embedding = embed_text(body.query.strip())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"CLIP text search unavailable: {exc}")
     rows = search_embeddings(db, project_id, query_embedding, top_k=body.top_k)
 
+    from ocr_index import search_drawing_text
+    ocr_results = search_drawing_text(db, project_id, body.query.strip(), limit=body.top_k * 2)
+
     return {"query": body.query, "backend": embeddings_backend(),
-            "indexed": indexed, "results": _search_results_to_response(rows)}
+            "indexed": indexed, "results": _search_results_to_response(rows),
+            "ocr_results": ocr_results}
 
 
 @router.post("/projects/{project_id}/search/reindex", dependencies=_AI_SEARCH_RL)
@@ -211,8 +187,15 @@ async def ai_search_reindex(
     """Force-rebuild a project's AI-search index from its current detections
     (lite label vectors, or CLIP text when installed)."""
     _require_project(project_id, current_user, db)
+    if not production_embeddings_available():
+        raise HTTPException(status_code=503, detail="Private CLIP service is not configured")
     count = index_project_from_detections(db, project_id, replace=True)
-    return {"project_id": project_id, "backend": embeddings_backend(), "indexed": count}
+    from ocr_index import index_drawing_text
+    text_chunks = 0
+    for drawing in db.query(models.Drawing).filter(models.Drawing.project_id == project_id).all():
+        text_chunks += index_drawing_text(db, drawing)
+    return {"project_id": project_id, "backend": embeddings_backend(),
+            "indexed": count, "text_chunks": text_chunks}
 
 
 # ──────────────────────────────────────────────────────────────
@@ -228,8 +211,8 @@ class CountSearchQuery(BaseModel):
     y1: Optional[float] = None
     x2: Optional[float] = None
     y2: Optional[float] = None
-    min_similarity: float = 0.85
-    max_matches: int = 500
+    min_similarity: float = Field(default=0.85, ge=0.0, le=1.0)
+    max_matches: int = Field(default=500, ge=1, le=1000)
 
 
 @router.post("/projects/{project_id}/search/count", dependencies=_AI_SEARCH_RL)
@@ -252,9 +235,6 @@ async def ai_count_search(
     """
     _require_project(project_id, current_user, db)
 
-    if not 0.0 <= body.min_similarity <= 1.0:
-        raise HTTPException(status_code=400, detail="min_similarity must be in [0, 1]")
-
     _ensure_index(db, project_id)  # live on first use
     query_embedding = None
     exclude_drawing_id = None
@@ -264,46 +244,78 @@ async def ai_count_search(
         if query_embedding is None:
             raise HTTPException(status_code=404, detail="No indexed embedding for that detection")
     elif body.drawing_id is not None and None not in (body.x1, body.y1, body.x2, body.y2):
-        if clip_available():
-            source = db.query(models.Drawing).filter(
-                models.Drawing.id == body.drawing_id,
-                models.Drawing.project_id == project_id,
-            ).first()
-            if not source:
-                raise HTTPException(status_code=404, detail="Source drawing not found")
-            ai_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ai")
-            sys.path.insert(0, ai_dir)
-            from preprocessing import load_drawing
-            img = load_drawing(source.file_path, page_number=0)
-            x1, y1, x2, y2 = int(body.x1), int(body.y1), int(body.x2), int(body.y2)
-            patch = img[max(y1, 0):max(y2, 1), max(x1, 0):max(x2, 1)]
-            if patch.size == 0:
-                raise HTTPException(status_code=400, detail="Query region is empty")
-            query_embedding = embed_image_patch(patch)
-        else:
-            # Lite: count by the label of the detection under the drawn region.
-            label = _label_under_region(db, project_id, body.x1, body.y1, body.x2, body.y2)
-            if label is None:
-                raise HTTPException(status_code=404, detail="No detection under the drawn region "
-                                    "(lite count matches an existing detection's label; install CLIP "
-                                    "for free-form visual count)")
-            query_embedding = embed_label(label)
+        source = db.query(models.Drawing).filter(
+            models.Drawing.id == body.drawing_id,
+            models.Drawing.project_id == project_id,
+        ).first()
+        if not source:
+            raise HTTPException(status_code=404, detail="Source drawing not found")
+        if body.x2 <= body.x1 or body.y2 <= body.y1:
+            raise HTTPException(status_code=400, detail="Query region is empty")
+        try:
+            query_embedding = embed_regions(source.file_path, source.page_number or 0, [{
+                "annotation_id": "query", "bbox": [body.x1, body.y1, body.x2, body.y2]
+            }])[0]["embedding"]
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"CLIP region count unavailable: {exc}")
         exclude_drawing_id = None  # count includes the source sheet's other instances
     elif body.text and body.text.strip():
-        query_embedding = embed_text(body.text.strip())  # lite or CLIP
+        try:
+            query_embedding = embed_text(body.text.strip())
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"CLIP text count unavailable: {exc}")
     else:
         raise HTTPException(status_code=400, detail="Provide detection_id, drawing_id+bbox, or text")
 
     rows = search_embeddings_threshold(
         db, project_id, query_embedding,
-        min_similarity=body.min_similarity, max_results=max(body.max_matches, 1000),
+        min_similarity=body.min_similarity, max_results=body.max_matches,
     )
     results = _search_results_to_response(rows)
     grouped = count_and_group(
         results, min_similarity=body.min_similarity,
         exclude_drawing_id=exclude_drawing_id, max_matches=body.max_matches,
     )
-    return {"min_similarity": body.min_similarity, **grouped}
+    return {"backend": embeddings_backend(), "min_similarity": body.min_similarity, **grouped}
+
+
+class ReviewDecision(BaseModel):
+    drawing_id: int
+    detection_id: Optional[str] = None
+    similarity: Optional[float] = None
+    decision: Literal["accepted", "rejected"]
+
+
+class SearchReviewRequest(BaseModel):
+    query_kind: Literal["text", "region", "detection"]
+    query_text: Optional[str] = None
+    decisions: list[ReviewDecision]
+
+
+@router.post("/projects/{project_id}/search/review", dependencies=_AI_SEARCH_RL)
+async def review_search_matches(
+    project_id: int,
+    body: SearchReviewRequest,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Persist the human review gate before candidates become annotations."""
+    _require_project(project_id, current_user, db)
+    drawing_ids = {item.drawing_id for item in body.decisions}
+    valid_ids = {row[0] for row in db.query(models.Drawing.id).filter(
+        models.Drawing.project_id == project_id, models.Drawing.id.in_(drawing_ids)
+    ).all()} if drawing_ids else set()
+    if valid_ids != drawing_ids:
+        raise HTTPException(status_code=400, detail="A reviewed match does not belong to this project")
+    for item in body.decisions:
+        db.add(models.SearchReview(
+            project_id=project_id, drawing_id=item.drawing_id,
+            reviewed_by_id=current_user.id, query_kind=body.query_kind,
+            query_text=body.query_text, detection_id=item.detection_id,
+            similarity=item.similarity, decision=item.decision,
+        ))
+    db.commit()
+    return {"reviewed": len(body.decisions), "accepted": sum(item.decision == "accepted" for item in body.decisions)}
 
 
 # ──────────────────────────────────────────────────────────────

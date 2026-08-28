@@ -68,32 +68,24 @@ async def analyze_drawing(
     require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
-    # Mark as processing immediately so frontend shows spinner
-    drawing.processing_status = models.ProcessingStatus.PROCESSING
-    db.commit()
-
-    # Real async queue (celery_app.py) is the primary path — CLAUDE.md
-    # guardrail #3: long work is a job, not in-request work. Only falls
-    # back to FastAPI's in-process BackgroundTasks (same failure mode as
-    # before this change, now an explicit degraded mode instead of the
-    # silent default) if enqueueing itself fails — i.e. the broker
-    # (Redis) is unreachable. A successfully enqueued task with no worker
-    # currently running to consume it is a deployment/ops concern, not
-    # something this request can detect or should paper over — that's
-    # true of every queue system, not specific to Celery.
-    async_mode = "celery"
+    # Celery is preferred when Redis is configured. Otherwise a database-
+    # recoverable single worker persists the job before enqueueing and resumes
+    # unfinished rows after restart. Never retain this request's DB session in
+    # FastAPI BackgroundTasks.
     try:
-        from celery_app import run_ai_analysis_task
-        run_ai_analysis_task.delay(drawing_id, drawing.file_path, drawing.page_number)
-    except Exception as e:
-        logger.warning(f"[AI] Celery broker unavailable, falling back to in-process background task: {e}")
-        async_mode = "in_process_fallback"
-        background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db, drawing.page_number)
+        from analysis_jobs import enqueue_analysis
+        queued = enqueue_analysis(db, drawing)
+    except Exception as exc:
+        drawing.processing_status = models.ProcessingStatus.FAILED
+        drawing.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(status_code=503, detail="AI job queue is unavailable; retry after the service recovers")
 
     return {
         "status": "processing",
         "drawing_id": drawing_id,
-        "async_mode": async_mode,
+        "async_mode": queued["backend"],
+        "job_id": queued["job_id"],
         "message": "AI analysis started. Poll /results for output."
     }
 
@@ -109,6 +101,22 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         import storage
 
         logger.info(f"[AI] Starting analysis: drawing_id={drawing_id} page={page_number}")
+
+        # OCR is part of the same persisted job as inference so text search is
+        # restart-recoverable too. It is deliberately best-effort: a missing
+        # system OCR binary must not prevent room detection from completing.
+        drawing_for_ocr = db.query(models.Drawing).filter(
+            models.Drawing.id == drawing_id
+        ).first()
+        if drawing_for_ocr:
+            try:
+                from ocr_index import index_drawing_text
+
+                text_blocks = index_drawing_text(db, drawing_for_ocr)
+                logger.info("[OCR] Indexed %s text blocks for drawing_id=%s", text_blocks, drawing_id)
+            except Exception as ocr_index_err:
+                db.rollback()
+                logger.warning("[OCR] Index failed for drawing_id=%s: %s", drawing_id, ocr_index_err)
 
         # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
         # #12) — resolve_local_path() downloads it to a temp file for the
@@ -190,6 +198,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         if drawing:
             drawing.processing_status = models.ProcessingStatus.COMPLETED
             drawing.processed_at = datetime.now(timezone.utc)
+            drawing.processing_error = None
 
             # Plan-set title-block naming (memory/TOGAL_PARITY_REAUDIT.md
             # #13) — best-effort; only overwrites sheet_name if it's still
@@ -231,7 +240,8 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         # installed; best-effort like the geometry persistence above.
         try:
             indexed = index_drawing_embeddings(
-                db, drawing.project_id, drawing_id, file_path, enriched["detection"]
+                db, drawing.project_id, drawing_id, file_path, enriched["detection"],
+                page_number=page_number,
             )
             if indexed:
                 logger.info(f"[AI] Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
@@ -251,6 +261,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         ).first()
         if drawing:
             drawing.processing_status = models.ProcessingStatus.FAILED
+            drawing.processing_error = str(e)[:2000]
             db.commit()
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
@@ -259,6 +270,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         ).first()
         if drawing:
             drawing.processing_status = models.ProcessingStatus.FAILED
+            drawing.processing_error = str(e)[:2000]
             db.commit()
 
 
@@ -515,7 +527,10 @@ async def save_detection_results(
         # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — same
         # best-effort rule as geometry persistence above.
         try:
-            indexed = index_drawing_embeddings(db, drawing.project_id, drawing_id, drawing.file_path, detection)
+            indexed = index_drawing_embeddings(
+                db, drawing.project_id, drawing_id, drawing.file_path, detection,
+                page_number=drawing.page_number or 0,
+            )
             if indexed:
                 logger.info(f"Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
         except Exception as embed_err:
@@ -546,7 +561,11 @@ async def get_detection_results(
         return {
             "message": "No AI results yet",
             "drawing_id": drawing_id,
-            "processing_status": drawing.processing_status.value
+            "processing_status": drawing.processing_status.value,
+            "processing_job_id": drawing.processing_job_id,
+            "processing_attempts": drawing.processing_attempts or 0,
+            "processing_started_at": drawing.processing_started_at,
+            "processing_error": drawing.processing_error,
         }
     return result
 

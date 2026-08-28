@@ -43,6 +43,10 @@ _REVISION_MARKERS = [
     ("h6c7d8e9f0a1", {"activity_logs", "sso_connections"}, {}),
     ("i7d8e9f0a1b2", set(), {"drawings": {"annotations_data"}}),
     ("j8d9e0f1a2b3", {"annotation_revisions"}, {}),
+    ("k9e0f1a2b3c4", {"drawing_text_chunks", "search_reviews"}, {
+        "drawing_embeddings": {"encoder"},
+        "drawings": {"processing_job_id", "processing_attempts", "processing_started_at", "processing_error"},
+    }),
 ]
 
 

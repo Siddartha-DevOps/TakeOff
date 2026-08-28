@@ -83,6 +83,7 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_numbe
     except Exception as tile_err:
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
 
+
 def get_file_extension(filename: str) -> str:
     return file_extension(filename)
 
@@ -155,20 +156,18 @@ def ingest_plan_set(
     for d in drawings:
         db.refresh(d)
 
-    # Real async queue (celery_app.py) is the primary path here too — a
-    # 50-sheet plan set is exactly the case CLAUDE.md guardrail #3's "long
-    # work is a job" rule exists for. Falls back to in-process
-    # BackgroundTasks per-drawing only if the broker itself is unreachable
-    # (same degraded-mode rule as takeoff_routes.py's analyze_drawing).
-    try:
-        from celery_app import run_ai_analysis_task
-        for d in drawings:
-            run_ai_analysis_task.delay(d.id, d.file_path, d.page_number)
-    except Exception as e:
-        logger.warning(f"[PlanSet] Celery broker unavailable, falling back to in-process background tasks: {e}")
-        from routes.takeoff_routes import _run_ai_analysis
-        for d in drawings:
-            background_tasks.add_task(_run_ai_analysis, d.id, d.file_path, db, d.page_number)
+    # Persist every job before enqueueing. Redis/Celery is preferred; the
+    # database-backed fallback is restart-recoverable and opens its own DB
+    # session, unlike the old request-scoped BackgroundTasks implementation.
+    from analysis_jobs import enqueue_analysis
+    for d in drawings:
+        try:
+            enqueue_analysis(db, d)
+        except Exception as exc:
+            d.processing_status = models.ProcessingStatus.FAILED
+            d.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
+            db.commit()
+            logger.error("[PlanSet] Could not enqueue drawing_id=%s: %s", d.id, exc)
     for d in drawings:
         background_tasks.add_task(_generate_tiles, d.id, project_id, d.file_path, d.page_number)
 

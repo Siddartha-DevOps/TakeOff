@@ -95,6 +95,10 @@ class Drawing(DrawingBase):
     file_size: Optional[int]
     file_type: Optional[str]
     processing_status: ProcessingStatus
+    processing_job_id: Optional[str] = None
+    processing_attempts: int = 0
+    processing_started_at: Optional[datetime] = None
+    processing_error: Optional[str] = None
     uploaded_at: datetime
     processed_at: Optional[datetime]
     scale_ratio: Optional[float] = None

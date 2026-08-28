@@ -20,6 +20,9 @@ import sys
 import hashlib
 import math
 import re
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # keep the pure-embedding functions importable without the DB/ML stack
@@ -66,7 +69,15 @@ def embeddings_backend() -> str:
     the CLIP path. CLIP is a drop-in *semantic* upgrade (also enables true
     visual/pattern search on arbitrary regions) when the GPU stack is present.
     """
-    return "clip" if clip_available() else "lite"
+    from ai.inference.remote_clip import remote_clip_configured
+    if remote_clip_configured():
+        return "remote_clip"
+    return "local_clip" if clip_available() else "lite"
+
+
+def production_embeddings_available() -> bool:
+    """True only for a pixel-capable CLIP encoder, never the label fallback."""
+    return embeddings_backend() in {"remote_clip", "local_clip"}
 
 
 # ── Lite (dependency-free) embedding backend ──────────────────────────
@@ -129,6 +140,9 @@ def embed_text(query: str) -> list:
     """Embed a text query. CLIP's image and text encoders share one space, so a
     text query searches the same DrawingEmbedding rows an image-patch query does;
     the lite backend matches the query against detection labels."""
+    if embeddings_backend() == "remote_clip":
+        from ai.inference.remote_clip import get_remote_clip
+        return get_remote_clip().embed_text(query)
     if not clip_available():
         return _lite_text_vector(query)
     import torch
@@ -140,6 +154,60 @@ def embed_text(query: str) -> list:
         emb = model.encode_text(tokens)
         emb = emb / emb.norm(dim=-1, keepdim=True)
     return emb[0].cpu().tolist()
+
+
+@contextmanager
+def _search_raster(file_path: str, page_number: int = 0):
+    """Yield a JPEG path suitable for Gradio, rasterizing PDFs when needed."""
+    import storage
+    from PIL import Image
+
+    temp_name = None
+    with storage.resolve_local_path(file_path) as local_path:
+        path = Path(local_path)
+        if path.suffix.lower() != ".pdf":
+            yield str(path)
+            return
+        import fitz
+        document = fitz.open(str(path))
+        try:
+            page = document.load_page(max(0, min(page_number, document.page_count - 1)))
+            pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), alpha=False)
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            handle = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            temp_name = handle.name
+            handle.close()
+            image.save(temp_name, "JPEG", quality=95)
+            yield temp_name
+        finally:
+            document.close()
+            if temp_name:
+                try:
+                    os.unlink(temp_name)
+                except OSError:
+                    pass
+
+
+def embed_regions(file_path: str, page_number: int, regions: list[dict]) -> list[dict]:
+    """Encode drawing regions with the production remote CLIP service."""
+    backend = embeddings_backend()
+    with _search_raster(file_path, page_number) as image_path:
+        if backend == "remote_clip":
+            from ai.inference.remote_clip import get_remote_clip
+            return get_remote_clip().embed_regions(image_path, regions)
+        if backend == "local_clip":
+            import numpy as np
+            from PIL import Image
+            image = np.asarray(Image.open(image_path).convert("RGB"))[:, :, ::-1]
+            encoded = []
+            for region in regions:
+                x1, y1, x2, y2 = [int(float(value)) for value in region["bbox"]]
+                patch = image[max(0, y1):max(1, y2), max(0, x1):max(1, x2)]
+                if not patch.size:
+                    raise ValueError("Query region is empty")
+                encoded.append({**region, "embedding": embed_image_patch(patch)})
+            return encoded
+    raise RuntimeError("Production CLIP service is not configured")
 
 
 def _bbox_to_wkt_polygon(bbox) -> "WKTElement":
@@ -163,6 +231,7 @@ def index_drawing_embeddings(
     drawing_id: int,
     file_path: str,
     detection: dict,
+    page_number: int = 0,
 ) -> int:
     """
     Build CLIP patch embeddings on ingest — one per AI detection (rooms,
@@ -174,7 +243,8 @@ def index_drawing_embeddings(
     needed — so search still goes live; with CLIP it embeds the actual pixels.
     """
     import models
-    use_clip = clip_available()
+    backend = embeddings_backend()
+    use_clip = backend == "local_clip"
     img = None
     if use_clip:
         ai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai")
@@ -187,9 +257,25 @@ def index_drawing_embeddings(
         for item in detection.get(layer_key) or []:
             items.append((item["id"], item.get("type", default_label), _symbol_bbox(item)))
 
+    remote_vectors = {}
+    if backend == "remote_clip" and items:
+        encoded = embed_regions(file_path, page_number, [
+            {"annotation_id": str(annotation_id), "label": label, "bbox": list(bbox)}
+            for annotation_id, label, bbox in items
+        ])
+        remote_vectors = {str(item["annotation_id"]): item["embedding"] for item in encoded}
+
+    db.query(models.DrawingEmbedding).filter(
+        models.DrawingEmbedding.drawing_id == drawing_id,
+        models.DrawingEmbedding.encoder == backend,
+    ).delete()
     created = 0
     for annotation_id, label, bbox in items:
-        if use_clip and img is not None:
+        if backend == "remote_clip":
+            embedding = remote_vectors.get(str(annotation_id))
+            if embedding is None:
+                continue
+        elif use_clip and img is not None:
             x1, y1, x2, y2 = [int(v) for v in bbox]
             x1, y1 = max(x1, 0), max(y1, 0)
             patch = img[y1:max(y2, y1 + 1), x1:max(x2, x1 + 1)]
@@ -203,6 +289,7 @@ def index_drawing_embeddings(
             drawing_id=drawing_id,
             annotation_id=str(annotation_id),
             label_hint=label,
+            encoder=backend,
             geom=_bbox_to_wkt_polygon(bbox),
             embedding=embedding,
         ))
@@ -228,17 +315,32 @@ def index_project_from_detections(db: Session, project_id: int, replace: bool = 
         db.flush()
 
     created = 0
-    for det in db.query(models.Detection).filter(models.Detection.project_id == project_id).all():
-        label = det.class_label or "detection"
-        db.add(models.DrawingEmbedding(
-            project_id=project_id,
-            drawing_id=det.drawing_id,
-            annotation_id=det.annotation_id,
-            label_hint=label,
-            geom=det.geom,
-            embedding=embed_label(label),
-        ))
-        created += 1
+    drawings = db.query(models.Drawing).filter(models.Drawing.project_id == project_id).all()
+    for drawing in drawings:
+        detections = db.query(models.Detection).filter(models.Detection.drawing_id == drawing.id).all()
+        if embeddings_backend() == "remote_clip" and detections:
+            from sqlalchemy import func
+            regions = []
+            for det in detections:
+                bounds = db.query(
+                    func.ST_XMin(func.Box3D(models.Detection.geom)),
+                    func.ST_YMin(func.Box3D(models.Detection.geom)),
+                    func.ST_XMax(func.Box3D(models.Detection.geom)),
+                    func.ST_YMax(func.Box3D(models.Detection.geom)),
+                ).filter(models.Detection.id == det.id).one()
+                regions.append({"annotation_id": det.annotation_id, "label": det.class_label,
+                                "bbox": [float(value) for value in bounds]})
+            encoded = embed_regions(drawing.file_path, drawing.page_number or 0, regions)
+            vectors = {str(item["annotation_id"]): item["embedding"] for item in encoded}
+        else:
+            vectors = {det.annotation_id: embed_label(det.class_label or "detection") for det in detections}
+        for det in detections:
+            db.add(models.DrawingEmbedding(
+                project_id=project_id, drawing_id=det.drawing_id,
+                annotation_id=det.annotation_id, label_hint=det.class_label or "detection",
+                geom=det.geom, embedding=vectors[det.annotation_id], encoder=embeddings_backend(),
+            ))
+            created += 1
 
     db.commit()
     return created
@@ -261,7 +363,10 @@ def search_embeddings(db: Session, project_id: int, query_embedding: list, top_k
         models.DrawingEmbedding,
         models.DrawingEmbedding.embedding.cosine_distance(query_embedding).label("distance"),
         func.ST_AsGeoJSON(models.DrawingEmbedding.geom).label("geojson"),
-    ).filter(models.DrawingEmbedding.project_id == project_id)
+    ).filter(
+        models.DrawingEmbedding.project_id == project_id,
+        models.DrawingEmbedding.encoder == embeddings_backend(),
+    )
     if exclude_drawing_id is not None:
         q = q.filter(models.DrawingEmbedding.drawing_id != exclude_drawing_id)
     return q.order_by("distance").limit(top_k).all()
@@ -287,6 +392,7 @@ def search_embeddings_threshold(db: Session, project_id: int, query_embedding: l
         func.ST_AsGeoJSON(models.DrawingEmbedding.geom).label("geojson"),
     ).filter(
         models.DrawingEmbedding.project_id == project_id,
+        models.DrawingEmbedding.encoder == embeddings_backend(),
         dist <= max_distance,
     )
     if exclude_drawing_id is not None:
@@ -305,6 +411,7 @@ def embedding_for_detection(db: Session, project_id: int, annotation_id: str) ->
         .filter(
             models.DrawingEmbedding.project_id == project_id,
             models.DrawingEmbedding.annotation_id == annotation_id,
+            models.DrawingEmbedding.encoder == embeddings_backend(),
         )
         .first()
     )

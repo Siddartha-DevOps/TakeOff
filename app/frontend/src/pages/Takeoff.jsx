@@ -692,7 +692,10 @@ export default function Takeoff() {
   // SearchPanel gates "Add" on that since the annotation store is scoped to
   // whichever sheet's detection is currently loaded.
   function addSearchResultAsAnnotation(result, type) {
-    const geometry = result.geometry.slice(0, -1);
+    const raw = result.geometry || [];
+    const closed = raw.length > 2 && raw[0][0] === raw[raw.length - 1][0] && raw[0][1] === raw[raw.length - 1][1];
+    const geometry = closed ? raw.slice(0, -1) : raw;
+    if (!geometry.length) return;
     annotationStore.addAnnotation({
       id: `search_${result.detection_id}_${Date.now()}`,
       type,
@@ -1580,6 +1583,7 @@ export default function Takeoff() {
                 projectId={id}
                 drawings={drawings}
                 selectedDrawing={selectedDrawing}
+                selectedAnnotation={annotationsById.get(selectedManualAnnotationIds[0] || selectedIds[0] || selectedId)}
                 onAddAnnotation={addSearchResultAsAnnotation}
               />
             )}
@@ -2741,7 +2745,7 @@ function QuantitiesPanel({ detection }) {
   );
 }
 
-function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) {
+function SearchPanel({ projectId, drawings, selectedDrawing, selectedAnnotation, onAddAnnotation }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
   const [count, setCount] = useState(null);      // { total, per_drawing, matches }
@@ -2749,6 +2753,10 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
   const [minSim, setMinSim] = useState(85);       // similarity % for count mode
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [selectedMatches, setSelectedMatches] = useState(new Set());
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewed, setReviewed] = useState(false);
+  const [queryKind, setQueryKind] = useState('text');
 
   const drawingNameById = useMemo(() => {
     const map = new Map();
@@ -2760,21 +2768,86 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
     e?.preventDefault();
     const q = query.trim();
     if (!q || loading) return;
-    setLoading(true); setError(null); setResults(null); setCount(null);
+    setLoading(true); setError(null); setResults(null); setCount(null); setReviewed(false);
     try {
       if (mode === 'count') {
         const res = await searchAPI.count(projectId, { text: q, minSimilarity: minSim / 100 });
         setCount(res.data);
+        const matches = (res.data.matches || []).map((item) => ({ ...item, result_kind: 'visual' }));
+        setResults(matches);
+        setSelectedMatches(new Set(matches.map((item) => `visual-${item.drawing_id}-${item.detection_id}`)));
+        setQueryKind('text');
       } else {
         const res = await searchAPI.text(projectId, q);
-        setResults(res.data.results);
+        const visual = (res.data.results || []).map((item) => ({ ...item, result_kind: 'visual' }));
+        const ocr = (res.data.ocr_results || []).map((item) => ({
+          ...item,
+          detection_id: `ocr_${item.chunk_id}`,
+          label_hint: item.text,
+          similarity: Math.min(1, Number(item.score || 0)),
+          geometry: item.bbox ? rectFromBbox(item.bbox) : [],
+          result_kind: 'ocr',
+        }));
+        const combined = [...visual, ...ocr];
+        setResults(combined);
+        setSelectedMatches(new Set(combined.map((item) => `${item.result_kind}-${item.drawing_id}-${item.detection_id}`)));
+        setQueryKind('text');
       }
     } catch (err) {
-      setError(err.response?.status === 503
-        ? "AI Search isn't available yet — the server is missing its CLIP model dependencies."
-        : (err.response?.data?.detail || 'Search failed. Please try again.'));
+      setError(err.response?.data?.detail || 'Search failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function findAllLikeSelected() {
+    if (!selectedDrawing || !selectedAnnotation?.geometry?.length || loading) return;
+    setLoading(true); setError(null); setResults(null); setCount(null); setReviewed(false);
+    try {
+      const bbox = boundsOf(selectedAnnotation.geometry);
+      const res = await searchAPI.image(projectId, selectedDrawing.id, bbox, 100);
+      const matches = (res.data.results || []).map((item) => ({ ...item, result_kind: 'visual' }));
+      setResults(matches);
+      setSelectedMatches(new Set(matches.map((item) => `visual-${item.drawing_id}-${item.detection_id}`)));
+      setQueryKind('region');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Visual search failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const matchKey = (item) => `${item.result_kind || 'visual'}-${item.drawing_id}-${item.detection_id}`;
+  function toggleMatch(item) {
+    const key = matchKey(item);
+    setSelectedMatches((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  async function approveReviewedMatches() {
+    if (!results?.length || reviewing) return;
+    setReviewing(true); setError(null);
+    try {
+      await searchAPI.review(projectId, {
+        query_kind: queryKind,
+        query_text: queryKind === 'text' ? query.trim() : selectedAnnotation?.meta?.label,
+        decisions: results.map((item) => ({
+          drawing_id: item.drawing_id,
+          detection_id: item.detection_id,
+          similarity: item.similarity,
+          decision: selectedMatches.has(matchKey(item)) ? 'accepted' : 'rejected',
+        })),
+      });
+      results.filter((item) => selectedMatches.has(matchKey(item)) && item.drawing_id === selectedDrawing?.id && item.geometry?.length)
+        .forEach((item) => onAddAnnotation(item, item.result_kind === 'ocr' ? 'area' : 'count'));
+      setReviewed(true);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Could not save the search review.');
+    } finally {
+      setReviewing(false);
     }
   }
 
@@ -2803,6 +2876,14 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SearchIcon className="w-3.5 h-3.5" />}
           </button>
         </form>
+        <button
+          type="button"
+          onClick={findAllLikeSelected}
+          disabled={!selectedDrawing || !selectedAnnotation?.geometry?.length || loading}
+          className="mt-2 w-full rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-40"
+        >
+          Find all like selected annotation
+        </button>
         {mode === 'count' ? (
           <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
             <span className="whitespace-nowrap">Match ≥ {minSim}%</span>
@@ -2813,7 +2894,7 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
             />
           </label>
         ) : (
-          <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+          <p className="mt-2 text-[11px] text-slate-500">Search CLIP visuals plus OCR text across every drawing and specification. Select an annotation to run visual “find all like this”.</p>
         )}
       </div>
       <div className="flex-1 overflow-auto p-4 space-y-2">
@@ -2831,18 +2912,6 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
               <p className="mt-3 text-xs text-slate-500">Nothing above {minSim}% similarity — lower the threshold or index more sheets.</p>
             ) : (
               <div className="mt-3 space-y-1">
-                {(() => {
-                  const here = (count.matches || []).filter((m) => m.drawing_id === selectedDrawing?.id);
-                  if (!here.length) return null;
-                  return (
-                    <button
-                      onClick={() => here.forEach((m) => onAddAnnotation(m, 'count'))}
-                      className="w-full mb-1 py-1.5 text-xs font-medium text-white bg-emerald-600 rounded-md hover:bg-emerald-700"
-                    >
-                      Highlight {here.length} on this sheet
-                    </button>
-                  );
-                })()}
                 <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Per sheet</div>
                 {count.per_drawing.map((row) => (
                   <div key={row.drawing_id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-sm">
@@ -2856,33 +2925,29 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
         )}
 
         {results && results.length === 0 && <div className="text-sm text-slate-500">No matches found.</div>}
+        {results && results.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="text-xs font-semibold text-amber-900">Review matches before adding</div>
+            <div className="mt-1 text-[11px] text-amber-700">Uncheck false matches. Accepted matches on this open sheet will be added after review.</div>
+            <button type="button" onClick={approveReviewedMatches} disabled={reviewing || reviewed} className="mt-2 w-full rounded-md bg-amber-700 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+              {reviewing ? 'Saving review…' : reviewed ? 'Review saved' : `Approve ${selectedMatches.size} selected`}
+            </button>
+          </div>
+        )}
         {results && results.map((r) => {
           const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
+          const checked = selectedMatches.has(matchKey(r));
           return (
-            <div key={`${r.drawing_id}-${r.detection_id}`} className="rounded-lg border border-slate-200 p-3">
+            <div key={`${r.result_kind}-${r.drawing_id}-${r.detection_id}`} className={`rounded-lg border p-3 ${checked ? 'border-indigo-300 bg-indigo-50/40' : 'border-slate-200 opacity-60'}`}>
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-slate-900">{r.label_hint || 'Match'}</div>
-                <div className="text-[11px] mono text-emerald-600 font-semibold">{Math.round(r.similarity * 100)}%</div>
+                <label className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-900">
+                  <input type="checkbox" checked={checked} onChange={() => toggleMatch(r)} className="accent-indigo-600" />
+                  <span className="truncate">{r.label_hint || 'Match'}</span>
+                </label>
+                <div className="ml-2 text-[11px] mono text-emerald-600 font-semibold">{r.result_kind === 'ocr' ? 'OCR' : `${Math.round(r.similarity * 100)}%`}</div>
               </div>
-              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`}</div>
-              <div className="mt-2 flex gap-1.5">
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'count')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Count
-                </button>
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'area')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Area
-                </button>
-              </div>
+              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`} · {onCurrentDrawing ? 'open sheet' : 'another sheet'}</div>
+              {r.result_kind === 'ocr' && <div className="mt-1 line-clamp-2 text-[11px] text-slate-600">{r.text}</div>}
             </div>
           );
         })}

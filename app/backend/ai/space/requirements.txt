@@ -3,3 +3,4 @@ huggingface_hub>=0.27,<2
 ultralytics==8.4.126
 opencv-python-headless>=4.9,<5
 pillow>=10.2
+transformers>=4.48,<5

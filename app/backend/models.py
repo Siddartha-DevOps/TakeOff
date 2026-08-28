@@ -152,6 +152,10 @@ class Drawing(Base):
     annotations_data = Column(Text, nullable=True)
 
     processing_status = Column(SQLEnum(ProcessingStatus), default=ProcessingStatus.PENDING)
+    processing_job_id = Column(String(64), nullable=True)
+    processing_attempts = Column(Integer, nullable=False, default=0)
+    processing_started_at = Column(DateTime(timezone=True), nullable=True)
+    processing_error = Column(Text, nullable=True)
     uploaded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at = Column(DateTime(timezone=True), nullable=True)
     
@@ -160,6 +164,7 @@ class Drawing(Base):
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
     annotation_revisions = relationship("AnnotationRevision", back_populates="drawing", cascade="all, delete-orphan")
+    text_chunks = relationship("DrawingTextChunk", back_populates="drawing", cascade="all, delete-orphan")
 
 
 class AnnotationRevision(Base):
@@ -254,6 +259,7 @@ class DrawingEmbedding(Base):
     drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
     annotation_id = Column(String(64), nullable=True)  # matching Detection.annotation_id, when this patch came from one
     label_hint = Column(String(100), nullable=True)     # e.g. detected class, for a readable result list
+    encoder = Column(String(50), nullable=False, default="legacy")
     geom = Column(Geometry(geometry_type="GEOMETRY", srid=0), nullable=False)  # patch bbox, plan-space pixels
     embedding = Column(Vector(512), nullable=False)     # CLIP ViT-B/32 image/text embedding dim
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -273,6 +279,43 @@ class DrawingEmbedding(Base):
     # Relationships
     project = relationship("Project")
     drawing = relationship("Drawing")
+
+
+class DrawingTextChunk(Base):
+    """Searchable PDF text/OCR block with its sheet location."""
+    __tablename__ = "drawing_text_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number = Column(Integer, nullable=False, default=0)
+    source_kind = Column(String(30), nullable=False, default="drawing")
+    text = Column(Text, nullable=False)
+    bbox_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    project = relationship("Project")
+    drawing = relationship("Drawing", back_populates="text_chunks")
+
+
+class SearchReview(Base):
+    """Human accept/reject feedback for AI Search candidates."""
+    __tablename__ = "search_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    query_kind = Column(String(20), nullable=False)
+    query_text = Column(Text, nullable=True)
+    detection_id = Column(String(64), nullable=True)
+    similarity = Column(Float, nullable=True)
+    decision = Column(String(20), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    reviewed_by = relationship("User")
 
 class TakeoffResult(Base):
     __tablename__ = "takeoff_results"

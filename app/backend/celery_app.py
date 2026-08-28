@@ -72,6 +72,8 @@ celery_app.conf.update(
     task_acks_late=True,               # re-queue on worker crash
     task_reject_on_worker_lost=True,
     broker_connection_retry_on_startup=True,
+    broker_connection_timeout=3,
+    broker_transport_options={"socket_connect_timeout": 3, "socket_timeout": 5},
 )
 
 
@@ -83,10 +85,8 @@ def run_ai_analysis_task(self, drawing_id: int, file_path: str, page_number: int
     session — that request has already returned a response by the time
     this executes, so its session may already be closed; a fresh session
     per task run is the only correct option for genuinely out-of-process
-    work (and is an improvement over the BackgroundTasks fallback path,
-    which does reuse the request-scoped session — a preexisting, more minor
-    sketchiness left alone there since that path is now just a degraded-mode
-    fallback, not the primary one).
+    work. Deployments without Celery use analysis_jobs.py's database-backed
+    recovery worker, which follows the same fresh-session rule.
     """
     from database import SessionLocal
     from routes.takeoff_routes import _run_ai_analysis

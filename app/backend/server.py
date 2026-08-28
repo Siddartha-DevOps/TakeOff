@@ -6,6 +6,15 @@ from contextlib import asynccontextmanager
 import os
 import logging
 from pathlib import Path
+
+# Environment must be loaded before importing auth/routes: auth resolves the
+# JWT signing key at import time and previously missed values stored in .env.
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+from production_readiness import cors_origins, validate_startup_environment
+validate_startup_environment()
+
 from routes import (
     auth_routes,
     project_routes,
@@ -42,10 +51,6 @@ import models
 from startup import auto_migrate_enabled, run_database_migrations
 from database import engine
 from healthcheck import database_ready
-
-# Load environment variables before model provisioning and AI initialization.
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
 
 # Provision and import the AI engine. Weights are never committed to git: a GPU
 # deployment either mounts AI_MODEL_PATH or pulls the checksum-pinned private
@@ -97,7 +102,12 @@ async def lifespan(_app: FastAPI):
         logging.getLogger(__name__).info(
             "AUTO_MIGRATE is disabled; expecting an external migration job"
         )
-    yield
+    from analysis_jobs import start_analysis_runner, stop_analysis_runner
+    await start_analysis_runner()
+    try:
+        yield
+    finally:
+        await stop_analysis_runner()
 
 
 # Create FastAPI app
@@ -113,7 +123,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -167,6 +177,8 @@ app.post("/api/webhook/stripe")(stripe_webhook)
 async def health_check():
     ai_available = bool(ai_engine and getattr(ai_engine, "available", False))
     db_available = database_ready(engine)
+    from production_readiness import configuration_snapshot
+    readiness = configuration_snapshot()
     payload = {
         "status": "healthy" if db_available else "unhealthy",
         "service": "TakeOff.ai API",
@@ -174,8 +186,24 @@ async def health_check():
         "database": "ready" if db_available else "unavailable",
         "ai_engine": "loaded" if ai_available else "unavailable",
         "ai_backend": getattr(ai_engine, "backend", "local") if ai_engine else None,
+        "release_ready": readiness["release_ready"],
+        "dependencies": readiness["components"],
     }
     if not db_available:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/api/readiness")
+async def release_readiness_check():
+    """Strict release probe: all Phase-0 production dependencies must exist."""
+    from production_readiness import configuration_snapshot
+
+    payload = configuration_snapshot()
+    db_available = database_ready(engine)
+    payload["database"] = {"ready": db_available}
+    payload["release_ready"] = bool(payload["release_ready"] and db_available)
+    if not payload["release_ready"]:
         return JSONResponse(status_code=503, content=payload)
     return payload
 
