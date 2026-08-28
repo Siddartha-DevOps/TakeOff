@@ -8,7 +8,8 @@ PRODUCTION_ENVS = {"production", "prod", "staging"}
 
 
 def is_production() -> bool:
-    return os.environ.get("ENVIRONMENT", "development").strip().lower() in PRODUCTION_ENVS
+    configured = os.environ.get("ENVIRONMENT", "development").strip().lower()
+    return configured in PRODUCTION_ENVS or os.environ.get("RENDER", "").strip().lower() == "true"
 
 
 def cors_origins() -> list[str]:
@@ -33,7 +34,10 @@ def configuration_snapshot() -> dict:
     import storage
 
     storage_ready = storage.storage_available()
-    storage_required = storage.object_storage_required()
+    # Native Render services do not automatically set ENVIRONMENT=production,
+    # but Render does guarantee RENDER=true. Readiness must still fail closed
+    # for ephemeral upload storage even before the dashboard is normalized.
+    storage_required = storage.object_storage_required() or is_production()
     components = {
         "object_storage": {
             "ready": storage_ready,

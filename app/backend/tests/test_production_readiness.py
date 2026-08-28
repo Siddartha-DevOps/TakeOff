@@ -5,6 +5,7 @@ import production_readiness as readiness
 
 def test_development_allows_local_defaults(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.delenv("RENDER", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     readiness.validate_startup_environment()
@@ -17,6 +18,12 @@ def test_production_requires_database_jwt_and_explicit_cors(monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "*")
     with pytest.raises(RuntimeError, match="DATABASE_URL.*JWT_SECRET_KEY.*CORS_ORIGINS"):
         readiness.validate_startup_environment()
+
+
+def test_render_runtime_is_detected_as_production(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("RENDER", "true")
+    assert readiness.is_production() is True
 
 
 def test_production_accepts_hard_requirements(monkeypatch):
