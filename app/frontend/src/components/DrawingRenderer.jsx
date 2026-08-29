@@ -493,37 +493,6 @@ export default function DrawingRenderer({
       onLoad?.({ width: tileMeta.width, height: tileMeta.height });
     });
 
-    viewer.addHandler('canvas-click', (event) => {
-      if (!osdContainerRef.current) return;
-      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
-      const point = [imagePoint.x / planScale, imagePoint.y / planScale];
-      const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(event.position.x + 12, event.position.y));
-      const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
-      snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
-
-      if (commentModeRef.current) {
-        onCommentClick?.(point);
-        return;
-      }
-      if (calibratingRef.current) {
-        const rect = osdContainerRef.current.getBoundingClientRect();
-        const screenPoint = { x: rect.left + event.position.x, y: rect.top + event.position.y };
-
-        setCalScreenPoints((prev) => {
-          const next = [...prev, { ...screenPoint, plan: point }];
-          if (next.length === 2) {
-            onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
-            return [];
-          }
-          return next;
-        });
-        return;
-      }
-      handleManualPlanClick(point, event.originalEvent?.detail >= 2);
-    });
-
     // Repositions remote-cursor/comment-pin overlays (rendered as plain
     // absolutely-positioned divs, not part of OSD's own canvas) whenever
     // the viewport pans or zooms.
@@ -570,6 +539,40 @@ export default function DrawingRenderer({
     const point = [imagePoint.x / planScale, imagePoint.y / planScale];
     if (manualToolRef.current) setManualHoverPoint(point);
     onPointerMove?.(point);
+  }
+
+  function handleOsdContainerClick(e) {
+    if (!osdContainerRef.current || !osdViewerRef.current) return;
+    const point = osdScreenToPlanPoint(e.clientX, e.clientY);
+    if (!point) return;
+
+    const viewer = osdViewerRef.current;
+    const rect = osdContainerRef.current.getBoundingClientRect();
+    const offset = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+    const viewportPoint = viewer.viewport.pointFromPixel(offset);
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+    const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(offset.x + 12, offset.y));
+    const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
+
+    if (commentModeRef.current) {
+      onCommentClick?.(point);
+      return;
+    }
+    if (calibratingRef.current) {
+      const screenPoint = { x: e.clientX, y: e.clientY };
+      setCalScreenPoints((prev) => {
+        const next = [...prev, { ...screenPoint, plan: point }];
+        if (next.length === 2) {
+          onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
+          return [];
+        }
+        return next;
+      });
+      return;
+    }
+    handleManualPlanClick(point, e.detail >= 2);
   }
 
   const loadImage = () => {
@@ -836,6 +839,7 @@ export default function DrawingRenderer({
           data-calibrating={calibrating ? 'true' : 'false'}
           className="w-full h-full"
           style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
+          onClickCapture={handleOsdContainerClick}
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
