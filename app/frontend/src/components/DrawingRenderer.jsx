@@ -242,8 +242,10 @@ export default function DrawingRenderer({
   const [scale, setScale] = useState(1);
   const [error, setError] = useState(null);
   const [pageNativeSize, setPageNativeSize] = useState(null); // PDF points at scale=1
+  const [imageReady, setImageReady] = useState(false);
   const [calScreenPoints, setCalScreenPoints] = useState([]); // for the on-screen marker overlay only
   const [tileMeta, setTileMeta] = useState(null); // null until this drawing's tile pyramid is ready
+  const [tileViewerReady, setTileViewerReady] = useState(false);
   const [osdTick, setOsdTick] = useState(0); // bumped on OSD pan/zoom so overlay positions recompute
   const [manualPoints, setManualPoints] = useState([]);
   const [manualHoverPoint, setManualHoverPoint] = useState(null);
@@ -395,6 +397,8 @@ export default function DrawingRenderer({
   // from just its own page (tiling.py), not the whole source file.
   useEffect(() => {
     setPageNumber((drawing?.page_number ?? 0) + 1);
+    setPageNativeSize(null);
+    setImageReady(false);
   }, [drawing?.id]);
 
   useEffect(() => {
@@ -414,6 +418,7 @@ export default function DrawingRenderer({
   // isn't installed server-side, see tiling.py's graceful-degradation gate).
   useEffect(() => {
     setTileMeta(null);
+    setTileViewerReady(false);
     setError(null);
     if (!drawing) return undefined;
 
@@ -484,6 +489,7 @@ export default function DrawingRenderer({
     osdViewerRef.current = viewer;
 
     viewer.addHandler('open', () => {
+      setTileViewerReady(true);
       onLoad?.({ width: tileMeta.width, height: tileMeta.height });
     });
 
@@ -525,6 +531,7 @@ export default function DrawingRenderer({
     viewer.addHandler('update-viewport', () => setOsdTick((t) => t + 1));
 
     return () => {
+      setTileViewerReady(false);
       viewer.destroy();
       osdViewerRef.current = null;
     };
@@ -598,6 +605,7 @@ export default function DrawingRenderer({
       canvas.height = img.height;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      setImageReady(true);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       if (onLoad) {
         onLoad({ width: img.width, height: img.height });
@@ -605,6 +613,7 @@ export default function DrawingRenderer({
     };
 
     img.onerror = () => {
+      setImageReady(false);
       setError('Failed to load image');
     };
   };
@@ -822,6 +831,8 @@ export default function DrawingRenderer({
         <div
           ref={osdContainerRef}
           data-testid="plan-surface"
+          data-plan-ready={tileViewerReady ? 'true' : 'false'}
+          data-renderer="tiles"
           className="w-full h-full"
           style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
           onMouseMove={handleOsdPointerMove}
@@ -939,6 +950,8 @@ export default function DrawingRenderer({
         <div
           ref={pageWrapRef}
           data-testid="plan-surface"
+          data-plan-ready={pageNativeSize ? 'true' : 'false'}
+          data-renderer="pdf"
           className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
@@ -1010,6 +1023,8 @@ export default function DrawingRenderer({
       <div
         ref={imageWrapRef}
         data-testid="plan-surface"
+        data-plan-ready={imageReady ? 'true' : 'false'}
+        data-renderer="image"
         className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;
