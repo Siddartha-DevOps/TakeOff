@@ -79,6 +79,7 @@ export default function Takeoff() {
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
   const [annotationReadyDrawingId, setAnnotationReadyDrawingId] = useState(null);
+  const annotationSaveSequenceRef = useRef(0);
 
   // Scale calibration — persisted per Sheet (Drawing). See routes/scale_routes.py.
   const [scaleInfo, setScaleInfo] = useState(null);
@@ -136,8 +137,18 @@ export default function Takeoff() {
   // can never overwrite the previous sheet.
   useEffect(() => {
     if (!selectedDrawing || annotationReadyDrawingId !== selectedDrawing.id) return undefined;
+    const drawingId = selectedDrawing.id;
+    const saveSequence = ++annotationSaveSequenceRef.current;
     const timer = window.setTimeout(() => {
-      takeoffAPI.saveAnnotations(selectedDrawing.id, annotationStore.annotations)
+      takeoffAPI.saveAnnotations(drawingId, annotationStore.annotations)
+        .then(({ data }) => {
+          if (saveSequence !== annotationSaveSequenceRef.current || selectedDrawing.id !== drawingId) return;
+          setDetection((current) => ({
+            ...(current || {}),
+            quantities: data.quantities || [],
+            summary: data.summary || current?.summary || {},
+          }));
+        })
         .catch((error) => console.error('Failed to save annotations:', error));
     }, 700);
     return () => window.clearTimeout(timer);
@@ -799,6 +810,11 @@ export default function Takeoff() {
     try {
       const response = await takeoffAPI.restoreAnnotationHistory(selectedDrawing.id, revisionId);
       annotationStore.loadFromJSON(response.data.annotations, currentMeasurementContext());
+      setDetection((current) => ({
+        ...(current || {}),
+        quantities: response.data.quantities || [],
+        summary: response.data.summary || current?.summary || {},
+      }));
       setSelectedManualAnnotationIds([]);
       setShowAnnotationHistory(false);
     } catch (error) {
@@ -956,7 +972,7 @@ export default function Takeoff() {
 
   if (projectError || !project) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+      <div data-testid="project-error-state" className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
         <div className="max-w-md text-center">
           <div className="text-lg font-semibold text-slate-900">Project unavailable</div>
           <p className="mt-2 text-sm text-slate-600">{projectError || 'This project does not exist or you no longer have access.'}</p>
@@ -2729,7 +2745,7 @@ function QuantitiesPanel({ detection }) {
       </div>
       <div className="mt-4 space-y-1">
         {rows.map((q, i) => (
-          <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
+          <div key={i} data-testid="quantity-row" data-quantity-item={q.item} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
             <div className="min-w-0">
               <div className="text-sm text-slate-900 truncate">{q.item}</div>
               <div className="text-[11px] text-slate-500">{q.trade}</div>

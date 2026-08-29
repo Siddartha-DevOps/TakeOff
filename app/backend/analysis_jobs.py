@@ -26,6 +26,13 @@ _worker: asyncio.Task | None = None
 _queued: set[int] = set()
 
 
+def analysis_disabled() -> bool:
+    """Disable only automatic raster inference for deterministic E2E runs."""
+    return os.environ.get("TAKEOFF_DISABLE_BACKGROUND_ANALYSIS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def celery_configured() -> bool:
     return bool(os.environ.get("REDIS_URL"))
 
@@ -53,6 +60,8 @@ def _record_enqueue(db, drawing: models.Drawing, job_id: str) -> None:
 
 def enqueue_analysis(db, drawing: models.Drawing) -> dict:
     """Persist and enqueue one analysis job, returning public job metadata."""
+    if analysis_disabled():
+        return {"backend": "disabled", "job_id": None}
     if celery_configured():
         from celery_app import run_ai_analysis_task
 
@@ -120,6 +129,9 @@ async def _worker_loop() -> None:
 async def start_analysis_runner() -> int:
     """Start the fallback worker and recover unfinished database jobs."""
     global _queue, _worker
+    if analysis_disabled():
+        logger.info("background raster analysis disabled by TAKEOFF_DISABLE_BACKGROUND_ANALYSIS")
+        return 0
     if celery_configured() or local_runner_ready():
         return 0
     _queue = asyncio.Queue()

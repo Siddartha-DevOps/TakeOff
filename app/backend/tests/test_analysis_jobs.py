@@ -63,8 +63,19 @@ def test_queue_backend_reports_unavailable_without_worker_or_redis(monkeypatch):
 
 
 def test_queue_backend_prefers_celery_when_redis_is_configured(monkeypatch):
+    monkeypatch.delenv("TAKEOFF_DISABLE_BACKGROUND_ANALYSIS", raising=False)
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379/0")
     assert analysis_jobs.queue_backend() == "celery"
+
+
+def test_disabled_analysis_is_an_explicit_noop(monkeypatch):
+    monkeypatch.setenv("TAKEOFF_DISABLE_BACKGROUND_ANALYSIS", "true")
+    drawing = SimpleNamespace(processing_status=_ProcessingStatus.PENDING)
+
+    result = analysis_jobs.enqueue_analysis(_FakeDb(), drawing)
+
+    assert result == {"backend": "disabled", "job_id": None}
+    assert drawing.processing_status == _ProcessingStatus.PENDING
 
 
 def test_celery_job_state_is_committed_before_publish(monkeypatch):
@@ -78,6 +89,7 @@ def test_celery_job_state_is_committed_before_publish(monkeypatch):
     task = SimpleNamespace(
         apply_async=lambda **kwargs: events.append(("publish", kwargs))
     )
+    monkeypatch.delenv("TAKEOFF_DISABLE_BACKGROUND_ANALYSIS", raising=False)
     monkeypatch.setenv("REDIS_URL", "redis://example.invalid:6379/0")
     monkeypatch.setitem(sys.modules, "celery_app", SimpleNamespace(run_ai_analysis_task=task))
     drawing = SimpleNamespace(

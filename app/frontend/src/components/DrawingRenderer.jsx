@@ -127,21 +127,21 @@ function ManualTakeoffOverlay({
     const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
 
     return (
-      <g key={annotation.id}>
+      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type}>
         {annotation.type === 'area' && (
-          <path d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
+          <path data-testid="manual-annotation-shape" d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
             style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'line' && (
           annotation.meta?.curve === 'arc' && points.length === 3
-            ? <path d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
-            : <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
+            ? <path data-testid="manual-annotation-shape" d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+            : <polyline data-testid="manual-annotation-shape" points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
             style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'count' && (
-          <g style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+          <g data-testid="manual-annotation-shape" style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')}>
             <circle cx={center.x} cy={center.y} r="8" fill={style.fill} stroke="#fff" strokeWidth="2" />
             <path d={`M ${center.x - 4} ${center.y} H ${center.x + 4} M ${center.x} ${center.y - 4} V ${center.y + 4}`} stroke="#fff" strokeWidth="1.5" />
@@ -152,7 +152,7 @@ function ManualTakeoffOverlay({
           {label}
         </text>
         {(tool === 'select' || tool === 'split') && selectedSet.has(annotation.id) && points.map((point, index) => (
-          <circle key={`handle-${index}`} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
+          <circle key={`handle-${index}`} data-testid="manual-annotation-handle" data-handle-index={index} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
             style={{ pointerEvents: 'all', cursor: tool === 'split' ? 'crosshair' : 'grab' }}
             onPointerDown={(event) => tool === 'split' ? (event.stopPropagation(), onSplitVertex?.(annotation.id, index)) : beginDrag(event, annotation, 'vertex', index)} />
         ))}
@@ -164,7 +164,7 @@ function ManualTakeoffOverlay({
   const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
 
   return (
-    <svg className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+    <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
       {manualAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
@@ -821,6 +821,7 @@ export default function DrawingRenderer({
       <div className="w-full h-full relative bg-slate-800">
         <div
           ref={osdContainerRef}
+          data-testid="plan-surface"
           className="w-full h-full"
           style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
           onMouseMove={handleOsdPointerMove}
@@ -937,6 +938,7 @@ export default function DrawingRenderer({
         {/* PDF Document */}
         <div
           ref={pageWrapRef}
+          data-testid="plan-surface"
           className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
@@ -1007,6 +1009,7 @@ export default function DrawingRenderer({
     <div className="w-full h-full overflow-auto flex items-center justify-center bg-slate-800">
       <div
         ref={imageWrapRef}
+        data-testid="plan-surface"
         className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;

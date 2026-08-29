@@ -213,6 +213,12 @@ def embed_regions(file_path: str, page_number: int, regions: list[dict]) -> list
 def _bbox_to_wkt_polygon(bbox) -> "WKTElement":
     from geoalchemy2.elements import WKTElement
     x1, y1, x2, y2 = bbox
+    # A horizontal/vertical corrected line has a zero-area envelope. Expand it
+    # minimally so PostGIS and pgvector still get a valid searchable patch.
+    if x1 == x2:
+        x1, x2 = x1 - 1, x2 + 1
+    if y1 == y2:
+        y1, y2 = y1 - 1, y2 + 1
     ring = f"{x1} {y1}, {x2} {y1}, {x2} {y2}, {x1} {y2}, {x1} {y1}"
     return WKTElement(f"POLYGON(({ring}))", srid=GEOM_SRID)
 
@@ -250,9 +256,14 @@ def index_drawing_embeddings(
         ai_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai")
         sys.path.insert(0, ai_dir)
         from preprocessing import load_drawing
-        img = load_drawing(file_path, page_number=0)
+        img = load_drawing(file_path, page_number=page_number)
 
     items = [(r["id"], r.get("label", "Room"), r["bbox"]) for r in (detection.get("rooms") or [])]
+    for wall in detection.get("wall_segments") or []:
+        geometry = wall.get("geometry") or []
+        if geometry:
+            xs, ys = [point[0] for point in geometry], [point[1] for point in geometry]
+            items.append((wall["id"], wall.get("label", "Wall"), [min(xs), min(ys), max(xs), max(ys)]))
     for layer_key, default_label in _SYMBOL_DEFAULTS.items():
         for item in detection.get(layer_key) or []:
             items.append((item["id"], item.get("type", default_label), _symbol_bbox(item)))

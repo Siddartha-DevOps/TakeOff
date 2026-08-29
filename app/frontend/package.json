@@ -7,7 +7,8 @@
     "start": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/annotations/geometry.test.js src/annotations/operations.test.js src/dashboard/dashboardData.test.js"
+    "test": "node --test src/annotations/geometry.test.js src/annotations/operations.test.js src/dashboard/dashboardData.test.js",
+    "test:e2e": "playwright test"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +28,7 @@
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4.2.4",
     "autoprefixer": "^10.5.0",
     "postcss": "^8.5.10",

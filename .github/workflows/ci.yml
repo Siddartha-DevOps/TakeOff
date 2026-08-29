@@ -22,6 +22,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
+
       - name: Install Postgres + PostGIS + pgvector
         run: |
           sudo apt-get update -y
@@ -34,13 +40,8 @@ jobs:
           sudo -u postgres psql -c "CREATE ROLE takeoff_user LOGIN PASSWORD 'takeoff_dev_pass_2025' SUPERUSER;"
           sudo -u postgres psql -c "CREATE DATABASE takeoff_db OWNER takeoff_user;"
 
-      - name: Install Python deps (engine + db + test)
-        run: |
-          python -m pip install -q \
-            fastapi pymupdf shapely numpy pytest \
-            sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
-            "passlib[bcrypt]" "bcrypt==4.0.1" \
-            openpyxl reportlab cryptography
+      - name: Install Python dependencies
+        run: python -m pip install -q -r requirements.txt
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head
@@ -50,6 +51,28 @@ jobs:
 
       - name: End-to-end smoke test (vector -> PostGIS -> ST_Area)
         run: python scripts/smoke_test.py
+
+      - name: Create clean browser E2E database
+        run: |
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS takeoff_e2e WITH (FORCE);"
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE takeoff_e2e OWNER takeoff_user;"
+
+      - name: Install frontend and Playwright Chromium
+        working-directory: app/frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Browser estimator golden workflow
+        working-directory: app/frontend
+        env:
+          E2E_DATABASE_URL: postgresql://takeoff_user:takeoff_dev_pass_2025@localhost/takeoff_e2e
+        run: npm run test:e2e
+
+      - name: Verify browser database migrations
+        run: |
+          revision_count=$(sudo -u postgres psql -d takeoff_e2e -tAc "SELECT count(*) FROM alembic_version;")
+          test "$revision_count" = "1"
 
   frontend-build:
     name: Frontend build

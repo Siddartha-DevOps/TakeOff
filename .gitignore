@@ -6,6 +6,8 @@ app/frontend/node_modules/
 dist/
 build/
 .vite/
+app/frontend/playwright-report/
+app/frontend/test-results/
 
 # Environment variables
 .env

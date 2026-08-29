@@ -186,9 +186,8 @@ class Detection(Base):
     manual — stored as real PostGIS geometry, not a JSON blob. This is the
     server-side counterpart to the frontend's unified Annotation model
     (frontend/src/annotations/types.js); annotation_id is the join key
-    between the two, since annotations aren't the system of record here —
-    TakeoffResult.detection_data still is, this is the geometry-first mirror
-    of it.
+    between the two. Drawing.annotations_data is the authoritative reviewed
+    document; this table is its geometry-first, rebuildable projection.
 
     geom is plan-space (source-raster pixel coordinates — the same space
     ai/preprocessing.py rasterizes drawings into), not geographic, hence
