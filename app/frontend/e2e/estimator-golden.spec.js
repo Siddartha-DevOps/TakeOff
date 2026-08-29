@@ -52,6 +52,7 @@ test.describe('TakeOff estimator golden workflow', () => {
     await page.getByRole('button', { name: /upload 1 file/i }).click();
     expect((await uploadResponse).ok()).toBeTruthy();
     await expect(page.getByTestId('plan-surface')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('plan-surface').locator('canvas').first()).toBeVisible({ timeout: 30_000 });
 
     await page.getByRole('button', { name: /calibrate scale/i }).click();
     await clickPlan(page, [[0.20, 0.70], [0.80, 0.70]]);
