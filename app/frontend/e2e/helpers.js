@@ -45,7 +45,10 @@ export async function clickPlan(page, points) {
   const box = await surface.boundingBox();
   if (!box) throw new Error('Plan surface has no browser bounding box');
   for (const [xRatio, yRatio] of points) {
-    await surface.click({ position: { x: box.width * xRatio, y: box.height * yRatio } });
+    await surface.click({
+      position: { x: box.width * xRatio, y: box.height * yRatio },
+      force: true,
+    });
   }
   return box;
 }
