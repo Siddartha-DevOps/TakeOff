@@ -5,7 +5,7 @@ export const PASSWORD = 'E2e-pass-123!';
 
 export function uniqueIdentity(prefix = 'estimator') {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return { email: `${prefix}-${suffix}@takeoff.test`, organization: `${prefix}-${suffix}` };
+  return { email: `${prefix}-${suffix}@example.com`, organization: `${prefix}-${suffix}` };
 }
 
 export async function signup(request, identity) {
