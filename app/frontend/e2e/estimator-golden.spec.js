@@ -55,7 +55,10 @@ test.describe('TakeOff estimator golden workflow', () => {
     await expect(page.getByTestId('plan-surface')).toHaveAttribute('data-plan-ready', 'true', { timeout: 30_000 });
 
     await page.getByRole('button', { name: /calibrate scale/i }).click();
-    await clickPlan(page, [[0.20, 0.70], [0.80, 0.70]]);
+    await expect(page.getByTestId('plan-surface')).toHaveAttribute('data-calibrating', 'true');
+    await clickPlan(page, [[0.20, 0.70]]);
+    await expect(page.getByTestId('calibration-point')).toHaveCount(1);
+    await clickPlan(page, [[0.80, 0.70]]);
     await page.getByPlaceholder('e.g. 3').fill('40');
     const initialSave = waitForAutosave(page);
     await page.getByRole('button', { name: 'Save scale' }).click();

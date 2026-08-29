@@ -694,7 +694,7 @@ export default function DrawingRenderer({
         )}
         {calScreenPoints.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
+            <circle data-testid="calibration-point" cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
           </g>
         ))}
       </svg>
@@ -833,6 +833,7 @@ export default function DrawingRenderer({
           data-testid="plan-surface"
           data-plan-ready={tileViewerReady ? 'true' : 'false'}
           data-renderer="tiles"
+          data-calibrating={calibrating ? 'true' : 'false'}
           className="w-full h-full"
           style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
           onMouseMove={handleOsdPointerMove}
@@ -952,6 +953,7 @@ export default function DrawingRenderer({
           data-testid="plan-surface"
           data-plan-ready={pageNativeSize ? 'true' : 'false'}
           data-renderer="pdf"
+          data-calibrating={calibrating ? 'true' : 'false'}
           className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
@@ -1025,6 +1027,7 @@ export default function DrawingRenderer({
         data-testid="plan-surface"
         data-plan-ready={imageReady ? 'true' : 'false'}
         data-renderer="image"
+        data-calibrating={calibrating ? 'true' : 'false'}
         className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;
