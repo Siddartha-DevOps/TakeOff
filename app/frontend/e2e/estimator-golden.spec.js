@@ -98,7 +98,8 @@ test.describe('TakeOff estimator golden workflow', () => {
 
     // Real manual area, line, and count operations.
     await page.getByTitle('Draw Area (sf)').click();
-    const areaSave = waitForAutosave(page);
+    const areaSave = waitForAutosave(page, (projection) =>
+      projection.quantities.some((row) => row.item === 'Manual area'));
     await clickPlan(page, [[0.18, 0.28], [0.32, 0.28], [0.32, 0.42], [0.18, 0.42]]);
     await page.keyboard.press('Enter');
     const areaProjection = await areaSave;
@@ -106,14 +107,16 @@ test.describe('TakeOff estimator golden workflow', () => {
     await expect(page.locator('[data-quantity-item="Manual area"]')).toBeVisible();
 
     await page.getByTitle('Draw Line (lf)').click();
-    const lineSave = waitForAutosave(page);
+    const lineSave = waitForAutosave(page, (projection) =>
+      projection.quantities.some((row) => row.item === 'Manual line linear footage'));
     await clickPlan(page, [[0.42, 0.30], [0.58, 0.30], [0.68, 0.38]]);
     await page.keyboard.press('Enter');
     const lineProjection = await lineSave;
     expect(lineProjection.quantities.some((row) => row.item === 'Manual line linear footage')).toBeTruthy();
 
     await page.getByTitle('Draw Count (ea)').click();
-    const countSave = waitForAutosave(page);
+    const countSave = waitForAutosave(page, (projection) =>
+      projection.quantities.find((row) => row.item === 'Manual count')?.quantity === 1);
     await clickPlan(page, [[0.76, 0.35]]);
     const countProjection = await countSave;
     expect(countProjection.quantities.find((row) => row.item === 'Manual count')?.quantity).toBe(1);
@@ -125,7 +128,11 @@ test.describe('TakeOff estimator golden workflow', () => {
     const handle = area.getByTestId('manual-annotation-handle').first();
     const handleBox = await handle.boundingBox();
     expect(handleBox).not.toBeNull();
-    const editSave = waitForAutosave(page);
+    const originalArea = areaProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
+    const editSave = waitForAutosave(page, (projection) => {
+      const quantity = projection.quantities.find((row) => row.item === 'Manual area')?.quantity;
+      return quantity > 0 && quantity !== originalArea;
+    });
     await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
     await page.mouse.down();
     await page.mouse.move(handleBox.x - 35, handleBox.y - 20, { steps: 5 });
@@ -133,17 +140,19 @@ test.describe('TakeOff estimator golden workflow', () => {
     const editedProjection = await editSave;
     const editedArea = editedProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
     expect(editedArea).toBeGreaterThan(0);
-    expect(editedArea).not.toBe(areaProjection.quantities.find((row) => row.item === 'Manual area')?.quantity);
+    expect(editedArea).not.toBe(originalArea);
     await expect(page.locator('[data-quantity-item="Manual area"]')).toContainText(String(editedArea));
 
     // Delete then undo the count annotation; both transitions are persisted and reflected.
     const count = page.locator('[data-annotation-type="count"]').last();
     await count.getByTestId('manual-annotation-shape').click({ force: true });
-    const deleteSave = waitForAutosave(page);
+    const deleteSave = waitForAutosave(page, (projection) =>
+      !projection.quantities.some((row) => row.item === 'Manual count'));
     await page.getByLabel('Delete selected annotation').click();
     const deletedProjection = await deleteSave;
     expect(deletedProjection.quantities.some((row) => row.item === 'Manual count')).toBeFalsy();
-    const undoSave = waitForAutosave(page);
+    const undoSave = waitForAutosave(page, (projection) =>
+      projection.quantities.find((row) => row.item === 'Manual count')?.quantity === 1);
     await page.getByLabel('Undo').click();
     const restoredByUndo = await undoSave;
     expect(restoredByUndo.quantities.find((row) => row.item === 'Manual count')?.quantity).toBe(1);

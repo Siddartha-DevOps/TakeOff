@@ -30,11 +30,17 @@ export async function loginInBrowser(page, email) {
   await expect(page.getByText('Welcome back, Golden.')).toBeVisible();
 }
 
-export async function waitForAutosave(page) {
-  const response = await page.waitForResponse((candidate) =>
-    candidate.request().method() === 'PUT'
-      && /\/api\/takeoff\/drawings\/\d+\/annotations$/.test(candidate.url()),
-  );
+export async function waitForAutosave(page, matchesProjection = null) {
+  const response = await page.waitForResponse(async (candidate) => {
+    if (candidate.request().method() !== 'PUT'
+      || !/\/api\/takeoff\/drawings\/\d+\/annotations$/.test(candidate.url())) return false;
+    if (!matchesProjection || !candidate.ok()) return true;
+    try {
+      return matchesProjection(await candidate.json());
+    } catch {
+      return false;
+    }
+  });
   expect(response.ok(), await response.text()).toBeTruthy();
   return response.json();
 }
