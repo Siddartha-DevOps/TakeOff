@@ -639,6 +639,10 @@ export default function DrawingRenderer({
 
   function handlePlanClick(e, rect, nativeWidth, nativeHeight) {
     if (!nativeWidth || !nativeHeight) return;
+    // Manual shapes own their pointer interaction. Letting their subsequent
+    // click bubble into the plan background would immediately clear the
+    // selection that beginDrag established on pointerdown.
+    if (e.target?.closest?.('[data-testid="manual-annotation"]')) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
     snapToleranceRef.current = (nativeWidth / Math.max(rect.width, 1)) * 12;
 
