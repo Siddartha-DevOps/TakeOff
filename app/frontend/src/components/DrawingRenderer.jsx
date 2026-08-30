@@ -54,6 +54,7 @@ function ManualTakeoffOverlay({
   const [drag, setDrag] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
   const dragDeltaRef = useRef(null);
+  const dragPreviewRef = useRef(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
   const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
@@ -66,7 +67,9 @@ function ManualTakeoffOverlay({
       if (drag.mode === 'vertex') {
         const anchor = drag.originalGeometry[drag.vertexIndex === 0 ? 1 : drag.vertexIndex - 1] || null;
         const point = snapPlanPoint ? snapPlanPoint(raw, anchor, drag.annotationId) : raw;
-        setDragPreview(drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item)));
+        const preview = drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item));
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
       } else {
         let dx = raw[0] - drag.startPoint[0];
         let dy = raw[1] - drag.startPoint[1];
@@ -76,16 +79,19 @@ function ManualTakeoffOverlay({
           dx += snappedFirst[0] - translatedFirst[0];
           dy += snappedFirst[1] - translatedFirst[1];
         }
-        setDragPreview(drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]));
+        const preview = drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]);
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
         if (drag.mode === 'selection') dragDeltaRef.current = [dx, dy];
       }
     };
     const handleUp = () => {
       if (drag.mode === 'selection' && dragDeltaRef.current) onTransformSelection?.(drag.selectionIds, { dx: dragDeltaRef.current[0], dy: dragDeltaRef.current[1] });
-      else if (dragPreview) onUpdateGeometry?.(drag.annotationId, dragPreview);
+      else if (dragPreviewRef.current) onUpdateGeometry?.(drag.annotationId, dragPreviewRef.current);
       setDrag(null);
       setDragPreview(null);
       dragDeltaRef.current = null;
+      dragPreviewRef.current = null;
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp, { once: true });
@@ -93,7 +99,7 @@ function ManualTakeoffOverlay({
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-  }, [drag, dragPreview, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
+  }, [drag, onTransformSelection, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
 
   const beginDrag = (event, annotation, mode, vertexIndex = null) => {
     if (tool !== 'select') return;
@@ -105,7 +111,9 @@ function ManualTakeoffOverlay({
     onSelectAnnotation?.(nextSelection);
     const startPoint = planPointForScreen?.(event.clientX, event.clientY);
     if (!startPoint) return;
-    setDragPreview(annotation.geometry.map((point) => [...point]));
+    const preview = annotation.geometry.map((point) => [...point]);
+    dragPreviewRef.current = preview;
+    setDragPreview(preview);
     dragDeltaRef.current = null;
     setDrag({
       annotationId: annotation.id,
