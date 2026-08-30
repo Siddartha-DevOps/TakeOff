@@ -60,8 +60,31 @@ test.describe('TakeOff estimator golden workflow', () => {
     await expect(page.getByTestId('calibration-point')).toHaveCount(1);
     await clickPlan(page, [[0.80, 0.70]]);
     await page.getByPlaceholder('e.g. 3').fill('40');
+    const calibrationResponse = page.waitForResponse((response) =>
+      response.request().method() === 'POST'
+        && /\/api\/uploads\/drawings\/\d+\/scale\/calibrate$/.test(response.url()),
+    );
     const initialSave = waitForAutosave(page);
     await page.getByRole('button', { name: 'Save scale' }).click();
+    const calibration = await calibrationResponse;
+    expect(calibration.ok(), await calibration.text()).toBeTruthy();
+    const calibrationRequest = calibration.request().postDataJSON();
+    const calibratedScale = await calibration.json();
+    const planDistance = Math.hypot(
+      calibrationRequest.point2[0] - calibrationRequest.point1[0],
+      calibrationRequest.point2[1] - calibrationRequest.point1[1],
+    );
+    const expectedScaleRatio = (40 / (planDistance * (300 / 72))) * 12 * 300;
+    expect(calibratedScale.scale_source).toBe('manual');
+    expect(calibratedScale.scale_ratio).toBeCloseTo(expectedScaleRatio, 8);
+    const drawingId = Number(calibration.url().match(/drawings\/(\d+)\/scale/)[1]);
+    const persistedScaleResponse = await request.get(`${API_URL}/api/uploads/drawings/${drawingId}/scale`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    expect(persistedScaleResponse.ok(), await persistedScaleResponse.text()).toBeTruthy();
+    const persistedScale = await persistedScaleResponse.json();
+    expect(persistedScale.scale_source).toBe('manual');
+    expect(persistedScale.scale_ratio).toBeCloseTo(calibratedScale.scale_ratio, 10);
     await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
     await expect(page.getByTestId('quantity-row').first()).toBeVisible();
     await initialSave;

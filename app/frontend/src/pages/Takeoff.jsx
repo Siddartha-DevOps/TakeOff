@@ -1342,7 +1342,7 @@ export default function Takeoff() {
 
         <main className="relative bg-slate-100 overflow-hidden">
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
-          {status === 'needs_scale' && selectedDrawing && (
+          {status === 'needs_scale' && selectedDrawing && !calibrating && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-lg">
               <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-3">
                 <Ruler className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
