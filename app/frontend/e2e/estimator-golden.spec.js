@@ -123,9 +123,12 @@ test.describe('TakeOff estimator golden workflow', () => {
 
     // Select the manual area and drag one vertex: the real server must return a changed area.
     await page.getByTitle('Select, move, or edit annotation vertices').click();
+    await expect(page.getByTitle('Select, move, or edit annotation vertices')).toHaveAttribute('aria-pressed', 'true');
     const area = page.locator('[data-annotation-type="area"]').filter({ has: page.getByTestId('manual-annotation-shape') }).last();
-    await area.getByTestId('manual-annotation-shape').click({ force: true });
+    await area.getByTestId('manual-annotation-shape').click();
+    await expect(area).toHaveAttribute('data-selected', 'true');
     const handle = area.getByTestId('manual-annotation-handle').first();
+    await expect(handle).toBeVisible();
     const handleBox = await handle.boundingBox();
     expect(handleBox).not.toBeNull();
     const originalArea = areaProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
@@ -145,7 +148,8 @@ test.describe('TakeOff estimator golden workflow', () => {
 
     // Delete then undo the count annotation; both transitions are persisted and reflected.
     const count = page.locator('[data-annotation-type="count"]').last();
-    await count.getByTestId('manual-annotation-shape').click({ force: true });
+    await count.getByTestId('manual-annotation-shape').click();
+    await expect(count).toHaveAttribute('data-selected', 'true');
     const deleteSave = waitForAutosave(page, (projection) =>
       !projection.quantities.some((row) => row.item === 'Manual count'));
     await page.getByLabel('Delete selected annotation').click();
