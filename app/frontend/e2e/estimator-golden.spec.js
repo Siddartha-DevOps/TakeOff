@@ -10,6 +10,11 @@ async function downloadBytes(download) {
   return Buffer.concat(chunks);
 }
 
+async function expectDisplayedQuantity(page, item, expected) {
+  const value = page.locator(`[data-quantity-item="${item}"] .mono`);
+  await expect.poll(async () => Number((await value.innerText()).replaceAll(',', ''))).toBeCloseTo(expected, 3);
+}
+
 test.describe('TakeOff estimator golden workflow', () => {
   let cleanupProjects = [];
 
@@ -144,7 +149,7 @@ test.describe('TakeOff estimator golden workflow', () => {
     const editedArea = editedProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
     expect(editedArea).toBeGreaterThan(0);
     expect(editedArea).not.toBe(originalArea);
-    await expect(page.locator('[data-quantity-item="Manual area"]')).toContainText(String(editedArea));
+    await expectDisplayedQuantity(page, 'Manual area', editedArea);
 
     // Delete then undo the count annotation; both transitions are persisted and reflected.
     const count = page.locator('[data-annotation-type="count"]').last();
@@ -175,7 +180,7 @@ test.describe('TakeOff estimator golden workflow', () => {
     await page.reload();
     expect((await annotationsResponse).ok()).toBeTruthy();
     await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
-    await expect(page.locator('[data-quantity-item="Manual area"]')).toContainText(String(editedArea));
+    await expectDisplayedQuantity(page, 'Manual area', editedArea);
     await expect(page.locator('[data-annotation-type="area"]')).toHaveCount(1);
     await expect(page.locator('[data-annotation-type="line"]')).toHaveCount(1);
     await expect(page.locator('[data-annotation-type="count"]')).toHaveCount(1);
