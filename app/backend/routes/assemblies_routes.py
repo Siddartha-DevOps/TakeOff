@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+from canonical_takeoff import canonical_quantities_for_drawing
 import permissions
 from auth import get_current_user
 from database import get_db
@@ -25,6 +26,7 @@ from estimating.persistence import (
     seed_rows_from_library,
 )
 from estimating.takeoff_map import estimate_from_takeoff
+from scale_validation import require_confirmed_scale
 
 router = APIRouter(prefix="/estimating", tags=["Estimating"])
 
@@ -112,18 +114,10 @@ def _compute_drawing_estimate(drawing_id: int, cost_book_id, current_user, db) -
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
-    result = (
-        db.query(models.TakeoffResult)
-        .filter(models.TakeoffResult.drawing_id == drawing_id)
-        .order_by(models.TakeoffResult.created_at.desc())
-        .first()
-    )
-    if not result or not result.quantities_data:
+    require_confirmed_scale(drawing)
+    quantities = canonical_quantities_for_drawing(db, drawing)
+    if not quantities:
         raise HTTPException(status_code=409, detail="No takeoff quantities for this drawing yet")
-    try:
-        quantities = json.loads(result.quantities_data)
-    except (json.JSONDecodeError, TypeError):
-        raise HTTPException(status_code=500, detail="Stored quantities are not valid JSON")
 
     return {"drawing_id": drawing_id, **estimate_from_takeoff(quantities, cost_book=cost_book)}
 

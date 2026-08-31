@@ -54,7 +54,45 @@ def _file_exists(file_path: str) -> bool:
     return os.path.exists(file_path)
 
 
-def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_number: int = 0):
+def _storage_head_or_http_error(key: str) -> Optional[dict]:
+    try:
+        return storage.object_head(key)
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
+
+
+def _delete_persisted_upload(file_path: str) -> None:
+    """Remove an uncommitted upload after validation/ingestion fails."""
+    if storage.is_storage_uri(file_path):
+        storage.delete_object(storage.key_from_uri(file_path))
+        return
+    path = Path(file_path).resolve()
+    try:
+        path.relative_to(UPLOAD_DIR.resolve())
+    except ValueError:
+        return
+    path.unlink(missing_ok=True)
+
+
+def _delete_persisted_upload_or_http_error(file_path: str) -> None:
+    try:
+        _delete_persisted_upload(file_path)
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Upload was rejected but object-storage cleanup is temporarily unavailable",
+        ) from exc
+
+
+def _generate_tiles(
+    drawing_id: int,
+    organization_id: int,
+    project_id: int,
+    file_path: str,
+    page_number: int = 0,
+    progress_callback=None,
+    raise_errors: bool = False,
+):
     """
     Background task: build the Deep Zoom tile pyramid (tiling.py) so
     DrawingRenderer can view this sheet without OOM-ing on a full-resolution
@@ -62,11 +100,10 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_numbe
     analysis, and is a clean 503 to the tile-status endpoint until it
     succeeds (or forever, if PIL isn't installed — see tiling.py).
 
-    Tiles themselves stay on local disk regardless of where the source
-    file lives — they're a regenerable cache derived from it, not the
-    source of truth object storage (memory/TOGAL_PARITY_REAUDIT.md #12)
-    is meant to protect; resolve_local_path() below only affects reading
-    the source. page_number picks the right page for a plan-set sheet
+    Tiles are a regenerable cache derived from the durable source. When
+    object storage is configured, the completed pyramid is persisted under
+    the same organization/project boundary and can be lazily restored after
+    a backend restart. page_number picks the right page for a plan-set sheet
     (memory/TOGAL_PARITY_REAUDIT.md #13) that shares file_path with its
     siblings — tiles are still one full pyramid per Drawing (per page),
     keyed by drawing_id, so no collision between sheets from the same upload.
@@ -74,14 +111,27 @@ def _generate_tiles(drawing_id: int, project_id: int, file_path: str, page_numbe
     from tiling import generate_tile_pyramid, tiling_available
 
     if not tiling_available():
-        return
+        if raise_errors:
+            raise RuntimeError("Tile generation dependencies are unavailable")
+        return None
     try:
+        if progress_callback:
+            progress_callback(10)
         output_dir = _tiles_dir(project_id, drawing_id)
         with storage.resolve_local_path(file_path) as local_path:
             meta = generate_tile_pyramid(local_path, str(output_dir), page_number=page_number)
+        if progress_callback:
+            progress_callback(80)
+        if storage.storage_available():
+            prefix = storage.drawing_artifact_prefix(organization_id, project_id, drawing_id) + "tiles/"
+            storage.upload_directory(prefix, str(output_dir))
         logger.info(f"[Tiling] Generated {meta['max_level']+1} levels for drawing_id={drawing_id}")
+        return meta
     except Exception as tile_err:
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
+        if raise_errors:
+            raise
+        return None
 
 
 def get_file_extension(filename: str) -> str:
@@ -94,6 +144,7 @@ def is_allowed_file(filename: str) -> bool:
 def ingest_plan_set(
     db: Session,
     background_tasks: BackgroundTasks,
+    organization_id: int,
     project_id: int,
     file_path: str,
     filename: str,
@@ -123,12 +174,14 @@ def ingest_plan_set(
     total_pages = 1
     if file_ext == "pdf":
         try:
-            from ai.preprocessing import get_page_count
+            import fitz
             with storage.resolve_local_path(file_path) as local_path:
-                total_pages = max(1, get_page_count(local_path))
+                with fitz.open(local_path) as document:
+                    total_pages = max(1, len(document))
+        except storage.StorageOperationError:
+            raise
         except Exception as e:
-            logger.warning(f"[PlanSet] get_page_count failed for {file_path}: {e}")
-            total_pages = 1
+            raise ValueError(f"Unable to read PDF page count: {e}") from e
 
     batch_id = str(uuid.uuid4())
     single_sheet_named = total_pages == 1 and bool(sheet_name)
@@ -156,20 +209,21 @@ def ingest_plan_set(
     for d in drawings:
         db.refresh(d)
 
-    # Persist every job before enqueueing. Redis/Celery is preferred; the
-    # database-backed fallback is restart-recoverable and opens its own DB
-    # session, unlike the old request-scoped BackgroundTasks implementation.
-    from analysis_jobs import enqueue_analysis
+    # Persist every job before publishing it to Celery. Production has no
+    # request-process fallback; PostgreSQL remains the durable state source.
+    from analysis_jobs import enqueue_analysis, enqueue_tiles
     for d in drawings:
         try:
-            enqueue_analysis(db, d)
+            enqueue_analysis(db, d, idempotency_key=f"upload:{batch_id}:analysis:{d.page_number}")
         except Exception as exc:
             d.processing_status = models.ProcessingStatus.FAILED
             d.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
             db.commit()
             logger.error("[PlanSet] Could not enqueue drawing_id=%s: %s", d.id, exc)
-    for d in drawings:
-        background_tasks.add_task(_generate_tiles, d.id, project_id, d.file_path, d.page_number)
+        try:
+            enqueue_tiles(db, d, idempotency_key=f"upload:{batch_id}:tiles:{d.page_number}")
+        except Exception as exc:
+            logger.error("[PlanSet] Could not enqueue tiles drawing_id=%s: %s", d.id, exc)
 
     return drawings
 
@@ -232,7 +286,7 @@ async def upload_drawing(
         persisted_path = str(full_path)
         persisted_filename = unique_filename
         if storage.storage_available():
-            key = storage.make_key(project_id, file.filename)
+            key = storage.make_key(current_user.organization_id, project_id, file.filename)
             storage.upload_file(key, str(full_path), file.content_type)
             full_path.unlink(missing_ok=True)
             persisted_path = storage.to_uri(key)
@@ -243,16 +297,26 @@ async def upload_drawing(
     except UploadValidationError as exc:
         full_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=str(exc))
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        full_path.unlink(missing_ok=True)
+        logger.error("Object storage failed while persisting drawing: %s", exc)
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
     except Exception:
         full_path.unlink(missing_ok=True)
         logger.exception("Failed to persist drawing upload")
         raise HTTPException(status_code=500, detail="Failed to save file")
 
-    return ingest_plan_set(
-        db, background_tasks, project_id,
-        file_path=persisted_path, filename=persisted_filename, original_filename=file.filename,
-        file_size=file_size, file_ext=file_ext, sheet_name=sheet_name, scale=scale,
-    )
+    try:
+        return ingest_plan_set(
+            db, background_tasks, current_user.organization_id, project_id,
+            file_path=persisted_path, filename=persisted_filename, original_filename=file.filename,
+            file_size=file_size, file_ext=file_ext, sheet_name=sheet_name, scale=scale,
+        )
+    except ValueError as exc:
+        _delete_persisted_upload_or_http_error(persisted_path)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except storage.StorageOperationError as exc:
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
 
 
 # ── Object storage (S3/R2) presigned upload — memory/TOGAL_PARITY_REAUDIT.md
@@ -294,10 +358,13 @@ async def presign_drawing_upload(
             detail="Object storage isn't configured (S3_BUCKET unset) — use POST /uploads/project/{id}/drawings instead."
         )
 
-    key = storage.make_key(project_id, payload.filename)
-    presigned = storage.generate_presigned_upload(
-        key, payload.content_type, max_bytes=max_upload_bytes()
-    )
+    key = storage.make_key(current_user.organization_id, project_id, payload.filename)
+    try:
+        presigned = storage.generate_presigned_upload(
+            key, payload.content_type, max_bytes=max_upload_bytes()
+        )
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
     return {"key": key, "upload_url": presigned["url"], "fields": presigned["fields"]}
 
 
@@ -338,32 +405,46 @@ async def confirm_drawing_upload(
         )
     if not storage.storage_available():
         raise HTTPException(status_code=503, detail="Object storage isn't configured (S3_BUCKET unset).")
-    # make_key() always scopes keys to drawings/{project_id}/... — reject
+    # make_key() scopes keys to organization + project — reject
     # anything else so a caller can't point this at another project's/
     # tenant's object or an arbitrary key.
-    if not payload.key.startswith(f"drawings/{project_id}/"):
+    if not storage.key_belongs_to_project(payload.key, current_user.organization_id, project_id):
         raise HTTPException(status_code=400, detail="Key does not belong to this project")
     if file_extension(payload.key) != file_ext:
         raise HTTPException(status_code=400, detail="Storage key and filename types do not match")
 
-    head = storage.object_head(payload.key)
+    head = _storage_head_or_http_error(payload.key)
     if head is None:
         raise HTTPException(status_code=404, detail="Object not found in storage — did the upload complete?")
+    if head.get("ContentLength", 0) <= 0:
+        _delete_persisted_upload_or_http_error(storage.to_uri(payload.key))
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     if head.get("ContentLength", 0) > max_upload_bytes():
         raise HTTPException(status_code=413, detail="Upload exceeds the configured size limit")
     try:
         validate_upload_metadata(payload.original_filename, head.get("ContentType"))
-        validate_file_signature(payload.original_filename, storage.read_prefix(payload.key))
+        try:
+            prefix = storage.read_prefix(payload.key)
+        except storage.StorageOperationError as storage_exc:
+            raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from storage_exc
+        validate_file_signature(payload.original_filename, prefix)
     except UploadValidationError as exc:
-        storage.delete_object(payload.key)
+        _delete_persisted_upload_or_http_error(storage.to_uri(payload.key))
         raise HTTPException(status_code=400, detail=str(exc))
 
-    return ingest_plan_set(
-        db, background_tasks, project_id,
-        file_path=storage.to_uri(payload.key), filename=payload.key.rsplit("/", 1)[-1],
-        original_filename=payload.original_filename, file_size=head.get("ContentLength", 0),
-        file_ext=file_ext, sheet_name=payload.sheet_name, scale=payload.scale,
-    )
+    persisted_path = storage.to_uri(payload.key)
+    try:
+        return ingest_plan_set(
+            db, background_tasks, current_user.organization_id, project_id,
+            file_path=persisted_path, filename=payload.key.rsplit("/", 1)[-1],
+            original_filename=payload.original_filename, file_size=head.get("ContentLength", 0),
+            file_ext=file_ext, sheet_name=payload.sheet_name, scale=payload.scale,
+        )
+    except ValueError as exc:
+        _delete_persisted_upload_or_http_error(persisted_path)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except storage.StorageOperationError as exc:
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
 
 
 @router.get("/project/{project_id}/drawings", response_model=List[schemas.Drawing])
@@ -420,9 +501,18 @@ async def download_drawing_file(
         if not storage.storage_available():
             raise HTTPException(status_code=503, detail="Object storage isn't configured but this drawing is stored there.")
         key = storage.key_from_uri(drawing.file_path)
-        if storage.object_head(key) is None:
+        if _storage_head_or_http_error(key) is None:
             raise HTTPException(status_code=404, detail="File not found in object storage")
-        return RedirectResponse(storage.generate_presigned_download(key))
+        media_type = 'application/pdf' if drawing.file_type == 'PDF' else f'image/{drawing.file_type.lower()}'
+        try:
+            url = storage.generate_presigned_download(
+                key,
+                filename=drawing.original_filename,
+                content_type=media_type,
+            )
+        except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+            raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
+        return RedirectResponse(url)
 
     if not os.path.exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
@@ -446,6 +536,28 @@ def _get_drawing_for_tiles(drawing_id: int, current_user: models.User, db: Sessi
     return drawing
 
 
+def _restore_tile_artifact(
+    organization_id: int,
+    project_id: int,
+    drawing_id: int,
+    relative_path: str,
+    destination: Path,
+) -> bool:
+    if not storage.storage_available():
+        return False
+    key = (
+        storage.drawing_artifact_prefix(organization_id, project_id, drawing_id)
+        + f"tiles/{relative_path}"
+    )
+    if _storage_head_or_http_error(key) is None:
+        return False
+    try:
+        storage.download_file(key, str(destination))
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        raise HTTPException(status_code=503, detail="Object storage is temporarily unavailable") from exc
+    return True
+
+
 @router.get("/drawings/{drawing_id}/tiles/status")
 async def get_tile_status(
     drawing_id: int,
@@ -464,9 +576,30 @@ async def get_tile_status(
     if not tiling_available():
         return {"ready": False, "reason": "Tiling isn't available on the server (Pillow isn't installed)."}
 
-    meta = read_tile_meta(str(_tiles_dir(drawing.project_id, drawing_id)))
+    output_dir = _tiles_dir(drawing.project_id, drawing_id)
+    meta = read_tile_meta(str(output_dir))
     if meta is None:
-        return {"ready": False}
+        _restore_tile_artifact(
+            current_user.organization_id,
+            drawing.project_id,
+            drawing_id,
+            "meta.json",
+            output_dir / "meta.json",
+        )
+        meta = read_tile_meta(str(output_dir))
+    if meta is None:
+        job = db.query(models.ProcessingJob).filter(
+            models.ProcessingJob.drawing_id == drawing_id,
+            models.ProcessingJob.organization_id == current_user.organization_id,
+            models.ProcessingJob.job_type == "tiles",
+        ).order_by(models.ProcessingJob.created_at.desc()).first()
+        return {
+            "ready": False,
+            "job_id": job.id if job else None,
+            "status": job.status if job else None,
+            "progress": job.progress if job else 0,
+            "error": job.error if job and job.status == models.JobStatus.FAILED.value else None,
+        }
     return {"ready": True, **meta}
 
 
@@ -481,8 +614,12 @@ async def trigger_tile_generation(
     drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
     if not _file_exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
-    background_tasks.add_task(_generate_tiles, drawing.id, drawing.project_id, drawing.file_path, drawing.page_number)
-    return {"status": "generating", "drawing_id": drawing_id}
+    try:
+        from analysis_jobs import enqueue_tiles
+        queued = enqueue_tiles(db, drawing, requested_by_id=current_user.id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Tile job queue is unavailable") from exc
+    return {"status": queued["status"], "drawing_id": drawing_id, "job_id": queued["job_id"]}
 
 
 @router.get("/drawings/{drawing_id}/tiles/{level}/{tile_filename}")
@@ -503,6 +640,14 @@ async def get_tile(
         raise HTTPException(status_code=400, detail="Invalid tile filename")
 
     path = _tiles_dir(drawing.project_id, drawing_id) / str(level) / tile_filename
+    if not path.exists():
+        _restore_tile_artifact(
+            current_user.organization_id,
+            drawing.project_id,
+            drawing_id,
+            f"{level}/{tile_filename}",
+            path,
+        )
     if not path.exists():
         raise HTTPException(status_code=404, detail="Tile not found")
     return FileResponse(path=str(path), media_type="image/jpeg")

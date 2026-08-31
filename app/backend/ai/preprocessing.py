@@ -200,7 +200,7 @@ def extract_patches(
 def pixels_to_feet(
     pixel_length: float,
     scale_ratio: float,
-    dpi: int = TARGET_DPI,
+    dpi: float,
 ) -> float:
     """
     Convert pixel distance to real-world feet using drawing scale.
@@ -219,6 +219,8 @@ def pixels_to_feet(
         So 300 pixels = 8 feet → 1 pixel = 8/300 feet.
         scale_ratio = 96  (8 feet × 12 inches)
     """
+    if dpi <= 0:
+        raise ValueError(f"dpi must be positive, got {dpi}")
     inches_per_pixel = 1.0 / dpi
     real_inches = pixel_length * inches_per_pixel * scale_ratio
     return real_inches / 12.0
@@ -227,7 +229,7 @@ def pixels_to_feet(
 def pixels_to_sqft(
     pixel_area: float,
     scale_ratio: float,
-    dpi: int = TARGET_DPI,
+    dpi: float,
 ) -> float:
     """Convert pixel area (px²) to real-world square feet."""
     feet_per_pixel = pixels_to_feet(1.0, scale_ratio, dpi)
@@ -237,19 +239,23 @@ def pixels_to_sqft(
 # ──────────────────────────────────────────────────────────────
 # Image metadata
 # ──────────────────────────────────────────────────────────────
-def get_image_dpi(file_path: str | Path) -> tuple[int, int]:
+def get_image_dpi(file_path: str | Path) -> tuple[Optional[float], Optional[float]]:
     """
     Try to read DPI metadata from image EXIF.
-    Returns (x_dpi, y_dpi). Falls back to (300, 300) if not found.
+    Returns ``(x_dpi, y_dpi)`` or ``(None, None)`` when metadata is absent.
+    Missing scan DPI is not equivalent to 300 DPI and must not be guessed for
+    automatic scale-based measurement.
     """
     try:
         pil = Image.open(str(file_path))
         dpi = pil.info.get("dpi") or pil.info.get("resolution")
-        if dpi and isinstance(dpi, (tuple, list)):
-            return int(dpi[0]), int(dpi[1])
+        if dpi and isinstance(dpi, (tuple, list)) and len(dpi) >= 2:
+            x_dpi, y_dpi = float(dpi[0]), float(dpi[1])
+            if x_dpi > 0 and y_dpi > 0:
+                return x_dpi, y_dpi
     except Exception:
         pass
-    return TARGET_DPI, TARGET_DPI
+    return None, None
 
 
 def get_page_count(file_path: str | Path) -> int:

@@ -33,6 +33,12 @@ def test_metadata_rejects_executable_extension():
         validate_upload_metadata("payload.exe", "application/octet-stream")
 
 
+@pytest.mark.parametrize("filename", ["../plan.pdf", "folder\\plan.pdf", "bad\r\nname.pdf", "x" * 256 + ".pdf"])
+def test_metadata_rejects_path_control_and_oversized_filenames(filename):
+    with pytest.raises(UploadValidationError, match="Filename"):
+        validate_upload_metadata(filename, "application/pdf")
+
+
 @pytest.mark.parametrize(
     ("filename", "prefix"),
     [

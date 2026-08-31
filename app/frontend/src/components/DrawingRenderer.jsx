@@ -54,6 +54,7 @@ function ManualTakeoffOverlay({
   const [drag, setDrag] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
   const dragDeltaRef = useRef(null);
+  const dragPreviewRef = useRef(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
   const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
@@ -66,7 +67,9 @@ function ManualTakeoffOverlay({
       if (drag.mode === 'vertex') {
         const anchor = drag.originalGeometry[drag.vertexIndex === 0 ? 1 : drag.vertexIndex - 1] || null;
         const point = snapPlanPoint ? snapPlanPoint(raw, anchor, drag.annotationId) : raw;
-        setDragPreview(drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item)));
+        const preview = drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item));
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
       } else {
         let dx = raw[0] - drag.startPoint[0];
         let dy = raw[1] - drag.startPoint[1];
@@ -76,16 +79,19 @@ function ManualTakeoffOverlay({
           dx += snappedFirst[0] - translatedFirst[0];
           dy += snappedFirst[1] - translatedFirst[1];
         }
-        setDragPreview(drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]));
+        const preview = drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]);
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
         if (drag.mode === 'selection') dragDeltaRef.current = [dx, dy];
       }
     };
     const handleUp = () => {
       if (drag.mode === 'selection' && dragDeltaRef.current) onTransformSelection?.(drag.selectionIds, { dx: dragDeltaRef.current[0], dy: dragDeltaRef.current[1] });
-      else if (dragPreview) onUpdateGeometry?.(drag.annotationId, dragPreview);
+      else if (dragPreviewRef.current) onUpdateGeometry?.(drag.annotationId, dragPreviewRef.current);
       setDrag(null);
       setDragPreview(null);
       dragDeltaRef.current = null;
+      dragPreviewRef.current = null;
     };
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp, { once: true });
@@ -93,7 +99,7 @@ function ManualTakeoffOverlay({
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
     };
-  }, [drag, dragPreview, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
+  }, [drag, onTransformSelection, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
 
   const beginDrag = (event, annotation, mode, vertexIndex = null) => {
     if (tool !== 'select') return;
@@ -105,7 +111,9 @@ function ManualTakeoffOverlay({
     onSelectAnnotation?.(nextSelection);
     const startPoint = planPointForScreen?.(event.clientX, event.clientY);
     if (!startPoint) return;
-    setDragPreview(annotation.geometry.map((point) => [...point]));
+    const preview = annotation.geometry.map((point) => [...point]);
+    dragPreviewRef.current = preview;
+    setDragPreview(preview);
     dragDeltaRef.current = null;
     setDrag({
       annotationId: annotation.id,
@@ -127,21 +135,21 @@ function ManualTakeoffOverlay({
     const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
 
     return (
-      <g key={annotation.id}>
+      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
         {annotation.type === 'area' && (
-          <path d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
+          <path data-testid="manual-annotation-shape" d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
             style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'line' && (
           annotation.meta?.curve === 'arc' && points.length === 3
-            ? <path d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
-            : <polyline points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
+            ? <path data-testid="manual-annotation-shape" d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+            : <polyline data-testid="manual-annotation-shape" points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
             style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
         )}
         {annotation.type === 'count' && (
-          <g style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+          <g data-testid="manual-annotation-shape" style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
             onPointerDown={(event) => beginDrag(event, annotation, 'shape')}>
             <circle cx={center.x} cy={center.y} r="8" fill={style.fill} stroke="#fff" strokeWidth="2" />
             <path d={`M ${center.x - 4} ${center.y} H ${center.x + 4} M ${center.x} ${center.y - 4} V ${center.y + 4}`} stroke="#fff" strokeWidth="1.5" />
@@ -152,7 +160,7 @@ function ManualTakeoffOverlay({
           {label}
         </text>
         {(tool === 'select' || tool === 'split') && selectedSet.has(annotation.id) && points.map((point, index) => (
-          <circle key={`handle-${index}`} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
+          <circle key={`handle-${index}`} data-testid="manual-annotation-handle" data-handle-index={index} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
             style={{ pointerEvents: 'all', cursor: tool === 'split' ? 'crosshair' : 'grab' }}
             onPointerDown={(event) => tool === 'split' ? (event.stopPropagation(), onSplitVertex?.(annotation.id, index)) : beginDrag(event, annotation, 'vertex', index)} />
         ))}
@@ -164,7 +172,7 @@ function ManualTakeoffOverlay({
   const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
 
   return (
-    <svg className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+    <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
       {manualAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
@@ -242,8 +250,10 @@ export default function DrawingRenderer({
   const [scale, setScale] = useState(1);
   const [error, setError] = useState(null);
   const [pageNativeSize, setPageNativeSize] = useState(null); // PDF points at scale=1
+  const [imageReady, setImageReady] = useState(false);
   const [calScreenPoints, setCalScreenPoints] = useState([]); // for the on-screen marker overlay only
   const [tileMeta, setTileMeta] = useState(null); // null until this drawing's tile pyramid is ready
+  const [tileViewerReady, setTileViewerReady] = useState(false);
   const [osdTick, setOsdTick] = useState(0); // bumped on OSD pan/zoom so overlay positions recompute
   const [manualPoints, setManualPoints] = useState([]);
   const [manualHoverPoint, setManualHoverPoint] = useState(null);
@@ -395,6 +405,8 @@ export default function DrawingRenderer({
   // from just its own page (tiling.py), not the whole source file.
   useEffect(() => {
     setPageNumber((drawing?.page_number ?? 0) + 1);
+    setPageNativeSize(null);
+    setImageReady(false);
   }, [drawing?.id]);
 
   useEffect(() => {
@@ -414,6 +426,7 @@ export default function DrawingRenderer({
   // isn't installed server-side, see tiling.py's graceful-degradation gate).
   useEffect(() => {
     setTileMeta(null);
+    setTileViewerReady(false);
     setError(null);
     if (!drawing) return undefined;
 
@@ -484,38 +497,8 @@ export default function DrawingRenderer({
     osdViewerRef.current = viewer;
 
     viewer.addHandler('open', () => {
+      setTileViewerReady(true);
       onLoad?.({ width: tileMeta.width, height: tileMeta.height });
-    });
-
-    viewer.addHandler('canvas-click', (event) => {
-      if (!osdContainerRef.current) return;
-      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
-      const point = [imagePoint.x / planScale, imagePoint.y / planScale];
-      const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(event.position.x + 12, event.position.y));
-      const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
-      snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
-
-      if (commentModeRef.current) {
-        onCommentClick?.(point);
-        return;
-      }
-      if (calibratingRef.current) {
-        const rect = osdContainerRef.current.getBoundingClientRect();
-        const screenPoint = { x: rect.left + event.position.x, y: rect.top + event.position.y };
-
-        setCalScreenPoints((prev) => {
-          const next = [...prev, { ...screenPoint, plan: point }];
-          if (next.length === 2) {
-            onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
-            return [];
-          }
-          return next;
-        });
-        return;
-      }
-      handleManualPlanClick(point, event.originalEvent?.detail >= 2);
     });
 
     // Repositions remote-cursor/comment-pin overlays (rendered as plain
@@ -525,6 +508,7 @@ export default function DrawingRenderer({
     viewer.addHandler('update-viewport', () => setOsdTick((t) => t + 1));
 
     return () => {
+      setTileViewerReady(false);
       viewer.destroy();
       osdViewerRef.current = null;
     };
@@ -565,6 +549,40 @@ export default function DrawingRenderer({
     onPointerMove?.(point);
   }
 
+  function handleOsdContainerClick(e) {
+    if (!osdContainerRef.current || !osdViewerRef.current) return;
+    const point = osdScreenToPlanPoint(e.clientX, e.clientY);
+    if (!point) return;
+
+    const viewer = osdViewerRef.current;
+    const rect = osdContainerRef.current.getBoundingClientRect();
+    const offset = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+    const viewportPoint = viewer.viewport.pointFromPixel(offset);
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+    const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(offset.x + 12, offset.y));
+    const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
+
+    if (commentModeRef.current) {
+      onCommentClick?.(point);
+      return;
+    }
+    if (calibratingRef.current) {
+      const screenPoint = { x: e.clientX, y: e.clientY };
+      setCalScreenPoints((prev) => {
+        const next = [...prev, { ...screenPoint, plan: point }];
+        if (next.length === 2) {
+          onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
+          return [];
+        }
+        return next;
+      });
+      return;
+    }
+    handleManualPlanClick(point, e.detail >= 2);
+  }
+
   const loadImage = () => {
     if (!drawing || !canvasRef.current) return;
 
@@ -598,6 +616,7 @@ export default function DrawingRenderer({
       canvas.height = img.height;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      setImageReady(true);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       if (onLoad) {
         onLoad({ width: img.width, height: img.height });
@@ -605,6 +624,7 @@ export default function DrawingRenderer({
     };
 
     img.onerror = () => {
+      setImageReady(false);
       setError('Failed to load image');
     };
   };
@@ -627,6 +647,10 @@ export default function DrawingRenderer({
 
   function handlePlanClick(e, rect, nativeWidth, nativeHeight) {
     if (!nativeWidth || !nativeHeight) return;
+    // Manual shapes own their pointer interaction. Letting their subsequent
+    // click bubble into the plan background would immediately clear the
+    // selection that beginDrag established on pointerdown.
+    if (e.target?.closest?.('[data-testid="manual-annotation"]')) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
     snapToleranceRef.current = (nativeWidth / Math.max(rect.width, 1)) * 12;
 
@@ -685,7 +709,7 @@ export default function DrawingRenderer({
         )}
         {calScreenPoints.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
+            <circle data-testid="calibration-point" cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
           </g>
         ))}
       </svg>
@@ -821,8 +845,13 @@ export default function DrawingRenderer({
       <div className="w-full h-full relative bg-slate-800">
         <div
           ref={osdContainerRef}
+          data-testid="plan-surface"
+          data-plan-ready={tileViewerReady ? 'true' : 'false'}
+          data-renderer="tiles"
+          data-calibrating={calibrating ? 'true' : 'false'}
           className="w-full h-full"
           style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
+          onClickCapture={handleOsdContainerClick}
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
@@ -937,6 +966,10 @@ export default function DrawingRenderer({
         {/* PDF Document */}
         <div
           ref={pageWrapRef}
+          data-testid="plan-surface"
+          data-plan-ready={pageNativeSize ? 'true' : 'false'}
+          data-renderer="pdf"
+          data-calibrating={calibrating ? 'true' : 'false'}
           className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
@@ -1007,6 +1040,10 @@ export default function DrawingRenderer({
     <div className="w-full h-full overflow-auto flex items-center justify-center bg-slate-800">
       <div
         ref={imageWrapRef}
+        data-testid="plan-surface"
+        data-plan-ready={imageReady ? 'true' : 'false'}
+        data-renderer="image"
+        data-calibrating={calibrating ? 'true' : 'false'}
         className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;

@@ -127,9 +127,12 @@ export function snapPoint(point, {
  * measured identically and a stale/reported value can never leak through.
  * @param {import('./types').Annotation} annotation
  */
-export function planUnitsToFeet(value, scaleRatio, fileType = 'PDF') {
+export function planUnitsToFeet(value, scaleRatio, fileType = 'PDF', planDpi = null) {
   if (!Number.isFinite(value) || !Number.isFinite(scaleRatio) || scaleRatio <= 0) return 0;
-  const planUnitsPerInch = String(fileType).toUpperCase() === 'PDF' ? 72 : 300;
+  const planUnitsPerInch = String(fileType).toUpperCase() === 'PDF'
+    ? 72
+    : Number(planDpi);
+  if (!Number.isFinite(planUnitsPerInch) || planUnitsPerInch <= 0) return 0;
   return (value * scaleRatio) / (planUnitsPerInch * 12);
 }
 
@@ -142,8 +145,12 @@ export function computeMeasuredValue(annotation, measurementContext = null) {
   const scaleRatio = Number(measurementContext?.scaleRatio);
   const hasScale = Number.isFinite(scaleRatio) && scaleRatio > 0;
   const feetPerPlanUnit = hasScale
-    ? planUnitsToFeet(1, scaleRatio, measurementContext?.fileType)
-    : 1;
+    ? planUnitsToFeet(1, scaleRatio, measurementContext?.fileType, measurementContext?.planDpi)
+    // A null context is used by geometry-only editor unit operations and
+    // intentionally returns plan units. Product callers always pass a
+    // drawing context; an unconfirmed/invalid context must yield no trusted
+    // measured length/area.
+    : (measurementContext == null ? 1 : 0);
 
   switch (annotation.type) {
     case 'area':

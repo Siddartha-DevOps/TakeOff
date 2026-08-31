@@ -44,7 +44,11 @@ const LAYER_CONFIG = [
 ];
 
 const isScaleConfirmed = (info) => (
-  Boolean(info?.scale_ratio && ['manual', 'ocr'].includes(info?.scale_source))
+  Boolean(
+    info?.scale_ratio
+    && ['manual', 'ocr'].includes(info?.scale_source)
+    && info?.manual_confirmation_required === false
+  )
 );
 
 export default function Takeoff() {
@@ -79,6 +83,7 @@ export default function Takeoff() {
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
   const [annotationReadyDrawingId, setAnnotationReadyDrawingId] = useState(null);
+  const annotationSaveSequenceRef = useRef(0);
 
   // Scale calibration — persisted per Sheet (Drawing). See routes/scale_routes.py.
   const [scaleInfo, setScaleInfo] = useState(null);
@@ -136,8 +141,18 @@ export default function Takeoff() {
   // can never overwrite the previous sheet.
   useEffect(() => {
     if (!selectedDrawing || annotationReadyDrawingId !== selectedDrawing.id) return undefined;
+    const drawingId = selectedDrawing.id;
+    const saveSequence = ++annotationSaveSequenceRef.current;
     const timer = window.setTimeout(() => {
-      takeoffAPI.saveAnnotations(selectedDrawing.id, annotationStore.annotations)
+      takeoffAPI.saveAnnotations(drawingId, annotationStore.annotations)
+        .then(({ data }) => {
+          if (saveSequence !== annotationSaveSequenceRef.current || selectedDrawing.id !== drawingId) return;
+          setDetection((current) => ({
+            ...(current || {}),
+            quantities: data.quantities || [],
+            summary: data.summary || current?.summary || {},
+          }));
+        })
         .catch((error) => console.error('Failed to save annotations:', error));
     }, 700);
     return () => window.clearTimeout(timer);
@@ -186,7 +201,11 @@ export default function Takeoff() {
   }, [annotationStore, manualTool, selectedManualAnnotationIds, scaleInfo, selectedDrawing]);
 
   function currentMeasurementContext() {
-    return { scaleRatio: scaleInfo?.scale_ratio, fileType: selectedDrawing?.file_type };
+    return {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
+    };
   }
 
   async function fetchProject() {
@@ -402,10 +421,21 @@ export default function Takeoff() {
   // Poll the backend for a persisted AI result (the raster /analyze path runs
   // asynchronously). Returns a UI-ready detection, or null if the job fails /
   // times out / no model is installed — never fabricated data.
-  const pollForResult = async (drawingId, drawing) => {
-    const deadline = Date.now() + 30000;
+  const pollForResult = async (drawingId, drawing, jobId = null) => {
+    const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
       try {
+        if (jobId) {
+          const { data: job } = await takeoffAPI.getJob(jobId);
+          const pct = Number.isFinite(job?.progress) ? job.progress : 0;
+          const label = job?.status === 'retrying'
+            ? `Temporary processing failure; retry ${job.attempt_count + 1}/${job.max_attempts} queued…`
+            : job?.status === 'queued'
+              ? 'Waiting for an available processing worker…'
+              : 'Running durable drawing processing…';
+          setProgress({ msg: label, pct });
+          if (job?.status === 'failed') return null;
+        }
         const { data } = await takeoffAPI.getResults(drawingId);
         if (data && data.detection_data) {
           const det = typeof data.detection_data === 'string'
@@ -460,12 +490,15 @@ export default function Takeoff() {
       // which runs asynchronously. Poll for the persisted result; NEVER fabricate.
       // If the model isn't installed the job fails → honest "unavailable" state.
       setProgress({ msg: 'Running AI detection on this sheet…', pct: 60 });
+      let queuedJobId = null;
       try {
-        await takeoffAPI.analyze(drawing.id);
+        const queued = await takeoffAPI.analyze(drawing.id);
+        queuedJobId = queued.data?.job_id || null;
+        result = await pollForResult(drawing.id, drawing, queuedJobId);
       } catch (error) {
         console.warn('AI analyze trigger failed:', error);
       }
-      result = await pollForResult(drawing.id, drawing);
+      if (!result && !queuedJobId) result = await pollForResult(drawing.id, drawing);
       if (!result) {
         setDetection(null);
         setStatus('unavailable');
@@ -478,6 +511,7 @@ export default function Takeoff() {
     const measurementContext = {
       scaleRatio: confirmedScaleInfo.scale_ratio,
       fileType: drawing.file_type,
+      planDpi: confirmedScaleInfo.plan_dpi,
     };
     try {
       const saved = await takeoffAPI.getAnnotations(drawing.id);
@@ -706,6 +740,7 @@ export default function Takeoff() {
     }, {
       scaleRatio: scaleInfo?.scale_ratio,
       fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
     });
   }
 
@@ -723,6 +758,7 @@ export default function Takeoff() {
     annotationStore.updateGeometry(annotationId, geometry, {
       scaleRatio: scaleInfo?.scale_ratio,
       fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
     });
   }
 
@@ -799,6 +835,11 @@ export default function Takeoff() {
     try {
       const response = await takeoffAPI.restoreAnnotationHistory(selectedDrawing.id, revisionId);
       annotationStore.loadFromJSON(response.data.annotations, currentMeasurementContext());
+      setDetection((current) => ({
+        ...(current || {}),
+        quantities: response.data.quantities || [],
+        summary: response.data.summary || current?.summary || {},
+      }));
       setSelectedManualAnnotationIds([]);
       setShowAnnotationHistory(false);
     } catch (error) {
@@ -840,6 +881,7 @@ export default function Takeoff() {
     }, {
       scaleRatio: scaleInfo.scale_ratio,
       fileType: selectedDrawing.file_type,
+      planDpi: scaleInfo.plan_dpi,
     });
   }
 
@@ -956,7 +998,7 @@ export default function Takeoff() {
 
   if (projectError || !project) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+      <div data-testid="project-error-state" className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
         <div className="max-w-md text-center">
           <div className="text-lg font-semibold text-slate-900">Project unavailable</div>
           <p className="mt-2 text-sm text-slate-600">{projectError || 'This project does not exist or you no longer have access.'}</p>
@@ -1162,6 +1204,7 @@ export default function Takeoff() {
           drawingId={selectedDrawing.id}
           drawingName={selectedDrawing.sheet_name || selectedDrawing.original_filename}
           scaleRatio={scaleInfo?.scale_ratio}
+          planDpi={scaleInfo?.plan_dpi}
           onClose={() => setShow3DView(false)}
         />
       )}
@@ -1326,7 +1369,7 @@ export default function Takeoff() {
 
         <main className="relative bg-slate-100 overflow-hidden">
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
-          {status === 'needs_scale' && selectedDrawing && (
+          {status === 'needs_scale' && selectedDrawing && !calibrating && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-lg">
               <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-3">
                 <Ruler className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
@@ -2729,7 +2772,7 @@ function QuantitiesPanel({ detection }) {
       </div>
       <div className="mt-4 space-y-1">
         {rows.map((q, i) => (
-          <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
+          <div key={i} data-testid="quantity-row" data-quantity-item={q.item} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
             <div className="min-w-0">
               <div className="text-sm text-slate-900 truncate">{q.item}</div>
               <div className="text-[11px] text-slate-500">{q.trade}</div>

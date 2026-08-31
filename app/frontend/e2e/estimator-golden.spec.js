@@ -1,0 +1,230 @@
+import { test, expect } from '@playwright/test';
+import { vectorFloorPlanPdf } from './fixtures/vectorFloorPlan.js';
+import { API_URL, clickPlan, loginInBrowser, signup, uniqueIdentity, waitForAutosave } from './helpers.js';
+
+async function downloadBytes(download) {
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('Browser download did not expose a readable stream');
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+async function expectDisplayedQuantity(page, item, expected) {
+  const value = page.locator(`[data-quantity-item="${item}"] .mono`);
+  await expect.poll(async () => Number((await value.innerText()).replaceAll(',', ''))).toBeCloseTo(expected, 3);
+}
+
+test.describe('TakeOff estimator golden workflow', () => {
+  let cleanupProjects = [];
+
+  test.beforeEach(() => {
+    cleanupProjects = [];
+  });
+
+  test.afterEach(async ({ request }) => {
+    for (const project of cleanupProjects.reverse()) {
+      await request.delete(`${API_URL}/api/projects/${project.id}`, {
+        headers: { Authorization: `Bearer ${project.token}` },
+      });
+    }
+  });
+
+  test('login, project, upload, scale, takeoff, correction, persistence and exports', async ({ page, request }) => {
+    const identity = uniqueIdentity('golden');
+    const session = await signup(request, identity);
+    await loginInBrowser(page, identity.email);
+
+    await page.getByRole('button', { name: /new project/i }).click();
+    await page.getByLabel('Project Name').fill('Golden Workflow Project');
+    await page.getByLabel('Description').fill('Deterministic browser E2E fixture');
+    await page.getByRole('button', { name: 'Create Project' }).click();
+    await page.getByText('Golden Workflow Project', { exact: true }).click();
+    await expect(page).toHaveURL(/\/app\/projects\/\d+$/);
+    const projectId = Number(page.url().match(/projects\/(\d+)/)[1]);
+    cleanupProjects.push({ id: projectId, token: session.access_token });
+
+    await page.getByRole('button', { name: /upload blueprint/i }).click();
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'golden-vector-floor-plan.pdf',
+      mimeType: 'application/pdf',
+      buffer: vectorFloorPlanPdf(),
+    });
+    const uploadResponse = page.waitForResponse((response) =>
+      response.request().method() === 'POST'
+        && /\/api\/uploads\/project\/\d+\/drawings$/.test(response.url()),
+    );
+    await page.getByRole('button', { name: /upload 1 file/i }).click();
+    expect((await uploadResponse).ok()).toBeTruthy();
+    await expect(page.getByTestId('plan-surface')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('plan-surface')).toHaveAttribute('data-plan-ready', 'true', { timeout: 30_000 });
+
+    await page.getByRole('button', { name: /calibrate scale/i }).click();
+    await expect(page.getByTestId('plan-surface')).toHaveAttribute('data-calibrating', 'true');
+    await clickPlan(page, [[0.20, 0.70]]);
+    await expect(page.getByTestId('calibration-point')).toHaveCount(1);
+    await clickPlan(page, [[0.80, 0.70]]);
+    await page.getByPlaceholder('e.g. 3').fill('40');
+    const calibrationResponse = page.waitForResponse((response) =>
+      response.request().method() === 'POST'
+        && /\/api\/uploads\/drawings\/\d+\/scale\/calibrate$/.test(response.url()),
+    );
+    const initialSave = waitForAutosave(page);
+    await page.getByRole('button', { name: 'Save scale' }).click();
+    const calibration = await calibrationResponse;
+    expect(calibration.ok(), await calibration.text()).toBeTruthy();
+    const calibrationRequest = calibration.request().postDataJSON();
+    const calibratedScale = await calibration.json();
+    const planDistance = Math.hypot(
+      calibrationRequest.point2[0] - calibrationRequest.point1[0],
+      calibrationRequest.point2[1] - calibrationRequest.point1[1],
+    );
+    const expectedScaleRatio = (40 / (planDistance * (300 / 72))) * 12 * 300;
+    expect(calibratedScale.scale_source).toBe('manual');
+    expect(calibratedScale.scale_ratio).toBeCloseTo(expectedScaleRatio, 8);
+    const drawingId = Number(calibration.url().match(/drawings\/(\d+)\/scale/)[1]);
+    const persistedScaleResponse = await request.get(`${API_URL}/api/uploads/drawings/${drawingId}/scale`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    expect(persistedScaleResponse.ok(), await persistedScaleResponse.text()).toBeTruthy();
+    const persistedScale = await persistedScaleResponse.json();
+    expect(persistedScale.scale_source).toBe('manual');
+    expect(persistedScale.scale_ratio).toBeCloseTo(calibratedScale.scale_ratio, 10);
+    await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
+    await expect(page.getByTestId('quantity-row').first()).toBeVisible();
+    await initialSave;
+
+    const rerunResponse = page.waitForResponse((response) =>
+      response.request().method() === 'POST' && /\/api\/takeoff\/drawings\/\d+\/autodetect$/.test(response.url()),
+    );
+    await page.getByRole('button', { name: 'Re-run AI' }).click();
+    expect((await rerunResponse).ok()).toBeTruthy();
+    await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
+
+    // Real manual area, line, and count operations.
+    await page.getByTitle('Draw Area (sf)').click();
+    const areaSave = waitForAutosave(page, (projection) =>
+      projection.quantities.some((row) => row.item === 'Manual area'));
+    await clickPlan(page, [[0.18, 0.28], [0.32, 0.28], [0.32, 0.42], [0.18, 0.42]]);
+    await page.keyboard.press('Enter');
+    const areaProjection = await areaSave;
+    expect(areaProjection.quantities.some((row) => row.item === 'Manual area')).toBeTruthy();
+    await expect(page.locator('[data-quantity-item="Manual area"]')).toBeVisible();
+
+    await page.getByTitle('Draw Line (lf)').click();
+    const lineSave = waitForAutosave(page, (projection) =>
+      projection.quantities.some((row) => row.item === 'Manual line linear footage'));
+    await clickPlan(page, [[0.42, 0.30], [0.58, 0.30], [0.68, 0.38]]);
+    await page.keyboard.press('Enter');
+    const lineProjection = await lineSave;
+    expect(lineProjection.quantities.some((row) => row.item === 'Manual line linear footage')).toBeTruthy();
+
+    await page.getByTitle('Draw Count (ea)').click();
+    const countSave = waitForAutosave(page, (projection) =>
+      projection.quantities.find((row) => row.item === 'Manual count')?.quantity === 1);
+    await clickPlan(page, [[0.76, 0.35]]);
+    const countProjection = await countSave;
+    expect(countProjection.quantities.find((row) => row.item === 'Manual count')?.quantity).toBe(1);
+
+    // Select the manual area and drag one vertex: the real server must return a changed area.
+    await page.getByTitle('Select, move, or edit annotation vertices').click();
+    await expect(page.getByTitle('Select, move, or edit annotation vertices')).toHaveAttribute('aria-pressed', 'true');
+    const area = page.locator('[data-annotation-type="area"]').filter({ has: page.getByTestId('manual-annotation-shape') }).last();
+    await area.getByTestId('manual-annotation-shape').click();
+    await expect(area).toHaveAttribute('data-selected', 'true');
+    const handle = area.getByTestId('manual-annotation-handle').first();
+    await expect(handle).toBeVisible();
+    const handleBox = await handle.boundingBox();
+    expect(handleBox).not.toBeNull();
+    const originalArea = areaProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
+    const editSave = waitForAutosave(page, (projection) => {
+      const quantity = projection.quantities.find((row) => row.item === 'Manual area')?.quantity;
+      return quantity > 0 && quantity !== originalArea;
+    });
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x - 35, handleBox.y - 20, { steps: 5 });
+    await page.mouse.up();
+    const editedProjection = await editSave;
+    const editedArea = editedProjection.quantities.find((row) => row.item === 'Manual area')?.quantity;
+    expect(editedArea).toBeGreaterThan(0);
+    expect(editedArea).not.toBe(originalArea);
+    await expectDisplayedQuantity(page, 'Manual area', editedArea);
+
+    // Delete then undo the count annotation; both transitions are persisted and reflected.
+    const count = page.locator('[data-annotation-type="count"]').last();
+    await count.getByTestId('manual-annotation-shape').click();
+    await expect(count).toHaveAttribute('data-selected', 'true');
+    const deleteSave = waitForAutosave(page, (projection) =>
+      !projection.quantities.some((row) => row.item === 'Manual count'));
+    await page.getByLabel('Delete selected annotation').click();
+    const deletedProjection = await deleteSave;
+    expect(deletedProjection.quantities.some((row) => row.item === 'Manual count')).toBeFalsy();
+    const undoSave = waitForAutosave(page, (projection) =>
+      projection.quantities.find((row) => row.item === 'Manual count')?.quantity === 1);
+    await page.getByLabel('Undo').click();
+    const restoredByUndo = await undoSave;
+    expect(restoredByUndo.quantities.find((row) => row.item === 'Manual count')?.quantity).toBe(1);
+
+    // Version restore must update the visible quantity panel as well as persisted data.
+    await page.getByLabel('Annotation version history').click();
+    await expect(page.getByText('Annotation history')).toBeVisible();
+    const restoreButtons = page.getByRole('button', { name: 'Restore' });
+    await expect(restoreButtons.first()).toBeVisible();
+    await restoreButtons.first().click();
+    await expect(page.locator('[data-quantity-item="Manual count"]')).toBeVisible();
+
+    const annotationsResponse = page.waitForResponse((response) =>
+      response.request().method() === 'GET' && /\/annotations$/.test(response.url()),
+    );
+    await page.reload();
+    expect((await annotationsResponse).ok()).toBeTruthy();
+    await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
+    await expectDisplayedQuantity(page, 'Manual area', editedArea);
+    await expect(page.locator('[data-annotation-type="area"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-type="line"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-type="count"]')).toHaveCount(1);
+
+    for (const format of ['CSV', 'Excel']) {
+      const downloadPromise = page.waitForEvent('download');
+      await page.getByRole('button', { name: 'Export', exact: true }).click();
+      await page.getByRole('button', { name: `Export as ${format}` }).click();
+      const download = await downloadPromise;
+      const bytes = await downloadBytes(download);
+      expect(bytes.length).toBeGreaterThan(100);
+      expect(download.suggestedFilename()).toMatch(format === 'CSV' ? /\.csv$/ : /\.xlsx$/);
+      if (format === 'CSV') {
+        const csv = bytes.toString('utf8');
+        expect(csv).toContain('Manual area');
+        expect(csv).toContain(String(editedArea));
+      } else {
+        expect(bytes.subarray(0, 2).toString('ascii')).toBe('PK');
+      }
+    }
+
+  });
+
+  test('failed cross-tenant project request shows a usable isolated error state', async ({ page, request }) => {
+    const identity = uniqueIdentity('isolated-estimator');
+    await signup(request, identity);
+    const other = uniqueIdentity('other-tenant');
+    const otherSession = await signup(request, other);
+    const otherProject = await request.post(`${API_URL}/api/projects`, {
+      headers: { Authorization: `Bearer ${otherSession.access_token}` },
+      data: { name: 'Other Tenant Secret', project_type: 'Commercial' },
+    });
+    expect(otherProject.ok(), await otherProject.text()).toBeTruthy();
+    const secretProject = await otherProject.json();
+    cleanupProjects.push({ id: secretProject.id, token: otherSession.access_token });
+
+    await loginInBrowser(page, identity.email);
+    const forbiddenResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/api/projects/${secretProject.id}`),
+    );
+    await page.goto(`/app/projects/${secretProject.id}`);
+    expect((await forbiddenResponse).status()).toBe(404);
+    await expect(page.getByTestId('project-error-state')).toContainText('Project unavailable');
+    await expect(page.getByTestId('project-error-state')).toContainText('Project not found');
+    await expect(page.getByText('Other Tenant Secret')).toHaveCount(0);
+  });
+});

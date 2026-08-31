@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "codex/**"]
   pull_request:
   workflow_dispatch:
 
@@ -10,17 +10,34 @@ jobs:
   backend-e2e:
     name: Backend tests + PostGIS end-to-end
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     defaults:
       run:
         working-directory: app/backend
     env:
       DATABASE_URL: postgresql://takeoff_user:takeoff_dev_pass_2025@localhost/takeoff_db
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/frontend/package-lock.json
 
       - name: Install Postgres + PostGIS + pgvector
         run: |
@@ -34,22 +51,94 @@ jobs:
           sudo -u postgres psql -c "CREATE ROLE takeoff_user LOGIN PASSWORD 'takeoff_dev_pass_2025' SUPERUSER;"
           sudo -u postgres psql -c "CREATE DATABASE takeoff_db OWNER takeoff_user;"
 
-      - name: Install Python deps (engine + db + test)
-        run: |
-          python -m pip install -q \
-            fastapi pymupdf shapely numpy pytest \
-            sqlalchemy geoalchemy2 pgvector psycopg2-binary alembic python-dotenv loguru \
-            "passlib[bcrypt]" "bcrypt==4.0.1" \
-            openpyxl reportlab cryptography
+      - name: Install Python dependencies
+        run: python -m pip install -q -r requirements.txt
 
       - name: Alembic upgrade head (real PostGIS)
         run: python -m alembic upgrade head
+
+      - name: Redis, PostgreSQL, Celery worker, and Beat smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import redis
+          from sqlalchemy import create_engine, text
+          from celery_app import celery_app
+
+          assert redis.from_url(os.environ["REDIS_URL"]).ping()
+          with create_engine(os.environ["DATABASE_URL"]).connect() as connection:
+              assert connection.execute(text("SELECT 1")).scalar_one() == 1
+          schedule = celery_app.conf.beat_schedule
+          assert schedule["recover-durable-processing-jobs"]["task"] == "recover_processing_jobs"
+          PY
+
+          worker_name="ci-worker@$(hostname)"
+          celery -A celery_app worker \
+            --loglevel=INFO --concurrency=1 --pool=solo \
+            --hostname="$worker_name" >/tmp/takeoff-celery-worker.log 2>&1 &
+          worker_pid=$!
+          celery -A celery_app beat \
+            --loglevel=INFO \
+            --pidfile=/tmp/takeoff-celerybeat.pid \
+            --schedule=/tmp/takeoff-celerybeat-schedule \
+            >/tmp/takeoff-celery-beat.log 2>&1 &
+          beat_pid=$!
+
+          cleanup() {
+            kill "$worker_pid" "$beat_pid" 2>/dev/null || true
+            wait "$worker_pid" "$beat_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 20); do
+            if celery -A celery_app inspect ping \
+              --timeout=2 2>&1 | tee /tmp/takeoff-celery-ping.log | grep -q pong; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != true ]; then
+            cat /tmp/takeoff-celery-worker.log
+            cat /tmp/takeoff-celery-ping.log 2>/dev/null || true
+            exit 1
+          fi
+          if ! kill -0 "$beat_pid" 2>/dev/null; then
+            cat /tmp/takeoff-celery-beat.log
+            exit 1
+          fi
 
       - name: Backend unit tests
         run: python -m pytest tests/ -q
 
       - name: End-to-end smoke test (vector -> PostGIS -> ST_Area)
         run: python scripts/smoke_test.py
+
+      - name: Create clean browser E2E database
+        run: |
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS takeoff_e2e WITH (FORCE);"
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE takeoff_e2e OWNER takeoff_user;"
+
+      - name: Install frontend and Playwright Chromium
+        working-directory: app/frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Browser estimator golden workflow
+        working-directory: app/frontend
+        env:
+          E2E_DATABASE_URL: postgresql://takeoff_user:takeoff_dev_pass_2025@localhost/takeoff_e2e
+        run: npm run test:e2e
+
+      - name: Verify browser database migrations
+        run: |
+          revision_count=$(sudo -u postgres psql -d takeoff_e2e -tAc "SELECT count(*) FROM alembic_version;")
+          test "$revision_count" = "1"
 
   frontend-build:
     name: Frontend build

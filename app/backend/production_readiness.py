@@ -18,35 +18,50 @@ def cors_origins() -> list[str]:
 
 def validate_startup_environment() -> None:
     """Fail before serving when a production deployment is fundamentally unsafe."""
-    if not is_production():
-        return
-    missing = [name for name in ("DATABASE_URL", "JWT_SECRET_KEY") if not os.environ.get(name)]
-    origins = cors_origins()
-    if not origins or "*" in origins:
-        missing.append("CORS_ORIGINS (must be explicit in production)")
+    import storage
+
+    production = is_production()
+    missing = []
+    if production:
+        missing.extend(name for name in ("DATABASE_URL", "JWT_SECRET_KEY") if not os.environ.get(name))
+        if not os.environ.get("REDIS_URL"):
+            missing.append("REDIS_URL (durable Celery broker/result backend)")
+        origins = cors_origins()
+        if not origins or "*" in origins:
+            missing.append("CORS_ORIGINS (must be explicit in production)")
+    if storage.object_storage_required() or production:
+        storage_errors = storage.storage_configuration_errors()
+        if storage_errors:
+            missing.append("object storage (" + ", ".join(storage_errors) + ")")
     if missing:
         raise RuntimeError("Unsafe production configuration; missing/invalid: " + ", ".join(missing))
 
 
 def configuration_snapshot() -> dict:
     """Return booleans only—never secret values or credential-bearing URLs."""
-    from analysis_jobs import queue_backend
+    from analysis_jobs import celery_worker_ready, queue_backend, redis_ready
     import storage
 
-    storage_ready = storage.storage_available()
+    storage_errors = storage.storage_configuration_errors()
+    storage_ready = storage.storage_ready() if not storage_errors else False
     # Native Render services do not automatically set ENVIRONMENT=production,
     # but Render does guarantee RENDER=true. Readiness must still fail closed
     # for ephemeral upload storage even before the dashboard is normalized.
     storage_required = storage.object_storage_required() or is_production()
+    broker_ready = queue_backend() == "celery" and redis_ready()
+    worker_ready = broker_ready and celery_worker_ready()
     components = {
         "object_storage": {
             "ready": storage_ready,
             "required": storage_required,
+            "configuration_errors": storage_errors,
         },
         "job_queue": {
-            "ready": queue_backend() != "unavailable",
+            "ready": worker_ready,
             "backend": queue_backend(),
-            "durable_across_restart": queue_backend() in {"celery", "database_recovery"},
+            "broker_ready": broker_ready,
+            "worker_ready": worker_ready,
+            "durable_across_restart": queue_backend() == "celery",
         },
         "ai_search": {
             "ready": bool(os.environ.get("AI_INFERENCE_SPACE_ID") and os.environ.get("HF_TOKEN")),

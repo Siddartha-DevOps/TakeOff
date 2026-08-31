@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
+from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
 from pgvector.sqlalchemy import Vector
@@ -11,6 +11,14 @@ class ProcessingStatus(enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class JobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    RETRYING = "retrying"
 
 class UserRole(enum.Enum):
     """
@@ -116,7 +124,7 @@ class Drawing(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False)  # Local path or S3 URL
+    file_path = Column(String(500), nullable=False)  # Durable s3:// object ref; local path only in dev/tests
     file_size = Column(Integer)  # in bytes
     file_type = Column(String(50))  # PDF, TIFF, PNG, JPG
     sheet_name = Column(String(255))  # e.g., "A-101 Level 12"
@@ -135,17 +143,26 @@ class Drawing(Base):
     discipline = Column(String(10), nullable=True)  # OCR-derived from sheet_number's leading letter(s), e.g. "A"
     upload_batch_id = Column(String(64), nullable=True, index=True)  # groups sheets split from the same upload
 
-    # Scale calibration — see routes/scale_routes.py. scale_ratio is paper-inches
-    # per real-foot (×12), expressed in the same 300-DPI pixel space
-    # ai/preprocessing.py rasterizes drawings into, so it plugs directly into
-    # ai/preprocessing.pixels_to_feet()/pixels_to_sqft() unchanged.
+    # Scale calibration — see routes/scale_routes.py. ``scale_ratio`` is real
+    # inches per paper inch. ``scale_dpi`` records the coordinate density used
+    # by raster measurements; PDF-native geometry is always 72 points/inch.
     scale_ratio = Column(Float, nullable=True)
     scale_source = Column(String(20), nullable=True)  # 'manual' | 'ocr' | 'default'
     scale_calibrated_at = Column(DateTime(timezone=True), nullable=True)
+    # Provenance/trust for the *active* per-page scale. ``scale_dpi`` is the
+    # plan-coordinate density used for raster drawings; PDFs always use their
+    # native 72 points/inch coordinate space.
+    scale_detection_method = Column(String(50), nullable=True)
+    scale_confidence = Column(Float, nullable=True)
+    scale_requires_confirmation = Column(Boolean, nullable=False, default=True)
+    scale_dpi = Column(Float, nullable=True)
     # Cached OCR suggestion so GET /scale doesn't re-run OCR on every request.
     ocr_scale_ratio = Column(Float, nullable=True)
     ocr_scale_text = Column(String(255), nullable=True)  # raw matched OCR text, e.g. '1/8" = 1\'-0"'
     ocr_scale_confidence = Column(Float, nullable=True)
+    ocr_scale_method = Column(String(50), nullable=True)
+    ocr_scale_conflict = Column(Boolean, nullable=False, default=False)
+    ocr_scale_candidates = Column(Text, nullable=True)
 
     # User-reviewed unified annotation document (AI + manual shapes). Kept on
     # Drawing so it survives new AI result rows and page refreshes.
@@ -167,6 +184,42 @@ class Drawing(Base):
     text_chunks = relationship("DrawingTextChunk", back_populates="drawing", cascade="all, delete-orphan")
 
 
+class ProcessingJob(Base):
+    """Durable PostgreSQL state for every production worker operation."""
+    __tablename__ = "processing_jobs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key", name="uq_processing_jobs_org_idempotency"),
+        Index("ix_processing_jobs_recovery", "status", "updated_at"),
+        Index("ix_processing_jobs_drawing_type", "drawing_id", "job_type"),
+    )
+
+    id = Column(String(64), primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    job_type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, default=JobStatus.QUEUED.value)
+    progress = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    error = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    idempotency_key = Column(String(255), nullable=False)
+    celery_task_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    organization = relationship("Organization")
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    requested_by = relationship("User")
+
+
 class AnnotationRevision(Base):
     __tablename__ = "annotation_revisions"
 
@@ -186,9 +239,8 @@ class Detection(Base):
     manual — stored as real PostGIS geometry, not a JSON blob. This is the
     server-side counterpart to the frontend's unified Annotation model
     (frontend/src/annotations/types.js); annotation_id is the join key
-    between the two, since annotations aren't the system of record here —
-    TakeoffResult.detection_data still is, this is the geometry-first mirror
-    of it.
+    between the two. Drawing.annotations_data is the authoritative reviewed
+    document; this table is its geometry-first, rebuildable projection.
 
     geom is plan-space (source-raster pixel coordinates — the same space
     ai/preprocessing.py rasterizes drawings into), not geographic, hence
@@ -327,6 +379,7 @@ class TakeoffResult(Base):
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
     ai_model_version = Column(String(50), default="pending")
+    processing_job_id = Column(String(64), nullable=True, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships

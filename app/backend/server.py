@@ -43,6 +43,7 @@ from routes import (
     classification_routes,
     audit_routes,
     sso_routes,
+    job_routes,
 )
 
 # Import models so every relationship("ClassName") string reference across
@@ -167,6 +168,7 @@ app.include_router(sharing_routes.router, prefix="/api")
 app.include_router(classification_routes.router, prefix="/api")
 app.include_router(audit_routes.router, prefix="/api")
 app.include_router(sso_routes.router, prefix="/api")
+app.include_router(job_routes.router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
 

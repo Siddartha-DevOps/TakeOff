@@ -6,6 +6,7 @@ from typing import List, Optional
 import schemas
 import models
 import export_engine
+from canonical_takeoff import canonical_quantities_for_drawing
 import repeating_groups
 from auth import get_current_user
 from database import get_db
@@ -197,11 +198,15 @@ def generate_excel_export(drawing_data, result_data):
     ws['A7'] = "Processing Status:"
     ws['B7'] = drawing_data.get('processing_status', 'N/A')
     
-    # Parse detection data
+    # Parse corrected quantities first; detection_data is retained for summary.
     try:
         detection = json.loads(result_data.get('detection_data', '{}'))
     except:
         detection = {}
+    try:
+        quantities = json.loads(result_data.get('quantities_data', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        quantities = []
     
     # Quantities section
     start_row = 10
@@ -220,7 +225,6 @@ def generate_excel_export(drawing_data, result_data):
         cell.border = border
     
     # Populate quantities
-    quantities = detection.get('quantities', [])
     current_row = header_row + 1
     for item in quantities:
         ws.cell(row=current_row, column=1, value=item.get('item', 'N/A')).border = border
@@ -279,17 +283,20 @@ def generate_csv_export(drawing_data, result_data):
     writer.writerow(['Processing Status:', drawing_data.get('processing_status', 'N/A')])
     writer.writerow([])
     
-    # Parse detection data
+    # Parse corrected quantities first; detection_data is retained for summary.
     try:
         detection = json.loads(result_data.get('detection_data', '{}'))
     except:
         detection = {}
+    try:
+        quantities = json.loads(result_data.get('quantities_data', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        quantities = []
     
     # Quantities
     writer.writerow(['Quantities Breakdown'])
     writer.writerow(['Item', 'Trade', 'Quantity', 'Unit', 'Notes'])
     
-    quantities = detection.get('quantities', [])
     for item in quantities:
         writer.writerow([
             item.get('item', 'N/A'),
@@ -366,7 +373,7 @@ async def export_drawing(
     
     result_data = {
         'detection_data': result.detection_data,
-        'quantities_data': result.quantities_data
+        'quantities_data': json.dumps(canonical_quantities_for_drawing(db, drawing))
     }
     
     # Generate file
@@ -452,7 +459,7 @@ async def export_project(
     
     result_data = {
         'detection_data': result.detection_data,
-        'quantities_data': result.quantities_data
+        'quantities_data': json.dumps(canonical_quantities_for_drawing(db, first_drawing))
     }
     
     # Generate file

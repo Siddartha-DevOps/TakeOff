@@ -104,6 +104,10 @@ class Drawing(DrawingBase):
     scale_ratio: Optional[float] = None
     scale_source: Optional[str] = None
     scale_calibrated_at: Optional[datetime] = None
+    scale_detection_method: Optional[str] = None
+    scale_confidence: Optional[float] = None
+    scale_requires_confirmation: bool = True
+    scale_dpi: Optional[float] = None
     page_number: int = 0
     total_pages: Optional[int] = None
     sheet_number: Optional[str] = None

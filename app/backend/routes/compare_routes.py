@@ -118,8 +118,8 @@ async def compare_drawings(
     # local-disk case, transparent download-to-temp otherwise.
     with storage.resolve_local_path(drawing_a.file_path) as path_a, \
          storage.resolve_local_path(drawing_b.file_path) as path_b:
-        img_a = load_drawing(path_a, page_number=0)
-        img_b = load_drawing(path_b, page_number=0)
+        img_a = load_drawing(path_a, page_number=drawing_a.page_number or 0)
+        img_b = load_drawing(path_b, page_number=drawing_b.page_number or 0)
 
     if payload.manual_points_a and payload.manual_points_b:
         try:
@@ -143,7 +143,12 @@ async def compare_drawings(
         alignment_confidence = inlier_count
 
     diff_image, removed_mask, added_mask = compute_diff(img_a, aligned_b)
-    stats = quantify_changes(removed_mask, added_mask, scale_ratio=drawing_a.scale_ratio)
+    from scale_validation import require_confirmed_scale
+    ratio = require_confirmed_scale(drawing_a)
+    dpi = 300 if str(drawing_a.file_type or "").upper() == "PDF" else (
+        drawing_a.scale_dpi or (300 if drawing_a.scale_source == "manual" else None)
+    )
+    stats = quantify_changes(removed_mask, added_mask, scale_ratio=ratio, dpi=dpi)
 
     success, encoded = cv2.imencode(".png", diff_image)
     if not success:
