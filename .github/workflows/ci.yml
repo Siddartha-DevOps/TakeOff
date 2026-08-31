@@ -95,7 +95,7 @@ jobs:
           ready=false
           for _ in $(seq 1 20); do
             if celery -A celery_app inspect ping \
-              --destination "$worker_name" --timeout=2 2>/dev/null | grep -q pong; then
+              --timeout=2 2>&1 | tee /tmp/takeoff-celery-ping.log | grep -q pong; then
               ready=true
               break
             fi
@@ -104,6 +104,7 @@ jobs:
 
           if [ "$ready" != true ]; then
             cat /tmp/takeoff-celery-worker.log
+            cat /tmp/takeoff-celery-ping.log 2>/dev/null || true
             exit 1
           fi
           if ! kill -0 "$beat_pid" 2>/dev/null; then
