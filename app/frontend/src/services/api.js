@@ -147,6 +147,8 @@ export const uploadsAPI = {
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  getJob: (jobId) => api.get(`/api/jobs/${jobId}`),
+  getDrawingJobs: (drawingId) => api.get(`/api/jobs/drawing/${drawingId}/latest`),
   getAnnotations: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/annotations`),
   saveAnnotations: (drawingId, annotations) => api.put(
     `/api/takeoff/drawings/${drawingId}/annotations`, { annotations },

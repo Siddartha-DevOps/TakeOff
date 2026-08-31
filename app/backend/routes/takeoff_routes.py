@@ -5,7 +5,7 @@ import models
 import entitlements
 from auth import get_current_user
 from database import get_db
-from detection_geometry import persist_detection_geometries
+from detection_geometry import delete_detection_geometries, persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
 from ai.inference import ModelUnavailableError
 from ratelimit import RateLimit
@@ -39,6 +39,32 @@ def _require_ai_takeoff_entitlement(db: Session, organization_id: int):
                 "billing": snapshot,
             },
         )
+
+
+def _replace_ai_geometry_projection(db: Session, drawing: models.Drawing, detection: dict) -> int:
+    """Replace measured AI geometry only when this sheet's scale is trusted."""
+    from scale_validation import is_scale_confirmed
+
+    if is_scale_confirmed(drawing):
+        return persist_detection_geometries(
+            db, drawing.project_id, drawing.id, detection, source="ai"
+        )
+    deleted = delete_detection_geometries(db, drawing.id, source="ai")
+    db.commit()
+    return -deleted
+
+
+def _takeoff_result_for_job(db: Session, drawing_id: int, job_id: str | None):
+    """Return the one result row owned by a durable job redelivery."""
+    result = None
+    if job_id:
+        result = db.query(models.TakeoffResult).filter(
+            models.TakeoffResult.processing_job_id == job_id
+        ).first()
+    if result is None:
+        result = models.TakeoffResult(drawing_id=drawing_id, processing_job_id=job_id)
+        db.add(result)
+    return result
 
 
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
@@ -75,7 +101,7 @@ async def analyze_drawing(
     # FastAPI BackgroundTasks.
     try:
         from analysis_jobs import enqueue_analysis
-        queued = enqueue_analysis(db, drawing)
+        queued = enqueue_analysis(db, drawing, requested_by_id=current_user.id)
     except Exception as exc:
         drawing.processing_status = models.ProcessingStatus.FAILED
         drawing.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
@@ -91,9 +117,22 @@ async def analyze_drawing(
     }
 
 
-async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_number: int = 0):
-    """Background task: run YOLOv8 + spatial reasoning, save to DB."""
+async def _run_ai_analysis(
+    drawing_id: int,
+    file_path: str,
+    db: Session,
+    page_number: int = 0,
+    *,
+    job_id: str | None = None,
+    progress_callback=None,
+    raise_errors: bool = False,
+):
+    """Run the idempotent analysis pipeline inside a durable worker."""
     from dataclasses import asdict
+
+    def report(value: int):
+        if progress_callback:
+            progress_callback(value)
 
     try:
         # Import AI engine (loaded once at server startup)
@@ -102,6 +141,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         import storage
 
         logger.info(f"[AI] Starting analysis: drawing_id={drawing_id} page={page_number}")
+        report(5)
 
         # OCR is part of the same persisted job as inference so text search is
         # restart-recoverable too. It is deliberately best-effort: a missing
@@ -118,6 +158,9 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
             except Exception as ocr_index_err:
                 db.rollback()
                 logger.warning("[OCR] Index failed for drawing_id=%s: %s", drawing_id, ocr_index_err)
+                if raise_errors:
+                    raise
+        report(20)
 
         # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
         # #12) — resolve_local_path() downloads it to a temp file for the
@@ -164,9 +207,12 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                             os.remove(raster_path)
                         raise
 
+            report(40)
+
             try:
                 # Step 1: YOLOv8 inference
                 analysis = ai_engine.analyze(raster_path, drawing_id)
+                report(65)
 
                 # Step 2: Spatial reasoning layer (room graph, quantities, scale)
                 raw_detection = {
@@ -182,38 +228,31 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                     models.Drawing.id == drawing_id
                 ).first()
                 trusted = bool(persisted_drawing and is_scale_confirmed(persisted_drawing))
-                plan_dpi = 300.0 if (
-                    persisted_drawing and str(persisted_drawing.file_type or "").upper() == "PDF"
-                ) else (getattr(persisted_drawing, "scale_dpi", None) if persisted_drawing else None)
+                plan_dpi = getattr(persisted_drawing, "scale_dpi", None) if persisted_drawing else None
                 enriched = enrich_takeoff_result(
                     json.dumps(raw_detection), raster_path,
                     scale_ratio=persisted_drawing.scale_ratio if trusted else None,
                     plan_dpi=plan_dpi if trusted else None,
                 )
+                if not trusted:
+                    enriched["quantities"] = []
             finally:
                 if raster_path != local_path and os.path.exists(raster_path):
                     os.remove(raster_path)
 
         # Step 3: Save to database
-        db_result = models.TakeoffResult(
-            drawing_id=drawing_id,
-            detection_data=json.dumps(enriched["detection"]),
-            quantities_data=json.dumps(enriched["quantities"]),
-            confidence_scores=json.dumps({"avg": analysis.confidence_avg}),
-            processing_time_ms=analysis.processing_time_ms,
-            ai_model_version=analysis.ai_model_version,
-        )
-        db.add(db_result)
+        db_result = _takeoff_result_for_job(db, drawing_id, job_id)
+        db_result.detection_data = json.dumps(enriched["detection"])
+        db_result.quantities_data = json.dumps(enriched["quantities"])
+        db_result.confidence_scores = json.dumps({"avg": analysis.confidence_avg})
+        db_result.processing_time_ms = analysis.processing_time_ms
+        db_result.ai_model_version = analysis.ai_model_version
 
         # Step 4: Mark drawing as completed
         drawing = db.query(models.Drawing).filter(
             models.Drawing.id == drawing_id
         ).first()
         if drawing:
-            drawing.processing_status = models.ProcessingStatus.COMPLETED
-            drawing.processed_at = datetime.now(timezone.utc)
-            drawing.processing_error = None
-
             # Plan-set title-block naming (memory/TOGAL_PARITY_REAUDIT.md
             # #13) — best-effort; only overwrites sheet_name if it's still
             # the numbered placeholder ingest_plan_set() gave it, never a
@@ -233,6 +272,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
 
         db.commit()
         db.refresh(db_result)
+        report(75)
         logger.info(f"[AI] Done: drawing_id={drawing_id} | "
                     f"{analysis.processing_time_ms}ms | "
                     f"conf={analysis.confidence_avg:.2f}")
@@ -241,13 +281,15 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         # detections into the PostGIS-backed Detection/Measurement tables,
         # not just the JSON blob above. Best-effort: a failure here shouldn't
         # take down the primary TakeoffResult save.
+        trusted_scale = bool(drawing and is_scale_confirmed(drawing))
         try:
-            created = persist_detection_geometries(
-                db, drawing.project_id, drawing_id, enriched["detection"], source="ai"
-            )
+            created = _replace_ai_geometry_projection(db, drawing, enriched["detection"])
             logger.info(f"[AI] Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
         except Exception as geo_err:
             logger.warning(f"[AI] Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+            if raise_errors and trusted_scale:
+                raise
+        report(85)
 
         # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — build CLIP
         # patch embeddings on ingest. No-ops (returns 0) if CLIP isn't
@@ -261,6 +303,16 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                 logger.info(f"[AI] Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
         except Exception as embed_err:
             logger.warning(f"[AI] Embedding index failed for drawing_id={drawing_id}: {embed_err}")
+            if raise_errors:
+                raise
+
+        drawing = db.query(models.Drawing).filter(models.Drawing.id == drawing_id).first()
+        if drawing:
+            drawing.processing_status = models.ProcessingStatus.COMPLETED
+            drawing.processed_at = datetime.now(timezone.utc)
+            drawing.processing_error = None
+            db.commit()
+        report(95)
 
     except ModelUnavailableError as e:
         # No trained raster model installed — do NOT fabricate detections
@@ -270,6 +322,8 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
             f"[AI] Raster model unavailable for drawing_id={drawing_id}: {e} "
             f"Install trained weights or use vector AUTODETECT."
         )
+        if raise_errors:
+            raise
         drawing = db.query(models.Drawing).filter(
             models.Drawing.id == drawing_id
         ).first()
@@ -279,6 +333,8 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
             db.commit()
     except Exception as e:
         logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
+        if raise_errors:
+            raise
         drawing = db.query(models.Drawing).filter(
             models.Drawing.id == drawing_id
         ).first()
@@ -506,10 +562,12 @@ async def save_detection_results(
     # enforcement point, not just analyze_drawing's background-job trigger.
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
+    from scale_validation import is_scale_confirmed
+    trusted_scale = is_scale_confirmed(drawing)
     db_result = models.TakeoffResult(
         drawing_id=drawing_id,
         detection_data=result_data.detection_data,
-        quantities_data=result_data.quantities_data,
+        quantities_data=result_data.quantities_data if trusted_scale else "[]",
         confidence_scores=result_data.confidence_scores,
         processing_time_ms=result_data.processing_time_ms,
         ai_model_version="yolov8m-seg-v1.0"
@@ -533,7 +591,7 @@ async def save_detection_results(
 
     if detection is not None:
         try:
-            created = persist_detection_geometries(db, drawing.project_id, drawing_id, detection, source="ai")
+            created = _replace_ai_geometry_projection(db, drawing, detection)
             logger.info(f"Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
         except Exception as geo_err:
             logger.warning(f"Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")

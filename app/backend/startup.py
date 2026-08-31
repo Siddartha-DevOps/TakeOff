@@ -51,6 +51,7 @@ _REVISION_MARKERS = [
         "scale_detection_method", "scale_confidence", "scale_requires_confirmation",
         "scale_dpi", "ocr_scale_method", "ocr_scale_conflict", "ocr_scale_candidates",
     }}),
+    ("m1a2b3c4d5e6", {"processing_jobs"}, {"takeoff_results": {"processing_job_id"}}),
 ]
 
 

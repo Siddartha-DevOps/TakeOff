@@ -29,6 +29,8 @@ geoalchemy2==0.20.0
 pgvector==0.5.0
 shapely>=2.0.0            # vector geometry engine: polygon building + WKT/GeoJSON
 PyMuPDF>=1.24.0           # native PDF vector-geometry + symbol extraction (fitz)
+Pillow>=10.0.0            # durable Deep Zoom tile generation
+opencv-python-headless>=4.9,<5  # worker rasterization / tile generation
 pytesseract>=0.3.10       # full-sheet OCR index; Docker installs the system binary
 aiofiles==25.1.0
 loguru>=0.7.2

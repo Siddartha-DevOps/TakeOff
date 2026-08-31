@@ -12,6 +12,12 @@ databases:
     plan: free
 
 services:
+  - type: keyvalue
+    name: takeoff-redis
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
   - type: web
     name: takeoff-api
     runtime: docker
@@ -23,6 +29,11 @@ services:
       - key: DATABASE_URL
         fromDatabase:
           name: takeoff-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: takeoff-redis
           property: connectionString
       - key: JWT_SECRET_KEY
         generateValue: true          # strong random secret (my auth fail-fast is satisfied)
@@ -66,3 +77,51 @@ services:
         sync: false
       - key: S3_REGION
         value: "us-east-1"
+
+  - type: worker
+    name: takeoff-worker
+    runtime: docker
+    dockerfilePath: app/backend/Dockerfile
+    dockerContext: app/backend
+    dockerCommand: celery -A celery_app worker --loglevel=INFO --concurrency=1 -B
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: takeoff-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: takeoff-redis
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: AI_INFERENCE_SPACE_ID
+        value: "Siddartha96/takeoff-spaces-inference"
+      - key: AI_INFERENCE_API_NAME
+        value: "/predict_spaces"
+      - key: AI_INFERENCE_TIMEOUT_SECONDS
+        value: "90"
+      - key: HF_TOKEN
+        sync: false
+      - key: REQUIRE_OBJECT_STORAGE
+        value: "true"
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "us-east-1"
+      - key: JOB_MAX_ATTEMPTS
+        value: "3"
+      - key: JOB_STALE_SECONDS
+        value: "900"
+      - key: JOB_SOFT_TIME_LIMIT
+        value: "900"
+      - key: JOB_HARD_TIME_LIMIT
+        value: "1200"

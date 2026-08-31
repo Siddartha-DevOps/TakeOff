@@ -24,6 +24,8 @@ def validate_startup_environment() -> None:
     missing = []
     if production:
         missing.extend(name for name in ("DATABASE_URL", "JWT_SECRET_KEY") if not os.environ.get(name))
+        if not os.environ.get("REDIS_URL"):
+            missing.append("REDIS_URL (durable Celery broker/result backend)")
         origins = cors_origins()
         if not origins or "*" in origins:
             missing.append("CORS_ORIGINS (must be explicit in production)")
@@ -37,7 +39,7 @@ def validate_startup_environment() -> None:
 
 def configuration_snapshot() -> dict:
     """Return booleans only—never secret values or credential-bearing URLs."""
-    from analysis_jobs import queue_backend
+    from analysis_jobs import celery_worker_ready, queue_backend, redis_ready
     import storage
 
     storage_errors = storage.storage_configuration_errors()
@@ -46,6 +48,8 @@ def configuration_snapshot() -> dict:
     # but Render does guarantee RENDER=true. Readiness must still fail closed
     # for ephemeral upload storage even before the dashboard is normalized.
     storage_required = storage.object_storage_required() or is_production()
+    broker_ready = queue_backend() == "celery" and redis_ready()
+    worker_ready = broker_ready and celery_worker_ready()
     components = {
         "object_storage": {
             "ready": storage_ready,
@@ -53,9 +57,11 @@ def configuration_snapshot() -> dict:
             "configuration_errors": storage_errors,
         },
         "job_queue": {
-            "ready": queue_backend() != "unavailable",
+            "ready": worker_ready,
             "backend": queue_backend(),
-            "durable_across_restart": queue_backend() in {"celery", "database_recovery"},
+            "broker_ready": broker_ready,
+            "worker_ready": worker_ready,
+            "durable_across_restart": queue_backend() == "celery",
         },
         "ai_search": {
             "ready": bool(os.environ.get("AI_INFERENCE_SPACE_ID") and os.environ.get("HF_TOKEN")),

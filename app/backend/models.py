@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
+from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
 from pgvector.sqlalchemy import Vector
@@ -11,6 +11,14 @@ class ProcessingStatus(enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class JobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    RETRYING = "retrying"
 
 class UserRole(enum.Enum):
     """
@@ -176,6 +184,42 @@ class Drawing(Base):
     text_chunks = relationship("DrawingTextChunk", back_populates="drawing", cascade="all, delete-orphan")
 
 
+class ProcessingJob(Base):
+    """Durable PostgreSQL state for every production worker operation."""
+    __tablename__ = "processing_jobs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key", name="uq_processing_jobs_org_idempotency"),
+        Index("ix_processing_jobs_recovery", "status", "updated_at"),
+        Index("ix_processing_jobs_drawing_type", "drawing_id", "job_type"),
+    )
+
+    id = Column(String(64), primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    job_type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, default=JobStatus.QUEUED.value)
+    progress = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    error = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    idempotency_key = Column(String(255), nullable=False)
+    celery_task_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    organization = relationship("Organization")
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    requested_by = relationship("User")
+
+
 class AnnotationRevision(Base):
     __tablename__ = "annotation_revisions"
 
@@ -335,6 +379,7 @@ class TakeoffResult(Base):
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
     ai_model_version = Column(String(50), default="pending")
+    processing_job_id = Column(String(64), nullable=True, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships

@@ -60,7 +60,7 @@ def test_unversioned_current_schema_is_stamped_at_head():
         tables.update(required_tables)
         for table, names in required_columns.items():
             columns.setdefault(table, set()).update(names)
-    assert startup.infer_legacy_revision(tables, columns) == "l0f1a2b3c4d5"
+    assert startup.infer_legacy_revision(tables, columns) == "m1a2b3c4d5e6"
 
 
 def test_partial_baseline_fails_closed():
@@ -99,7 +99,7 @@ def test_partial_legacy_schema_is_repaired_verified_and_stamped(monkeypatch):
     startup._stamp_legacy_schema("config", command)
 
     assert repaired == [engine]
-    assert stamped == [("config", "l0f1a2b3c4d5")]
+    assert stamped == [("config", "m1a2b3c4d5e6")]
 
 
 def test_schema_with_revision_gap_fails_closed():

@@ -15,8 +15,9 @@ def test_production_requires_database_jwt_and_explicit_cors(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("CORS_ORIGINS", "*")
-    with pytest.raises(RuntimeError, match="DATABASE_URL.*JWT_SECRET_KEY.*CORS_ORIGINS"):
+    with pytest.raises(RuntimeError, match="DATABASE_URL.*JWT_SECRET_KEY.*REDIS_URL.*CORS_ORIGINS"):
         readiness.validate_startup_environment()
 
 
@@ -31,6 +32,7 @@ def test_production_accepts_hard_requirements(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://configured")
     monkeypatch.setenv("JWT_SECRET_KEY", "configured")
     monkeypatch.setenv("CORS_ORIGINS", "https://take-off-omega.vercel.app")
+    monkeypatch.setenv("REDIS_URL", "redis://queue.internal:6379/0")
     monkeypatch.setenv("S3_BUCKET", "takeoff-production")
     monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("S3_ACCESS_KEY_ID", raising=False)
@@ -61,3 +63,19 @@ def test_s3_compatible_endpoint_requires_complete_credentials(monkeypatch):
 def test_cors_origins_are_trimmed(monkeypatch):
     monkeypatch.setenv("CORS_ORIGINS", "https://one.example, https://two.example ")
     assert readiness.cors_origins() == ["https://one.example", "https://two.example"]
+
+
+def test_snapshot_requires_broker_and_live_worker(monkeypatch):
+    import analysis_jobs
+    import storage
+
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("REDIS_URL", "redis://queue:6379/0")
+    monkeypatch.setattr(analysis_jobs, "redis_ready", lambda: True)
+    monkeypatch.setattr(analysis_jobs, "celery_worker_ready", lambda: False)
+    monkeypatch.setattr(storage, "storage_configuration_errors", lambda: [])
+    monkeypatch.setattr(storage, "storage_ready", lambda: True)
+    snapshot = readiness.configuration_snapshot()
+    assert snapshot["components"]["job_queue"]["broker_ready"] is True
+    assert snapshot["components"]["job_queue"]["worker_ready"] is False
+    assert snapshot["components"]["job_queue"]["ready"] is False

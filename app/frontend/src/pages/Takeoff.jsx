@@ -421,10 +421,21 @@ export default function Takeoff() {
   // Poll the backend for a persisted AI result (the raster /analyze path runs
   // asynchronously). Returns a UI-ready detection, or null if the job fails /
   // times out / no model is installed — never fabricated data.
-  const pollForResult = async (drawingId, drawing) => {
-    const deadline = Date.now() + 30000;
+  const pollForResult = async (drawingId, drawing, jobId = null) => {
+    const deadline = Date.now() + 5 * 60 * 1000;
     while (Date.now() < deadline) {
       try {
+        if (jobId) {
+          const { data: job } = await takeoffAPI.getJob(jobId);
+          const pct = Number.isFinite(job?.progress) ? job.progress : 0;
+          const label = job?.status === 'retrying'
+            ? `Temporary processing failure; retry ${job.attempt_count + 1}/${job.max_attempts} queued…`
+            : job?.status === 'queued'
+              ? 'Waiting for an available processing worker…'
+              : 'Running durable drawing processing…';
+          setProgress({ msg: label, pct });
+          if (job?.status === 'failed') return null;
+        }
         const { data } = await takeoffAPI.getResults(drawingId);
         if (data && data.detection_data) {
           const det = typeof data.detection_data === 'string'
@@ -479,12 +490,15 @@ export default function Takeoff() {
       // which runs asynchronously. Poll for the persisted result; NEVER fabricate.
       // If the model isn't installed the job fails → honest "unavailable" state.
       setProgress({ msg: 'Running AI detection on this sheet…', pct: 60 });
+      let queuedJobId = null;
       try {
-        await takeoffAPI.analyze(drawing.id);
+        const queued = await takeoffAPI.analyze(drawing.id);
+        queuedJobId = queued.data?.job_id || null;
+        result = await pollForResult(drawing.id, drawing, queuedJobId);
       } catch (error) {
         console.warn('AI analyze trigger failed:', error);
       }
-      result = await pollForResult(drawing.id, drawing);
+      if (!result && !queuedJobId) result = await pollForResult(drawing.id, drawing);
       if (!result) {
         setDetection(null);
         setStatus('unavailable');

@@ -90,6 +90,8 @@ def _generate_tiles(
     project_id: int,
     file_path: str,
     page_number: int = 0,
+    progress_callback=None,
+    raise_errors: bool = False,
 ):
     """
     Background task: build the Deep Zoom tile pyramid (tiling.py) so
@@ -109,17 +111,27 @@ def _generate_tiles(
     from tiling import generate_tile_pyramid, tiling_available
 
     if not tiling_available():
-        return
+        if raise_errors:
+            raise RuntimeError("Tile generation dependencies are unavailable")
+        return None
     try:
+        if progress_callback:
+            progress_callback(10)
         output_dir = _tiles_dir(project_id, drawing_id)
         with storage.resolve_local_path(file_path) as local_path:
             meta = generate_tile_pyramid(local_path, str(output_dir), page_number=page_number)
+        if progress_callback:
+            progress_callback(80)
         if storage.storage_available():
             prefix = storage.drawing_artifact_prefix(organization_id, project_id, drawing_id) + "tiles/"
             storage.upload_directory(prefix, str(output_dir))
         logger.info(f"[Tiling] Generated {meta['max_level']+1} levels for drawing_id={drawing_id}")
+        return meta
     except Exception as tile_err:
         logger.warning(f"[Tiling] Failed for drawing_id={drawing_id}: {tile_err}")
+        if raise_errors:
+            raise
+        return None
 
 
 def get_file_extension(filename: str) -> str:
@@ -197,27 +209,21 @@ def ingest_plan_set(
     for d in drawings:
         db.refresh(d)
 
-    # Persist every job before enqueueing. Redis/Celery is preferred; the
-    # database-backed fallback is restart-recoverable and opens its own DB
-    # session, unlike the old request-scoped BackgroundTasks implementation.
-    from analysis_jobs import enqueue_analysis
+    # Persist every job before publishing it to Celery. Production has no
+    # request-process fallback; PostgreSQL remains the durable state source.
+    from analysis_jobs import enqueue_analysis, enqueue_tiles
     for d in drawings:
         try:
-            enqueue_analysis(db, d)
+            enqueue_analysis(db, d, idempotency_key=f"upload:{batch_id}:analysis:{d.page_number}")
         except Exception as exc:
             d.processing_status = models.ProcessingStatus.FAILED
             d.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
             db.commit()
             logger.error("[PlanSet] Could not enqueue drawing_id=%s: %s", d.id, exc)
-    for d in drawings:
-        background_tasks.add_task(
-            _generate_tiles,
-            d.id,
-            organization_id,
-            project_id,
-            d.file_path,
-            d.page_number,
-        )
+        try:
+            enqueue_tiles(db, d, idempotency_key=f"upload:{batch_id}:tiles:{d.page_number}")
+        except Exception as exc:
+            logger.error("[PlanSet] Could not enqueue tiles drawing_id=%s: %s", d.id, exc)
 
     return drawings
 
@@ -582,7 +588,18 @@ async def get_tile_status(
         )
         meta = read_tile_meta(str(output_dir))
     if meta is None:
-        return {"ready": False}
+        job = db.query(models.ProcessingJob).filter(
+            models.ProcessingJob.drawing_id == drawing_id,
+            models.ProcessingJob.organization_id == current_user.organization_id,
+            models.ProcessingJob.job_type == "tiles",
+        ).order_by(models.ProcessingJob.created_at.desc()).first()
+        return {
+            "ready": False,
+            "job_id": job.id if job else None,
+            "status": job.status if job else None,
+            "progress": job.progress if job else 0,
+            "error": job.error if job and job.status == models.JobStatus.FAILED.value else None,
+        }
     return {"ready": True, **meta}
 
 
@@ -597,15 +614,12 @@ async def trigger_tile_generation(
     drawing = _get_drawing_for_tiles(drawing_id, current_user, db)
     if not _file_exists(drawing.file_path):
         raise HTTPException(status_code=404, detail="File not found on server")
-    background_tasks.add_task(
-        _generate_tiles,
-        drawing.id,
-        current_user.organization_id,
-        drawing.project_id,
-        drawing.file_path,
-        drawing.page_number,
-    )
-    return {"status": "generating", "drawing_id": drawing_id}
+    try:
+        from analysis_jobs import enqueue_tiles
+        queued = enqueue_tiles(db, drawing, requested_by_id=current_user.id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Tile job queue is unavailable") from exc
+    return {"status": queued["status"], "drawing_id": drawing_id, "job_id": queued["job_id"]}
 
 
 @router.get("/drawings/{drawing_id}/tiles/{level}/{tile_filename}")

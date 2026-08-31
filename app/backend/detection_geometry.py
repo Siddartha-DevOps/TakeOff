@@ -11,8 +11,6 @@ so a Detection's geom and the frontend Annotation's geometry describe the
 identical shape in the identical plan-space pixel coordinates.
 """
 
-from typing import Optional
-
 from geoalchemy2.elements import WKTElement
 from sqlalchemy.orm import Session
 
@@ -58,12 +56,14 @@ def persist_detection_geometries(
     as mock/mockAI.js's SAMPLE_DETECTION / ai/detection_engine.py output)
     into real Detection + Measurement rows with PostGIS geometry.
 
-    Idempotent per call site is the caller's responsibility — this always
-    inserts. Callers that re-run analysis on the same drawing should decide
-    whether to supersede prior rows (out of scope here; see PR notes).
+    Replaces the projection produced by the same source for this drawing.
+    Manual/canonical rows from other sources remain untouched, while Celery
+    redelivery cannot duplicate AI/vector detections or measurements.
 
     Returns the number of Detection rows created.
     """
+    delete_detection_geometries(db, drawing_id, source)
+
     created = 0
 
     for room in detection.get("rooms") or []:
@@ -138,3 +138,21 @@ def persist_detection_geometries(
 
     db.commit()
     return created
+
+
+def delete_detection_geometries(db: Session, drawing_id: int, source: str = "ai") -> int:
+    """Remove one rebuildable projection without touching manual annotations."""
+    prior_ids = [row[0] for row in db.query(models.Detection.id).filter(
+        models.Detection.drawing_id == drawing_id,
+        models.Detection.source == source,
+    ).all()]
+    if not prior_ids:
+        return 0
+    db.query(models.Measurement).filter(
+        models.Measurement.detection_id.in_(prior_ids)
+    ).delete(synchronize_session=False)
+    deleted = db.query(models.Detection).filter(
+        models.Detection.id.in_(prior_ids)
+    ).delete(synchronize_session=False)
+    db.flush()
+    return int(deleted or 0)
