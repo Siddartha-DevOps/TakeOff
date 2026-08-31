@@ -44,7 +44,11 @@ const LAYER_CONFIG = [
 ];
 
 const isScaleConfirmed = (info) => (
-  Boolean(info?.scale_ratio && ['manual', 'ocr'].includes(info?.scale_source))
+  Boolean(
+    info?.scale_ratio
+    && ['manual', 'ocr'].includes(info?.scale_source)
+    && info?.manual_confirmation_required === false
+  )
 );
 
 export default function Takeoff() {
@@ -197,7 +201,11 @@ export default function Takeoff() {
   }, [annotationStore, manualTool, selectedManualAnnotationIds, scaleInfo, selectedDrawing]);
 
   function currentMeasurementContext() {
-    return { scaleRatio: scaleInfo?.scale_ratio, fileType: selectedDrawing?.file_type };
+    return {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
+    };
   }
 
   async function fetchProject() {
@@ -489,6 +497,7 @@ export default function Takeoff() {
     const measurementContext = {
       scaleRatio: confirmedScaleInfo.scale_ratio,
       fileType: drawing.file_type,
+      planDpi: confirmedScaleInfo.plan_dpi,
     };
     try {
       const saved = await takeoffAPI.getAnnotations(drawing.id);
@@ -717,6 +726,7 @@ export default function Takeoff() {
     }, {
       scaleRatio: scaleInfo?.scale_ratio,
       fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
     });
   }
 
@@ -734,6 +744,7 @@ export default function Takeoff() {
     annotationStore.updateGeometry(annotationId, geometry, {
       scaleRatio: scaleInfo?.scale_ratio,
       fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
     });
   }
 
@@ -856,6 +867,7 @@ export default function Takeoff() {
     }, {
       scaleRatio: scaleInfo.scale_ratio,
       fileType: selectedDrawing.file_type,
+      planDpi: scaleInfo.plan_dpi,
     });
   }
 
@@ -1178,6 +1190,7 @@ export default function Takeoff() {
           drawingId={selectedDrawing.id}
           drawingName={selectedDrawing.sheet_name || selectedDrawing.original_filename}
           scaleRatio={scaleInfo?.scale_ratio}
+          planDpi={scaleInfo?.plan_dpi}
           onClose={() => setShow3DView(false)}
         />
       )}

@@ -176,7 +176,20 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                     "windows": analysis.windows,
                     "summary": analysis.summary,
                 }
-                enriched = enrich_takeoff_result(json.dumps(raw_detection), raster_path)
+                from scale_validation import is_scale_confirmed
+
+                persisted_drawing = db.query(models.Drawing).filter(
+                    models.Drawing.id == drawing_id
+                ).first()
+                trusted = bool(persisted_drawing and is_scale_confirmed(persisted_drawing))
+                plan_dpi = 300.0 if (
+                    persisted_drawing and str(persisted_drawing.file_type or "").upper() == "PDF"
+                ) else (getattr(persisted_drawing, "scale_dpi", None) if persisted_drawing else None)
+                enriched = enrich_takeoff_result(
+                    json.dumps(raw_detection), raster_path,
+                    scale_ratio=persisted_drawing.scale_ratio if trusted else None,
+                    plan_dpi=plan_dpi if trusted else None,
+                )
             finally:
                 if raster_path != local_path and os.path.exists(raster_path):
                     os.remove(raster_path)
@@ -774,6 +787,19 @@ async def list_drawing_detections(
             "source": det.source,
             "condition_id": det.condition_id,
             "geometry": json.loads(geojson),
+            # Canonical annotation projections preserve viewer plan space
+            # (PDF points or raster pixels). Legacy AI/vector rows used the
+            # explicit 300-DPI raster space.
+            "plan_units_per_inch": (
+                72.0
+                if drawing.annotations_data is not None
+                and str(drawing.file_type or "").upper() == "PDF"
+                else (
+                    drawing.scale_dpi
+                    if drawing.annotations_data is not None
+                    else 300.0  # legacy Detection.geom is explicitly stored in 300-DPI plan space
+                )
+            ),
         }
         for det, geojson in rows
     ]

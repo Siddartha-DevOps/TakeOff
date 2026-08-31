@@ -47,6 +47,10 @@ _REVISION_MARKERS = [
         "drawing_embeddings": {"encoder"},
         "drawings": {"processing_job_id", "processing_attempts", "processing_started_at", "processing_error"},
     }),
+    ("l0f1a2b3c4d5", set(), {"drawings": {
+        "scale_detection_method", "scale_confidence", "scale_requires_confirmation",
+        "scale_dpi", "ocr_scale_method", "ocr_scale_conflict", "ocr_scale_candidates",
+    }}),
 ]
 
 

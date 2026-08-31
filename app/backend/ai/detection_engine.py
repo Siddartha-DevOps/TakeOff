@@ -27,11 +27,6 @@ from loguru import logger
 # workers (which only need model_is_available()) and lets the module be imported
 # even when the full AI stack is not installed.
 
-# Default DPI for unit conversion (mirrors preprocessing.TARGET_DPI). Defined
-# locally so the module can be imported without pulling in OpenCV/PyMuPDF.
-DEFAULT_DPI = 300
-
-
 # ──────────────────────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────────────────────
@@ -194,7 +189,7 @@ class BlueprintDetector:
         self,
         img: np.ndarray,
         scale_info: Optional[dict] = None,
-        dpi: int = DEFAULT_DPI,
+        dpi: Optional[float] = None,
     ) -> dict:
         """
         Run full detection on a preprocessed blueprint image.
@@ -211,7 +206,13 @@ class BlueprintDetector:
             with the same shape instead of raising.
         """
         t_start = time.time()
-        scale_ratio = scale_info["ratio"] if scale_info else 96.0
+        scale_ratio = scale_info.get("ratio") if scale_info else None
+        if not scale_ratio or float(scale_ratio) <= 0:
+            raise ValueError("A confirmed scale is required before measured detection quantities")
+        scale_ratio = float(scale_ratio)
+        if dpi is None or not np.isfinite(dpi) or float(dpi) <= 0:
+            raise ValueError("A trustworthy source/render DPI is required before measured detection quantities")
+        dpi = float(dpi)
 
         if self.model is None:
             return _empty_result(scale_ratio, t_start)

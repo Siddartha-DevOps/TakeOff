@@ -139,7 +139,12 @@ def compute_diff(img_a, aligned_b, ink_threshold: int = 200, diff_threshold: int
     return result, removed_mask, added_mask
 
 
-def quantify_changes(removed_mask, added_mask, scale_ratio: Optional[float] = None, dpi: int = 300) -> dict:
+def quantify_changes(
+    removed_mask,
+    added_mask,
+    scale_ratio: Optional[float] = None,
+    dpi: Optional[float] = None,
+) -> dict:
     """
     One-click change quantification: pixel counts and distinct-region
     counts always; real-world sqft only if the sheet has a calibrated
@@ -161,6 +166,8 @@ def quantify_changes(removed_mask, added_mask, scale_ratio: Optional[float] = No
     }
 
     if scale_ratio:
+        if dpi is None or dpi <= 0:
+            raise ValueError("A trustworthy render/source DPI is required to quantify drawing changes")
         _ensure_ai_on_path()
         from preprocessing import pixels_to_sqft
         result["removed_sqft"] = round(pixels_to_sqft(removed_px, scale_ratio, dpi), 1)

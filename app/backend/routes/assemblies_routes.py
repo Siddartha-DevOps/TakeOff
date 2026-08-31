@@ -26,6 +26,7 @@ from estimating.persistence import (
     seed_rows_from_library,
 )
 from estimating.takeoff_map import estimate_from_takeoff
+from scale_validation import require_confirmed_scale
 
 router = APIRouter(prefix="/estimating", tags=["Estimating"])
 
@@ -113,6 +114,7 @@ def _compute_drawing_estimate(drawing_id: int, cost_book_id, current_user, db) -
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
+    require_confirmed_scale(drawing)
     quantities = canonical_quantities_for_drawing(db, drawing)
     if not quantities:
         raise HTTPException(status_code=409, detail="No takeoff quantities for this drawing yet")

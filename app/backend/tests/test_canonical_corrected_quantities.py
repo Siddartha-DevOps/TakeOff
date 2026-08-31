@@ -307,6 +307,7 @@ def test_estimating_uses_corrected_annotation_quantities_not_stale_result():
     drawing = SimpleNamespace(
         id=44, project_id=3, annotations_data=json.dumps(corrected),
         scale_ratio=SCALE_ONE_FOOT_PER_UNIT, file_type="PDF",
+        scale_source="manual", scale_requires_confirmation=False,
     )
     stale_result = SimpleNamespace(quantities_data=json.dumps([
         {"trade": "Flooring", "item": "Floor", "quantity": 9999, "unit": "sf"}

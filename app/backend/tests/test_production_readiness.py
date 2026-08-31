@@ -31,7 +31,31 @@ def test_production_accepts_hard_requirements(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://configured")
     monkeypatch.setenv("JWT_SECRET_KEY", "configured")
     monkeypatch.setenv("CORS_ORIGINS", "https://take-off-omega.vercel.app")
+    monkeypatch.setenv("S3_BUCKET", "takeoff-production")
+    monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("S3_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("S3_SECRET_ACCESS_KEY", raising=False)
     readiness.validate_startup_environment()
+
+
+def test_explicit_storage_requirement_fails_startup_outside_production(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setenv("REQUIRE_OBJECT_STORAGE", "true")
+    monkeypatch.delenv("S3_BUCKET", raising=False)
+    with pytest.raises(RuntimeError, match="object storage.*S3_BUCKET"):
+        readiness.validate_startup_environment()
+
+
+def test_s3_compatible_endpoint_requires_complete_credentials(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("REQUIRE_OBJECT_STORAGE", "true")
+    monkeypatch.setenv("S3_BUCKET", "takeoff")
+    monkeypatch.setenv("S3_ENDPOINT_URL", "https://example.r2.cloudflarestorage.com")
+    monkeypatch.setenv("S3_ACCESS_KEY_ID", "access")
+    monkeypatch.delenv("S3_SECRET_ACCESS_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY"):
+        readiness.validate_startup_environment()
 
 
 def test_cors_origins_are_trimmed(monkeypatch):

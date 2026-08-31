@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { X, RotateCcw, Loader2, AlertTriangle } from 'lucide-react';
+import { X, RotateCcw, Loader2 } from 'lucide-react';
 import { takeoffAPI } from '../services/api';
 import { getRoomColor } from '../mock/mockAI';
 
@@ -14,16 +14,13 @@ import { getRoomColor } from '../mock/mockAI';
 // client-side WebGL rendering of already-computed geometry, so it doesn't
 // touch CLAUDE.md guardrail #1 (no inference on Vercel) at all.
 
-const REFERENCE_DPI = 300; // matches ai/preprocessing.py's TARGET_DPI / scale_routes.py's REFERENCE_DPI
-const DEFAULT_SCALE_RATIO = 48; // 1/4" = 1'-0" — used only when the drawing has no calibrated scale yet
 const WALL_HEIGHT_FT = 9; // matches the "9ft walls" convention already used in handoff_engine.py's CSI seed catalog
 const WALL_THICKNESS_FT = 0.5;
 
 const MARKER_COLORS = { Door: '#10b981', Window: '#3b82f6' };
 
-function pixelsToFeet(px, scaleRatio) {
-  // Same formula as ai/preprocessing.py's pixels_to_feet(): inches_per_pixel * scale_ratio / 12
-  return (px * scaleRatio) / (REFERENCE_DPI * 12);
+function planUnitsToFeet(px, scaleRatio, unitsPerInch) {
+  return (px * scaleRatio) / (unitsPerInch * 12);
 }
 
 function polygonCentroid(coords) {
@@ -34,13 +31,12 @@ function polygonCentroid(coords) {
   return [x / n, y / n];
 }
 
-export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onClose }) {
+export default function Drawing3DView({ drawingId, drawingName, scaleRatio, planDpi, onClose }) {
   const containerRef = useRef(null);
   const sceneRef = useRef(null); // { renderer, controls, camera, frameId }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [stats, setStats] = useState(null);
-  const usingDefaultScale = !scaleRatio;
 
   useEffect(() => {
     let cancelled = false;
@@ -67,7 +63,11 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
     }
 
     function mountScene(detections) {
-      const effectiveScale = scaleRatio || DEFAULT_SCALE_RATIO;
+      if (!scaleRatio || !planDpi) {
+        setError('Confirm this drawing scale before opening the 3D view.');
+        setLoading(false);
+        return;
+      }
       const rooms = [];
       const walls = [];
       const markers = [];
@@ -103,7 +103,10 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
 
       // Plan-space pixel Y grows downward; map it onto the scene's Z axis
       // (negated) so the floor plan reads right-side-up when viewed from above.
-      const toScene = (px, py) => [pixelsToFeet(px, effectiveScale), -pixelsToFeet(py, effectiveScale)];
+      const toScene = (px, py, unitsPerInch = planDpi) => [
+        planUnitsToFeet(px, scaleRatio, unitsPerInch),
+        -planUnitsToFeet(py, scaleRatio, unitsPerInch),
+      ];
 
       let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
       const trackBounds = (x, z) => {
@@ -115,7 +118,7 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
         const ring = room.geometry.coordinates[0];
         const shape = new THREE.Shape();
         ring.forEach(([px, py], i) => {
-          const [x, z] = toScene(px, py);
+          const [x, z] = toScene(px, py, room.plan_units_per_inch);
           trackBounds(x, z);
           if (i === 0) shape.moveTo(x, z); else shape.lineTo(x, z);
         });
@@ -134,8 +137,8 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
         const isExterior = wall.class_label?.startsWith('exterior');
         const color = isExterior ? '#475569' : '#cbd5e1';
         for (let i = 0; i < pts.length - 1; i++) {
-          const [x1, z1] = toScene(pts[i][0], pts[i][1]);
-          const [x2, z2] = toScene(pts[i + 1][0], pts[i + 1][1]);
+          const [x1, z1] = toScene(pts[i][0], pts[i][1], wall.plan_units_per_inch);
+          const [x2, z2] = toScene(pts[i + 1][0], pts[i + 1][1], wall.plan_units_per_inch);
           trackBounds(x1, z1); trackBounds(x2, z2);
           const length = Math.hypot(x2 - x1, z2 - z1);
           if (length < 0.01) continue;
@@ -150,7 +153,7 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
 
       for (const marker of markers) {
         const [px, py] = polygonCentroid(marker.geometry.coordinates);
-        const [x, z] = toScene(px, py);
+        const [x, z] = toScene(px, py, marker.plan_units_per_inch);
         const color = MARKER_COLORS[marker.class_label] || '#f59e0b';
         const mesh = new THREE.Mesh(
           new THREE.SphereGeometry(0.6, 12, 12),
@@ -207,18 +210,13 @@ export default function Drawing3DView({ drawingId, drawingName, scaleRatio, onCl
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawingId, scaleRatio]);
+  }, [drawingId, scaleRatio, planDpi]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col">
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900">
         <div>
           <h3 className="text-sm font-semibold text-white">3D view — {drawingName}</h3>
-          {usingDefaultScale && !loading && !error && (
-            <p className="text-[11px] text-amber-400 flex items-center gap-1 mt-0.5">
-              <AlertTriangle className="w-3 h-3" /> Scale not calibrated — showing approximate proportions (assumed 1/4" = 1'-0").
-            </p>
-          )}
           {stats && !loading && (
             <p className="text-[11px] text-slate-400 mt-0.5">{stats.rooms} rooms · {stats.walls} wall segments · {stats.markers} doors/windows</p>
           )}

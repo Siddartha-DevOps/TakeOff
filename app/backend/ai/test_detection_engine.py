@@ -15,6 +15,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -43,7 +44,7 @@ def test_detect_returns_untrained_result_schema():
     # A dummy image — should never be touched because there is no model.
     img = np.zeros((8, 8, 3), dtype=np.uint8)
 
-    result = det.detect(img, scale_info={"ratio": 48.0})
+    result = det.detect(img, scale_info={"ratio": 48.0}, dpi=300)
 
     # Same top-level shape as a real detection result.
     for key in (
@@ -68,10 +69,16 @@ def test_detect_returns_untrained_result_schema():
         assert key in result["summary"]
 
 
-def test_detect_defaults_scale_ratio_when_no_scale_info():
+def test_detect_rejects_missing_scale_instead_of_using_an_unsafe_default():
     det = de.BlueprintDetector(model_filename="definitely_not_a_real_model_xyz.pt")
-    result = det.detect(np.zeros((8, 8, 3), dtype=np.uint8))
-    assert result["scale_ratio"] == 96.0
+    with pytest.raises(ValueError, match="confirmed scale"):
+        det.detect(np.zeros((8, 8, 3), dtype=np.uint8))
+
+
+def test_detect_rejects_missing_dpi_instead_of_assuming_300():
+    det = de.BlueprintDetector(model_filename="definitely_not_a_real_model_xyz.pt")
+    with pytest.raises(ValueError, match="trustworthy source/render DPI"):
+        det.detect(np.zeros((8, 8, 3), dtype=np.uint8), scale_info={"ratio": 48.0})
 
 
 def test_snap_to_standard_width():

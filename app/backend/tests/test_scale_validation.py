@@ -25,3 +25,13 @@ def test_unconfirmed_or_invalid_scale_is_rejected(ratio, source):
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "scale_confirmation_required"
     assert exc.value.detail["drawing_id"] == 9
+
+
+def test_detected_but_unconfirmed_scale_is_rejected_even_with_high_confidence():
+    drawing = SimpleNamespace(
+        id=10, scale_ratio=100.0, scale_source="ocr",
+        scale_confidence=0.99, scale_requires_confirmation=True, file_type="PDF",
+    )
+    assert not is_scale_confirmed(drawing)
+    with pytest.raises(HTTPException):
+        require_confirmed_scale(drawing)

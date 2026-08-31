@@ -124,7 +124,19 @@ def parse_title_block(lines: list) -> dict:
             best_len = letters_count
             sheet_title = line.strip()
 
-    return {"sheet_number": sheet_number, "discipline": discipline, "sheet_title": sheet_title}
+    # Keep scale evidence alongside sheet identity so a single title-block OCR
+    # pass can be reused by scale detection/review without inventing a value.
+    from ai.scale_detection import parse_scale_candidates, select_scale_candidate
+
+    scale_candidate = select_scale_candidate(parse_scale_candidates([
+        {"text": line, "confidence": 1.0} for line in lines
+    ]))
+    return {
+        "sheet_number": sheet_number,
+        "discipline": discipline,
+        "sheet_title": sheet_title,
+        "scale_candidate": scale_candidate,
+    }
 
 
 def identify_sheet(img_bgr, page_index: int = 0) -> dict:
@@ -135,7 +147,10 @@ def identify_sheet(img_bgr, page_index: int = 0) -> dict:
     OCR is unavailable or found nothing, never left blank, but
     sheet_number/discipline stay None rather than guessed.
     """
-    fallback = {"sheet_number": None, "discipline": None, "sheet_title": f"Page {page_index + 1}"}
+    fallback = {
+        "sheet_number": None, "discipline": None,
+        "sheet_title": f"Page {page_index + 1}", "scale_candidate": None,
+    }
     if not title_block_available():
         return fallback
 

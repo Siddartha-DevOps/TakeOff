@@ -1,14 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import logging
+from pathlib import Path
+import shutil
 import schemas
 import models
 import permissions
 import entitlements
+import storage
 from auth import get_current_user
 from database import get_db
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
+logger = logging.getLogger(__name__)
+_LOCAL_UPLOAD_ROOT = Path(__file__).parent / "uploads"
 
 # RBAC — memory/TOGAL_PARITY_REAUDIT.md #17: before this, every route here
 # only checked organization_id, so any user in an org (including a VIEWER)
@@ -152,6 +158,47 @@ async def delete_project(
     if not permissions.can_modify_project(current_user, project):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have permission to delete this project")
 
+    # Drawings from a multi-page PDF deliberately share one durable object.
+    # Delete each source once, before removing its database references. If
+    # object storage is unavailable, keep the project intact so deletion can
+    # be retried rather than leaving an untracked object behind.
+    source_paths = {drawing.file_path for drawing in project.drawings if drawing.file_path}
+    try:
+        # Derived artifacts go first. If their cleanup fails, authoritative
+        # source drawings and database records remain untouched and usable.
+        if storage.storage_available():
+            storage.delete_prefix(
+                f"organizations/{current_user.organization_id}/projects/{project_id}/artifacts/"
+            )
+        for file_path in source_paths:
+            if storage.is_storage_uri(file_path):
+                key = storage.key_from_uri(file_path)
+                is_current_key = storage.key_belongs_to_project(
+                    key, current_user.organization_id, project_id
+                )
+                is_legacy_key = key.startswith(f"drawings/{project_id}/")
+                if not (is_current_key or is_legacy_key):
+                    raise storage.StorageOperationError(
+                        "Drawing object key does not belong to the authorized project"
+                    )
+                storage.delete_object(key)
+            else:
+                local_path = Path(file_path).resolve()
+                try:
+                    local_path.relative_to(_LOCAL_UPLOAD_ROOT.resolve())
+                except ValueError:
+                    logger.warning("Refusing to delete drawing path outside upload root: %s", local_path)
+                    continue
+                local_path.unlink(missing_ok=True)
+    except (storage.StorageConfigurationError, storage.StorageOperationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage is temporarily unavailable; project was not deleted",
+        ) from exc
+
+    # Remove the local materialization too; the durable tile prefix was
+    # deleted above when object storage was configured.
+    shutil.rmtree(_LOCAL_UPLOAD_ROOT / str(project_id) / "tiles", ignore_errors=True)
     db.delete(project)
     db.commit()
     return {"message": "Project deleted successfully"}

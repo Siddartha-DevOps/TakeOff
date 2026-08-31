@@ -34,7 +34,13 @@ test('uses the 300 DPI reference coordinate system for raster drawings', () => {
   assert.equal(computeMeasuredValue({
     type: 'line',
     geometry: [[0, 0], [300, 0]],
-  }, { scaleRatio: 48, fileType: 'PNG' }), 4);
+  }, { scaleRatio: 48, fileType: 'PNG', planDpi: 300 }), 4);
+});
+
+test('does not assume a raster DPI when metadata/calibration did not provide one', () => {
+  assert.equal(computeMeasuredValue({
+    type: 'line', geometry: [[0, 0], [300, 0]],
+  }, { scaleRatio: 48, fileType: 'PNG' }), 0);
 });
 
 test('count annotations always measure one item', () => {

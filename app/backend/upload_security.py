@@ -34,6 +34,10 @@ def max_upload_bytes() -> int:
 
 
 def validate_upload_metadata(filename: str, content_type: str | None) -> str:
+    if not filename or len(filename) > 255:
+        raise UploadValidationError("Filename must be between 1 and 255 characters")
+    if any(character in filename for character in ("/", "\\", "\x00", "\r", "\n")):
+        raise UploadValidationError("Filename must not contain paths or control characters")
     ext = file_extension(filename)
     if ext not in ALLOWED_EXTENSIONS:
         raise UploadValidationError(

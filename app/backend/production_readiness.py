@@ -18,12 +18,19 @@ def cors_origins() -> list[str]:
 
 def validate_startup_environment() -> None:
     """Fail before serving when a production deployment is fundamentally unsafe."""
-    if not is_production():
-        return
-    missing = [name for name in ("DATABASE_URL", "JWT_SECRET_KEY") if not os.environ.get(name)]
-    origins = cors_origins()
-    if not origins or "*" in origins:
-        missing.append("CORS_ORIGINS (must be explicit in production)")
+    import storage
+
+    production = is_production()
+    missing = []
+    if production:
+        missing.extend(name for name in ("DATABASE_URL", "JWT_SECRET_KEY") if not os.environ.get(name))
+        origins = cors_origins()
+        if not origins or "*" in origins:
+            missing.append("CORS_ORIGINS (must be explicit in production)")
+    if storage.object_storage_required() or production:
+        storage_errors = storage.storage_configuration_errors()
+        if storage_errors:
+            missing.append("object storage (" + ", ".join(storage_errors) + ")")
     if missing:
         raise RuntimeError("Unsafe production configuration; missing/invalid: " + ", ".join(missing))
 
@@ -33,7 +40,8 @@ def configuration_snapshot() -> dict:
     from analysis_jobs import queue_backend
     import storage
 
-    storage_ready = storage.storage_available()
+    storage_errors = storage.storage_configuration_errors()
+    storage_ready = storage.storage_ready() if not storage_errors else False
     # Native Render services do not automatically set ENVIRONMENT=production,
     # but Render does guarantee RENDER=true. Readiness must still fail closed
     # for ephemeral upload storage even before the dashboard is normalized.
@@ -42,6 +50,7 @@ def configuration_snapshot() -> dict:
         "object_storage": {
             "ready": storage_ready,
             "required": storage_required,
+            "configuration_errors": storage_errors,
         },
         "job_queue": {
             "ready": queue_backend() != "unavailable",

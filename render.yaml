@@ -18,7 +18,7 @@ services:
     dockerfilePath: app/backend/Dockerfile
     dockerContext: app/backend
     plan: free
-    healthCheckPath: /api/health
+    healthCheckPath: /api/readiness       # fail closed when PostGIS/object storage/required services are unavailable
     envVars:
       - key: DATABASE_URL
         fromDatabase:

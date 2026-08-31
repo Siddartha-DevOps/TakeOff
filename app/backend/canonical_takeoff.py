@@ -91,19 +91,28 @@ def arc_length(points: list[list[float]]) -> float:
     return math.hypot(a[0] - center[0], a[1] - center[1]) * sweep
 
 
-def _feet_per_plan_unit(scale_ratio: Any, file_type: Any) -> float:
+def _feet_per_plan_unit(scale_ratio: Any, file_type: Any, scale_dpi: Any = None) -> float:
     ratio = _number(scale_ratio, "drawing.scale_ratio") if scale_ratio is not None else 0
     if ratio <= 0:
-        return 1.0
-    plan_units_per_inch = 72 if str(file_type or "").upper() == "PDF" else 300
+        raise CanonicalAnnotationError("A confirmed positive drawing scale is required for measurement")
+    if str(file_type or "").upper() == "PDF":
+        plan_units_per_inch = 72.0
+    else:
+        plan_units_per_inch = _number(scale_dpi, "drawing.scale_dpi") if scale_dpi is not None else 0
+        if plan_units_per_inch <= 0:
+            raise CanonicalAnnotationError(
+                "Raster measurement requires known DPI or manual two-point calibration"
+            )
     return ratio / (plan_units_per_inch * 12)
 
 
-def normalize_annotations(annotations: Any, scale_ratio: Any = None, file_type: Any = "PDF") -> list[dict]:
+def normalize_annotations(
+    annotations: Any, scale_ratio: Any = None, file_type: Any = "PDF", scale_dpi: Any = None
+) -> list[dict]:
     """Validate and server-remeasure an annotation document."""
     if not isinstance(annotations, list):
         raise CanonicalAnnotationError("annotations must be a list")
-    feet_per_unit = _feet_per_plan_unit(scale_ratio, file_type)
+    feet_per_unit = None
     seen: set[str] = set()
     normalized: list[dict] = []
     for index, raw in enumerate(annotations):
@@ -130,9 +139,13 @@ def normalize_annotations(annotations: Any, scale_ratio: Any = None, file_type: 
         if not isinstance(meta, dict) or not isinstance(style, dict):
             raise CanonicalAnnotationError(f"annotations[{index}] meta/style must be objects")
         if annotation_type == "area":
+            if feet_per_unit is None:
+                feet_per_unit = _feet_per_plan_unit(scale_ratio, file_type, scale_dpi)
             plan_value = max(0.0, polygon_area(geometry) - sum(polygon_area(ring) for ring in holes))
             measured = plan_value * feet_per_unit ** 2
         elif annotation_type == "line":
+            if feet_per_unit is None:
+                feet_per_unit = _feet_per_plan_unit(scale_ratio, file_type, scale_dpi)
             plan_value = arc_length(geometry) if meta.get("curve") == "arc" else polyline_length(geometry)
             measured = plan_value * feet_per_unit
         else:
@@ -285,7 +298,8 @@ def canonical_quantities_for_drawing(db, drawing: models.Drawing) -> list[dict]:
     """Read quantities from annotations when present, with legacy fallback."""
     if drawing.annotations_data is not None:
         annotations = normalize_annotations(
-            json.loads(drawing.annotations_data), drawing.scale_ratio, drawing.file_type
+            json.loads(drawing.annotations_data), drawing.scale_ratio, drawing.file_type,
+            getattr(drawing, "scale_dpi", None),
         )
         condition_ids = {_condition_id(a) for a in annotations} - {None}
         conditions = {
@@ -310,7 +324,9 @@ def canonical_quantities_for_drawing(db, drawing: models.Drawing) -> list[dict]:
 
 def synchronize_corrected_takeoff(db, drawing: models.Drawing, annotations: Any) -> dict:
     """Refresh every local projection in the caller's transaction."""
-    normalized = normalize_annotations(annotations, drawing.scale_ratio, drawing.file_type)
+    normalized = normalize_annotations(
+        annotations, drawing.scale_ratio, drawing.file_type, getattr(drawing, "scale_dpi", None)
+    )
     condition_ids = {_condition_id(a) for a in normalized} - {None}
     conditions = {
         row.id: row for row in db.query(models.Condition).filter(
