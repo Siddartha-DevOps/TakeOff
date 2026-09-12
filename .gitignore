@@ -21,6 +21,36 @@ app/backend/routes/uploads/
 # Local ML datasets and downloaded source archives
 app/backend/data/
 
+# Generated ML datasets, adapters, model artifacts, and experiment outputs
+/datasets/
+/data/
+/models/
+/runs/
+/checkpoints/
+/wandb/
+/mlruns/
+app/backend/ml/datasets/raw/
+app/backend/ml/datasets/processed/
+app/backend/ml/datasets/generated/
+app/backend/ml/datasets/**/raw/
+app/backend/ml/datasets/**/processed/
+app/backend/ml/datasets/**/images/
+app/backend/ml/datasets/**/labels/
+app/backend/ml/datasets/**/annotations/
+app/backend/ml/datasets/**/yolo/
+app/backend/ml/datasets/**/mask-native/
+app/backend/ml/datasets/**/*.zip
+app/backend/ml/datasets/**/*.tar
+app/backend/ml/datasets/**/*.tar.gz
+app/backend/ml/training/runs/
+app/backend/ml/training/checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.safetensors
+
 # Python
 __pycache__/
 *.pyc
