@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "plan_version": "swiss-dwellings-rooms-yolov8m-seg-pretrain-v1",
+  "task": "room_space_instance_segmentation",
+  "dataset": {
+    "manifest_path": "E:\\Takeoff_datasets\\swiss_dwellings\\processed\\full-v1\\manifests\\swiss_dwellings_training_manifest_v1.json",
+    "manifest_sha256": "6375b709932223b328de146282549807c4e2555526d4a2654ff216c68b377c4b",
+    "dataset_version": "swiss-dwellings-takeoff-training-v1",
+    "source_version": "3.0.0",
+    "conversion_version": "swiss-dwellings-takeoff-full-v1",
+    "split_counts": {
+      "train": 11337,
+      "val": 1362,
+      "test": 1203
+    },
+    "excluded_floor_ids": ["5593", "5639", "5640"],
+    "test_policy": "Never load test labels during training or model selection; evaluate once after the validation-selected checkpoint is frozen.",
+    "label_contract": {
+      "frozen_format": "uint8 semantic PNG mask with class IDs 1..14; room_instance.png and metric supervision.json.gz are adjacent conversion artifacts",
+      "trainer_required_format": "Ultralytics YOLO instance-segmentation polygon TXT with class IDs 0..13",
+      "status": "ADAPTER_REQUIRED",
+      "rule": "Create a separately versioned deterministic adapter output; never mutate the frozen manifest or rendered samples."
+    }
+  },
+  "taxonomy": {
+    "mask_background_id": 0,
+    "classes": [
+      {"training_id": 0, "mask_id": 1, "name": "bedroom", "source_classes": ["BEDROOM"]},
+      {"training_id": 1, "mask_id": 2, "name": "bathroom", "source_classes": ["BATHROOM"]},
+      {"training_id": 2, "mask_id": 3, "name": "kitchen", "source_classes": ["KITCHEN"]},
+      {"training_id": 3, "mask_id": 4, "name": "living", "source_classes": ["LIVING_ROOM"]},
+      {"training_id": 4, "mask_id": 5, "name": "living_dining", "source_classes": ["LIVING_DINING"]},
+      {"training_id": 5, "mask_id": 6, "name": "corridor", "source_classes": ["CORRIDOR", "CORRIDORS_AND_HALLS"]},
+      {"training_id": 6, "mask_id": 7, "name": "storage", "source_classes": ["STOREROOM"]},
+      {"training_id": 7, "mask_id": 8, "name": "balcony", "source_classes": ["BALCONY"]},
+      {"training_id": 8, "mask_id": 9, "name": "office", "source_classes": ["OFFICE", "OFFICE_SPACE"]},
+      {"training_id": 9, "mask_id": 10, "name": "utility", "source_classes": ["TECHNICAL_AREA", "WASH_AND_DRY_ROOM"]},
+      {"training_id": 10, "mask_id": 11, "name": "stairs", "source_classes": ["STAIRCASE"]},
+      {"training_id": 11, "mask_id": 12, "name": "entry_lobby", "source_classes": ["FOYER", "LOBBY"]},
+      {"training_id": 12, "mask_id": 13, "name": "generic_room", "source_classes": ["ROOM"]},
+      {"training_id": 13, "mask_id": 14, "name": "shaft", "source_classes": ["SHAFT"]}
+    ],
+    "non_training_semantics_policy": "Preserve every REVIEW, MAP_TO_OTHER, and IGNORE_FOR_CURRENT_MODEL record in metric provenance; do not paint it into this model's labels."
+  },
+  "model": {
+    "family": "Ultralytics YOLOv8 segmentation",
+    "architecture": "yolov8m-seg",
+    "initialization_weights": "models/best.pt",
+    "initialization_sha256": "2cc2cfffaa294f9915a2fddab9812f06b10450e8149e75d5d3361f5b792c9acd",
+    "initialization_version": "resplan-yolov8m-seg-12ep-640-v1",
+    "head_policy": "Transfer compatible backbone/neck weights; reinitialize the prediction head for the ordered 14-class taxonomy."
+  },
+  "training": {
+    "input_resolution": 1280,
+    "batch_size": 4,
+    "epochs": 100,
+    "optimizer": "AdamW",
+    "learning_rate": 0.001,
+    "final_learning_rate_fraction": 0.01,
+    "weight_decay": 0.0005,
+    "warmup_epochs": 3,
+    "cosine_learning_rate": true,
+    "automatic_mixed_precision": true,
+    "early_stopping_patience": 20,
+    "checkpoint_frequency_epochs": 5,
+    "seed": 42,
+    "deterministic": true,
+    "workers": 8,
+    "augmentation": {
+      "hsv_h": 0.0,
+      "hsv_s": 0.0,
+      "hsv_v": 0.0,
+      "degrees": 2.0,
+      "translate": 0.02,
+      "scale": 0.1,
+      "shear": 0.0,
+      "perspective": 0.0,
+      "flip_left_right": 0.5,
+      "flip_up_down": 0.5,
+      "mosaic": 0.0,
+      "mixup": 0.0,
+      "copy_paste": 0.0,
+      "close_mosaic": 0
+    },
+    "sampling": {
+      "unit": "canonical floor occurrence",
+      "source_row_multiplicity_weight": 0,
+      "policy": "deterministic square-root inverse-frequency rare-class floor sampling",
+      "weight_cap": [0.5, 3.0],
+      "negative_floor_batch_cap": 0.1,
+      "status": "REQUIRES_DETERMINISTIC_ADAPTER_IMPLEMENTATION"
+    }
+  },
+  "evaluation": {
+    "model_selection_split": "val",
+    "untouched_split": "test",
+    "capture": [
+      "per_class_mask_precision",
+      "per_class_mask_recall",
+      "per_class_matched_instance_iou",
+      "mask_map50",
+      "mask_map50_95",
+      "confusion_matrix",
+      "validation_box_loss",
+      "validation_segmentation_loss",
+      "validation_classification_loss",
+      "validation_dfl_loss"
+    ],
+    "baseline": {
+      "model_version": "resplan-yolov8m-seg-12ep-640-v1",
+      "comparison_classes": ["living", "bedroom", "bathroom", "kitchen", "balcony", "stairs", "storage"],
+      "rule": "Compare only shared semantics on the same Swiss validation split; do not treat Swiss-only results as customer-domain production accuracy."
+    }
+  },
+  "artifacts": {
+    "output_directory": "E:\\Takeoff_datasets\\swiss_dwellings\\training\\runs\\swiss-dwellings-rooms-yolov8m-seg-pretrain-v1",
+    "run_name": "swiss-dwellings-rooms-yolov8m-seg-pretrain-v1",
+    "required": ["best.pt", "last.pt", "args.yaml", "results.csv", "confusion_matrix.png", "metrics.json", "model_card.md", "artifact_sha256.json"]
+  }
+}

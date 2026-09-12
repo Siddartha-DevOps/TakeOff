@@ -1,7 +1,7 @@
 """add drawing folders and project color
 
 Revision ID: b93c8c83cc5c
-Revises: b6977e619493
+Revises: m1a2b3c4d5e6
 Create Date: 2026-07-17 11:32:04.934956
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'b93c8c83cc5c'
-down_revision: Union[str, Sequence[str], None] = 'b6977e619493'
+down_revision: Union[str, Sequence[str], None] = 'm1a2b3c4d5e6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -23,6 +23,7 @@ import GuestView from './pages/GuestView';
 import Blog from './pages/Blog';
 import { Toaster } from './components/ui/sonner';
 import PaymentSuccess from './pages/PaymentSuccess';
+import SharedView from './pages/SharedView';
 
 
 function MarketingShell({ children }) {
@@ -53,6 +54,7 @@ function App() {
             <Route path="/signup" element={<Signup />} />
             <Route path="/invite/:token" element={<AcceptInvite />} />
             <Route path="/share/:token" element={<GuestView />} />
+            <Route path="/shared/:token" element={<SharedView />} />
             <Route path="/payment-success" element={<ProtectedRoute><PaymentSuccess /></ProtectedRoute>} />
             <Route path="/app" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/app/team" element={<ProtectedRoute><Team /></ProtectedRoute>} />

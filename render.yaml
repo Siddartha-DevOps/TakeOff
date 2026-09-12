@@ -1,0 +1,127 @@
+# Render Blueprint — one-click deploy of the TakeOff.ai backend + Postgres.
+#
+#   Render → New → Blueprint → point at this repo → Apply.
+#
+# The service name `takeoff-api` gives the deterministic URL
+# https://takeoff-api.onrender.com — which vercel.json already proxies /api to,
+# so the frontend needs no extra config. Migrations create the postgis + vector
+# extensions on first boot; SEED_ON_START loads the demo users.
+databases:
+  - name: takeoff-db
+    databaseName: takeoff
+    plan: free
+
+services:
+  - type: keyvalue
+    name: takeoff-redis
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+  - type: web
+    name: takeoff-api
+    runtime: docker
+    dockerfilePath: app/backend/Dockerfile
+    dockerContext: app/backend
+    plan: free
+    healthCheckPath: /api/readiness       # fail closed when PostGIS/object storage/required services are unavailable
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: takeoff-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: takeoff-redis
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true          # strong random secret (my auth fail-fast is satisfied)
+      - key: ENVIRONMENT
+        value: production
+      - key: SEED_ON_START
+        value: "true"                # creates alex@acme.com / password123 on first deploy
+      - key: AUTO_MIGRATE
+        value: "true"                # also protects native/direct-Uvicorn Render services
+      - key: CORS_ORIGINS
+        value: "https://take-off-omega.vercel.app"
+      - key: AI_INFERENCE_SPACE_ID
+        value: "Siddartha96/takeoff-spaces-inference"
+      - key: AI_INFERENCE_API_NAME
+        value: "/predict_spaces"
+      - key: AI_INFERENCE_TIMEOUT_SECONDS
+        value: "90"
+      - key: AI_SEARCH_TIMEOUT_SECONDS
+        value: "60"
+      - key: HF_TOKEN
+        sync: false                 # private Space access token; enter in Render, never commit it
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false                 # Stripe endpoint signing secret (whsec_...); webhooks fail closed when unset
+      - key: INTEGRATION_ENCRYPTION_KEYS
+        sync: false                 # comma-separated Fernet key ring; first key encrypts, remaining keys support rotation
+      - key: SENTRY_DSN
+        sync: false                 # optional, but /api/readiness reports whether production error tracking is configured
+      - key: INTERNAL_WEBHOOK_SECRET
+        generateValue: true         # authenticates completion callbacks when a Celery worker is added
+      - key: REQUIRE_OBJECT_STORAGE
+        value: "true"               # never acknowledge uploads that would disappear on Render's ephemeral disk
+      - key: UPLOAD_MAX_BYTES
+        value: "104857600"          # 100 MiB hard limit for proxy and presigned uploads
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false                 # set for Cloudflare R2/MinIO; leave blank for AWS S3
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "us-east-1"
+
+  - type: worker
+    name: takeoff-worker
+    runtime: docker
+    dockerfilePath: app/backend/Dockerfile
+    dockerContext: app/backend
+    dockerCommand: celery -A celery_app worker --loglevel=INFO --concurrency=1 -B
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: takeoff-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: takeoff-redis
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: AI_INFERENCE_SPACE_ID
+        value: "Siddartha96/takeoff-spaces-inference"
+      - key: AI_INFERENCE_API_NAME
+        value: "/predict_spaces"
+      - key: AI_INFERENCE_TIMEOUT_SECONDS
+        value: "90"
+      - key: HF_TOKEN
+        sync: false
+      - key: REQUIRE_OBJECT_STORAGE
+        value: "true"
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: "us-east-1"
+      - key: JOB_MAX_ATTEMPTS
+        value: "3"
+      - key: JOB_STALE_SECONDS
+        value: "900"
+      - key: JOB_SOFT_TIME_LIMIT
+        value: "900"
+      - key: JOB_HARD_TIME_LIMIT
+        value: "1200"

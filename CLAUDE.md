@@ -33,7 +33,8 @@ Build **original** code and models. Match Togal's capability, never copy its bra
 - **DB:** Postgres on Neon or Supabase + PostGIS + pgvector. ORM: Prisma.
 - **Object storage:** Cloudflare R2 or AWS S3 (presigned uploads).
 - **Cache/presence:** Upstash Redis; Liveblocks for real-time collaboration.
-- **ML inference host:** Modal or Replicate (start here for speed); RunPod/AWS later.
+- **ML inference host:** Private Hugging Face ZeroGPU for the free prototype;
+  Modal or Replicate for production capacity; RunPod/AWS later.
 - **CV models:** SAM2 (zero-shot first), then fine-tuned Mask R-CNN / U-Net / YOLOv8-seg for spaces; YOLOv8/v11 or DETR for symbols; PaddleOCR for text.
 - **LLM/RAG (Takeoff.CHAT):** GPT-4o or Claude + pgvector.
 - **Payments:** Stripe. **Observability:** Sentry + Vercel Analytics.

@@ -9,18 +9,10 @@ drawing only" bug it names — routes/export_routes.py's old export_project()
 queried every drawing in a project, then kept only `drawings[0]`. Every
 function here processes whatever set of drawings/rows it's given, in full.
 
-Data source: TakeoffResult.quantities_data (the AI's trade/item/quantity/
-unit breakdown per drawing) — not Condition/Detection.condition_id.
-Condition-based cost (quantity * unit_cost * (1+waste%), per
-frontend/src/pages/Takeoff.jsx's conditionCostTotals) is a live,
-client-side-only concept today: assigning a shape to a Condition
-(assignSelectionToCondition) calls annotationStore directly and never hits
-the backend, so Detection.condition_id is never populated by the real app
-flow — confirmed by reading the assignment code path, not assumed. A
-backend-side join through it would silently show empty/incomplete data for
-every real project. quantities_data is the one dataset that's genuinely
-persisted per-drawing and safe to aggregate project-wide; using it instead
-of Condition is a deliberate, documented scope decision.
+Data source: the canonical, user-corrected ``Drawing.annotations_data``
+document when it exists, with the pre-editor ``TakeoffResult.quantities_data``
+path retained only for legacy drawings.  This guarantees exports cannot
+silently fall back to stale AI quantities after a manual correction.
 
 The "inline editable grid" requirement is satisfied by construction:
 generate_report() below renders exactly the rows it's handed, verbatim —
@@ -43,6 +35,7 @@ import json
 from typing import Optional
 
 import models
+from canonical_takeoff import canonical_quantities_for_drawing
 
 GROUP_DIMENSIONS = ("drawing", "trade", "item", "folder")
 _GROUP_FIELD = {"drawing": "drawing_name", "trade": "trade", "item": "item", "folder": "folder_name"}
@@ -50,10 +43,8 @@ _GROUP_FIELD = {"drawing": "drawing_name", "trade": "trade", "item": "item", "fo
 
 def extract_rows(db, drawing: "models.Drawing") -> list[dict]:
     """
-    One row per quantities_data line item from the given Drawing's latest
-    TakeoffResult. A drawing with no result yet (still processing)
-    contributes zero rows, not an error — a project export explicitly
-    spans drawings that may be at different stages.
+    One row per canonical corrected quantity for the given drawing. A drawing
+    with no result or annotation state contributes zero rows.
 
     folder_name/folder_id (Togal parity: "Breakdowns — phase/floor/unit")
     ride along on every row so build_grouped_sections() can group by
@@ -63,22 +54,12 @@ def extract_rows(db, drawing: "models.Drawing") -> list[dict]:
     field. A drawing with no folder assigned groups under "Unfiled", same
     label the Drawings sidebar uses for it.
     """
-    result = db.query(models.TakeoffResult).filter(
-        models.TakeoffResult.drawing_id == drawing.id
-    ).order_by(models.TakeoffResult.created_at.desc()).first()
-    if not result or not result.quantities_data:
-        return []
-
-    try:
-        quantities = json.loads(result.quantities_data)
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if not isinstance(quantities, list):
-        return []
+    quantities = canonical_quantities_for_drawing(db, drawing)
 
     drawing_name = drawing.sheet_number or drawing.sheet_name or drawing.original_filename
-    folder_id = drawing.folder_id
-    folder_name = drawing.folder.name if drawing.folder else "Unfiled"
+    folder_id = getattr(drawing, "folder_id", None)
+    folder = getattr(drawing, "folder", None)
+    folder_name = folder.name if folder else "Unfiled"
     rows = []
     for i, item in enumerate(quantities):
         if not isinstance(item, dict):

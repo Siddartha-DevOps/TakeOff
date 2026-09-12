@@ -1,15 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Sparkles, Upload, Send, Download, ZoomIn, ZoomOut, Maximize2, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, Folder, FolderPlus, ChevronRight, Combine, Scissors, SquareMinus, Link2, Copy } from 'lucide-react';
+import { ArrowLeft, Sparkles, Upload, Send, Download, Eye, EyeOff, FileDown, MessageSquare, Layers, RefreshCw, Check, Users, Bell, Loader2, ChevronDown, Ruler, X, MousePointer2, Tag, Plus, Trash2, Search as SearchIcon, GitCompare, ArrowRightLeft, History, Box, Repeat, IndianRupee, Calculator, FolderTree, Brain, Share2, HelpCircle, Library, Undo2, Redo2 } from 'lucide-react';
 import Drawing3DView from '../components/Drawing3DView';
 import RepeatingGroupsModal from '../components/RepeatingGroupsModal';
-import { runTakeoffAI, askTakeoffChat, getRoomColor } from '../mock/mockAI';
-import { SAMPLE_PROJECTS } from '../mock/mockData';
-import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI, foldersAPI, templatesAPI, shareAPI } from '../services/api';
+import IndiaBOQPanel from '../components/IndiaBOQPanel';
+import EstimatePanel from '../components/EstimatePanel';
+import PlanSetModal from '../components/PlanSetModal';
+import AIDashboardModal from '../components/AIDashboardModal';
+import ShareModal from '../components/ShareModal';
+import HelpPanel from '../components/HelpPanel';
+import OnboardingChecklist from '../components/OnboardingChecklist';
+import ClassificationModal from '../components/ClassificationModal';
+import { getRoomColor } from '../mock/mockAI';
+import { projectsAPI, uploadsAPI, takeoffAPI, exportAPI, scaleAPI, conditionsAPI, correctionsAPI, chatAPI, searchAPI, compareAPI, handoffAPI, collabAPI } from '../services/api';
 import FileUploadZone from '../components/FileUploadZone';
 import DrawingRenderer from '../components/DrawingRenderer';
 import { useAnnotationStore } from '../annotations/useAnnotationStore';
-import { boundsOf, rectsIntersect } from '../annotations/geometry';
+import { boundsOf, rectsIntersect, ringInsidePolygon } from '../annotations/geometry';
+import { mergeAreaAnnotations } from '../annotations/operations';
+import { getSessionUser } from '../services/session.js';
 
 // AIA Uniform Drawing System discipline colors, matching
 // ai/title_block_ocr.py's DISCIPLINE_CODES — just enough to give the
@@ -34,21 +43,20 @@ const LAYER_CONFIG = [
   { key: 'walls', label: 'Walls', color: '#eab308' },
 ];
 
-// Same palette CreateProjectModal.jsx's ORG_COLORS uses — one shared set of
-// organization colors for folders too (Togal parity: "color-coded, folders, sets").
-const FOLDER_COLORS = ['#6366f1', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#ec4899', '#64748b'];
+const isScaleConfirmed = (info) => (
+  Boolean(
+    info?.scale_ratio
+    && ['manual', 'ocr'].includes(info?.scale_source)
+    && info?.manual_confirmation_required === false
+  )
+);
 
 export default function Takeoff() {
   const { id } = useParams();
   const nav = useNavigate();
   const [project, setProject] = useState(null);
+  const [projectError, setProjectError] = useState('');
   const [drawings, setDrawings] = useState([]);
-  const [folders, setFolders] = useState([]);
-  const [collapsedFolders, setCollapsedFolders] = useState(() => new Set());
-  const [showNewFolder, setShowNewFolder] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  const [newFolderColor, setNewFolderColor] = useState(FOLDER_COLORS[0]);
-  const [movingDrawingId, setMovingDrawingId] = useState(null);
   const [loadingProject, setLoadingProject] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
   const [status, setStatus] = useState('idle');
@@ -57,20 +65,25 @@ export default function Takeoff() {
   const [layers, setLayers] = useState({ rooms: true, doors: true, windows: true, walls: true });
   const [selectedId, setSelectedId] = useState(null);
   const [tab, setTab] = useState('quantities');
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const dragRef = useRef(null);
   const [selectedDrawing, setSelectedDrawing] = useState(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showAdvancedExport, setShowAdvancedExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
   const [showRepeatingGroups, setShowRepeatingGroups] = useState(false);
   const [show3DView, setShow3DView] = useState(false);
+  const [showBOQ, setShowBOQ] = useState(false);
+  const [showEstimate, setShowEstimate] = useState(false);
+  const [showPlanSet, setShowPlanSet] = useState(false);
+  const [showAIDash, setShowAIDash] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showClassifications, setShowClassifications] = useState(false);
   // Unified annotation store (Milestone 0): AI detections are migrated into
   // this same model manual edits will use later. No rendering wired to it yet.
   const annotationStore = useAnnotationStore();
+  const [annotationReadyDrawingId, setAnnotationReadyDrawingId] = useState(null);
+  const annotationSaveSequenceRef = useRef(0);
 
   // Scale calibration — persisted per Sheet (Drawing). See routes/scale_routes.py.
   const [scaleInfo, setScaleInfo] = useState(null);
@@ -78,13 +91,19 @@ export default function Takeoff() {
   const [pendingCalPoints, setPendingCalPoints] = useState(null); // {point1, point2} awaiting a distance
   const [calibratingBusy, setCalibratingBusy] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  const [manualTool, setManualTool] = useState(null);
+  const [selectedManualAnnotationIds, setSelectedManualAnnotationIds] = useState([]);
+  const [splitPick, setSplitPick] = useState(null);
+  const annotationClipboardRef = useRef([]);
+  const [showAnnotationHistory, setShowAnnotationHistory] = useState(false);
+  const [annotationVersions, setAnnotationVersions] = useState([]);
+  const [annotationHistoryBusy, setAnnotationHistoryBusy] = useState(false);
 
   // Conditions + box-select assignment. See routes/condition_routes.py.
   const [conditions, setConditions] = useState([]);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   const [contextMenu, setContextMenu] = useState(null); // {x, y} screen position
-  const [shapeOpError, setShapeOpError] = useState(null); // last merge/split/backout failure message
   const [editingCondition, setEditingCondition] = useState(null); // Condition object being edited, or null
 
   const [revisions, setRevisions] = useState([]);
@@ -102,7 +121,7 @@ export default function Takeoff() {
   const [activeCommentId, setActiveCommentId] = useState(null); // pin popover currently open
   const wsRef = useRef(null);
   const lastCursorSentRef = useRef(0);
-  const selfUserId = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}').id; } catch { return null; } })();
+  const selfUserId = (() => { try { return JSON.parse(getSessionUser() || '{}').id; } catch { return null; } })();
 
   useEffect(() => {
     fetchProject();
@@ -112,22 +131,93 @@ export default function Takeoff() {
   useEffect(() => {
     if (project) {
       fetchDrawings();
-      fetchFolders();
       fetchConditions();
-      runAnalysis();
     }
     // eslint-disable-next-line
   }, [project]);
 
+  // Persist the unified annotation document after every settled edit. Loading
+  // a different sheet clears the ready id first, so its temporary empty state
+  // can never overwrite the previous sheet.
+  useEffect(() => {
+    if (!selectedDrawing || annotationReadyDrawingId !== selectedDrawing.id) return undefined;
+    const drawingId = selectedDrawing.id;
+    const saveSequence = ++annotationSaveSequenceRef.current;
+    const timer = window.setTimeout(() => {
+      takeoffAPI.saveAnnotations(drawingId, annotationStore.annotations)
+        .then(({ data }) => {
+          if (saveSequence !== annotationSaveSequenceRef.current || selectedDrawing.id !== drawingId) return;
+          setDetection((current) => ({
+            ...(current || {}),
+            quantities: data.quantities || [],
+            summary: data.summary || current?.summary || {},
+          }));
+        })
+        .catch((error) => console.error('Failed to save annotations:', error));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [annotationStore.annotations, annotationReadyDrawingId, selectedDrawing]);
+
+  useEffect(() => {
+    setSelectedManualAnnotationIds([]);
+    setSplitPick(null);
+  }, [selectedDrawing?.id]);
+
+  useEffect(() => {
+    const handleEditorShortcut = (event) => {
+      const tag = event.target?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || event.target?.isContentEditable) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) annotationStore.redo();
+        else annotationStore.undo();
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        annotationStore.redo();
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectedManualAnnotationIds.length) {
+        event.preventDefault();
+        annotationClipboardRef.current = selectedManualAnnotationIds
+          .map((annotationId) => annotationStore.annotations.find((annotation) => annotation.id === annotationId))
+          .filter(Boolean)
+          .map((annotation) => JSON.parse(JSON.stringify(annotation)));
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && annotationClipboardRef.current.length) {
+        event.preventDefault();
+        annotationStore.pasteAnnotations(annotationClipboardRef.current, currentMeasurementContext());
+      } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && selectedManualAnnotationIds.length) {
+        event.preventDefault();
+        annotationStore.duplicate(selectedManualAnnotationIds, currentMeasurementContext());
+      } else if ((event.key === 'Delete' || event.key === 'Backspace') && selectedManualAnnotationIds.length) {
+        event.preventDefault();
+        annotationStore.deleteAnnotations(selectedManualAnnotationIds);
+        setSelectedManualAnnotationIds([]);
+      } else if (event.key === 'Escape') {
+        setSelectedManualAnnotationIds([]);
+        setSplitPick(null);
+        if (manualTool === 'split' || manualTool === 'hole') setManualTool('select');
+      }
+    };
+    window.addEventListener('keydown', handleEditorShortcut);
+    return () => window.removeEventListener('keydown', handleEditorShortcut);
+  }, [annotationStore, manualTool, selectedManualAnnotationIds, scaleInfo, selectedDrawing]);
+
+  function currentMeasurementContext() {
+    return {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
+    };
+  }
+
   async function fetchProject() {
     try {
       setLoadingProject(true);
+      setProjectError('');
       const response = await projectsAPI.get(id);
       setProject(response.data);
     } catch (error) {
       console.error('Failed to fetch project:', error);
-      const mockProject = SAMPLE_PROJECTS.find((p) => p.id === id) || SAMPLE_PROJECTS[0];
-      setProject(mockProject);
+      setProject(null);
+      setProjectError(error.response?.data?.detail || 'This project could not be loaded.');
     } finally {
       setLoadingProject(false);
     }
@@ -136,152 +226,19 @@ export default function Takeoff() {
   async function fetchDrawings() {
     try {
       const response = await uploadsAPI.listDrawings(id);
-      setDrawings(response.data || []);
+      const projectDrawings = response.data || [];
+      setDrawings(projectDrawings);
+      if (projectDrawings.length > 0) {
+        selectDrawing(projectDrawings[0]);
+      } else {
+        setSelectedDrawing(null);
+        setDetection(null);
+        setStatus('idle');
+      }
     } catch (error) {
       console.error('Failed to fetch drawings:', error);
       setDrawings([]);
     }
-  }
-
-  // Drawing folders — Togal parity "Project folders & organization"
-  // (color-coded, folders, sets). Folders are a manual, project-scoped
-  // grouping (routes/folder_routes.py); "sets" are the automatic grouping
-  // sheets that arrived together in one multi-page PDF upload already carry
-  // (Drawing.upload_batch_id) — surfaced below, not a separate fetch.
-  async function fetchFolders() {
-    try {
-      const response = await foldersAPI.list(id);
-      setFolders(response.data || []);
-    } catch (error) {
-      console.error('Failed to fetch folders:', error);
-      setFolders([]);
-    }
-  }
-
-  async function createFolder() {
-    const name = newFolderName.trim();
-    if (!name) return;
-    try {
-      const response = await foldersAPI.create(id, { name, color: newFolderColor });
-      setFolders((prev) => [...prev, response.data]);
-      setNewFolderName('');
-      setNewFolderColor(FOLDER_COLORS[0]);
-      setShowNewFolder(false);
-    } catch (error) {
-      console.error('Failed to create folder:', error);
-    }
-  }
-
-  async function deleteFolder(folderId) {
-    try {
-      await foldersAPI.delete(folderId);
-      setFolders((prev) => prev.filter((f) => f.id !== folderId));
-      // Un-file client-side too — the backend already SET NULLs it (ON
-      // DELETE SET NULL), this just keeps the sidebar in sync without a refetch.
-      setDrawings((prev) => prev.map((d) => (d.folder_id === folderId ? { ...d, folder_id: null } : d)));
-    } catch (error) {
-      console.error('Failed to delete folder:', error);
-    }
-  }
-
-  async function assignDrawingFolder(drawingId, folderId) {
-    try {
-      const response = await foldersAPI.assignDrawing(drawingId, folderId);
-      setDrawings((prev) => prev.map((d) => (d.id === drawingId ? response.data : d)));
-    } catch (error) {
-      console.error('Failed to move drawing:', error);
-    } finally {
-      setMovingDrawingId(null);
-    }
-  }
-
-  function toggleFolderCollapsed(folderId) {
-    setCollapsedFolders((prev) => {
-      const next = new Set(prev);
-      if (next.has(folderId)) next.delete(folderId);
-      else next.add(folderId);
-      return next;
-    });
-  }
-
-  // Folders (manual) + sets (automatic, from upload_batch_id) grouping for
-  // the Drawings sidebar. Unfiled drawings that share a batch_id with at
-  // least one sibling render under a "Set" sub-heading; everything else
-  // (single-page uploads, or already-foldered sheets) is flat.
-  const drawingGroups = useMemo(() => {
-    const byFolder = new Map(folders.map((f) => [f.id, []]));
-    const unfiled = [];
-    for (const d of drawings) {
-      if (d.folder_id != null && byFolder.has(d.folder_id)) byFolder.get(d.folder_id).push(d);
-      else unfiled.push(d);
-    }
-    const batchCounts = new Map();
-    for (const d of unfiled) {
-      if (d.upload_batch_id) batchCounts.set(d.upload_batch_id, (batchCounts.get(d.upload_batch_id) || 0) + 1);
-    }
-    const sets = new Map(); // batch_id -> drawings[]
-    const unfiledFlat = [];
-    for (const d of unfiled) {
-      if (d.upload_batch_id && batchCounts.get(d.upload_batch_id) > 1) {
-        if (!sets.has(d.upload_batch_id)) sets.set(d.upload_batch_id, []);
-        sets.get(d.upload_batch_id).push(d);
-      } else {
-        unfiledFlat.push(d);
-      }
-    }
-    return { byFolder, sets, unfiledFlat };
-  }, [drawings, folders]);
-
-  function renderDrawingRow(drawing) {
-    return (
-      <div key={drawing.id} className="group relative flex items-center gap-1">
-        <button
-          onClick={() => selectDrawing(drawing)}
-          className={`flex-1 min-w-0 text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
-        >
-          <div className="flex items-center gap-1.5 min-w-0">
-            {drawing.discipline && (
-              <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
-            )}
-            {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
-            <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
-          </div>
-          <div className="text-[10px] text-slate-500">
-            {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
-            {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
-          </div>
-        </button>
-        <div className="relative flex-shrink-0">
-          <button
-            onClick={() => setMovingDrawingId(movingDrawingId === drawing.id ? null : drawing.id)}
-            title="Move to folder"
-            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
-          >
-            <Folder className="w-3 h-3" />
-          </button>
-          {movingDrawingId === drawing.id && (
-            <div className="absolute right-0 top-6 z-10 w-40 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1">
-              <button
-                onClick={() => assignDrawingFolder(drawing.id, null)}
-                className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700"
-              >
-                Unfiled
-              </button>
-              {folders.map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => assignDrawingFolder(drawing.id, f.id)}
-                  className="w-full text-left px-3 py-1.5 text-[11px] text-slate-300 hover:bg-slate-700 flex items-center gap-1.5"
-                >
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: f.color }} />
-                  <span className="truncate">{f.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    );
   }
 
   // Real-time collaboration socket — one connection per project ("room"),
@@ -289,7 +246,8 @@ export default function Takeoff() {
   // their own drawing_id so remote cursors are filtered client-side).
   useEffect(() => {
     if (!id) return undefined;
-    const ws = new WebSocket(collabAPI.wsUrl(id));
+    const connection = collabAPI.wsConnection(id);
+    const ws = new WebSocket(connection.url, connection.protocols);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
@@ -396,11 +354,7 @@ export default function Takeoff() {
     setDrawings((prev) => [...newDrawings, ...prev]);
     setShowUpload(false);
     const primary = newDrawings[0];
-    setSelectedDrawing(primary);
-    setSuggestionDismissed(false);
-    fetchScaleInfo(primary.id);
-    fetchRevisions(primary.id);
-    runAnalysisForDrawing(primary);
+    if (primary) selectDrawing(primary);
   };
 
   async function fetchRevisions(drawingId) {
@@ -464,67 +418,147 @@ export default function Takeoff() {
     };
   };
 
-  const runAnalysisForDrawing = async (drawing) => {
+  // Poll the backend for a persisted AI result (the raster /analyze path runs
+  // asynchronously). Returns a UI-ready detection, or null if the job fails /
+  // times out / no model is installed — never fabricated data.
+  const pollForResult = async (drawingId, drawing, jobId = null) => {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      try {
+        if (jobId) {
+          const { data: job } = await takeoffAPI.getJob(jobId);
+          const pct = Number.isFinite(job?.progress) ? job.progress : 0;
+          const label = job?.status === 'retrying'
+            ? `Temporary processing failure; retry ${job.attempt_count + 1}/${job.max_attempts} queued…`
+            : job?.status === 'queued'
+              ? 'Waiting for an available processing worker…'
+              : 'Running durable drawing processing…';
+          setProgress({ msg: label, pct });
+          if (job?.status === 'failed') return null;
+        }
+        const { data } = await takeoffAPI.getResults(drawingId);
+        if (data && data.detection_data) {
+          const det = typeof data.detection_data === 'string'
+            ? JSON.parse(data.detection_data) : data.detection_data;
+          let quantities = [];
+          try {
+            quantities = typeof data.quantities_data === 'string'
+              ? JSON.parse(data.quantities_data) : (data.quantities_data || []);
+          } catch { quantities = []; }
+          return {
+            rooms: det.rooms || [], walls: det.walls || [], doors: det.doors || [],
+            windows: det.windows || [], summary: det.summary || {},
+            quantities, method: 'raster',
+            scale: '—', sheet: drawing?.sheet_name || drawing?.original_filename || '',
+            processingTimeMs: data.processing_time_ms || 0,
+          };
+        }
+        if (data && data.processing_status === 'failed') return null;  // model unavailable / errored
+      } catch (error) {
+        // 404 / transient — keep waiting until the deadline
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    return null;
+  };
+
+  const runAnalysisForDrawing = async (drawing, confirmedScaleInfo = scaleInfo) => {
+    if (!isScaleConfirmed(confirmedScaleInfo)) {
+      setDetection(null);
+      setStatus('needs_scale');
+      setProgress(null);
+      return;
+    }
     setStatus('processing');
     setProgress({ msg: 'Reading vector geometry from the plan…', pct: 30 });
 
-    // Real vector AUTODETECT first (exact, no weights). Falls back to the mock
-    // only when the sheet isn't a vector PDF or the call fails — same
-    // real-first/fallback pattern this app uses for chat.
+    // Real vector AUTODETECT first (exact, no weights) for vector PDFs. Anything
+    // else falls through to the real raster AI model below — never to mock data.
     let result = null;
-    let fromVector = false;
     if ((drawing.file_type || '').toUpperCase() === 'PDF') {
       try {
         const { data } = await takeoffAPI.autodetect(drawing.id);
         if (data && data.method === 'vector' && data.is_vector !== false) {
           result = mapAutodetect(data, drawing);
-          fromVector = true;
         }
       } catch (error) {
-        console.warn('AUTODETECT unavailable, falling back:', error);
+        console.warn('AUTODETECT unavailable, falling back to raster AI:', error);
       }
     }
     if (!result) {
-      result = await runTakeoffAI({ onProgress: setProgress, seed: drawing.id });
+      // No vector geometry (scanned PDF or JPG/PNG/TIFF) → real raster AI model,
+      // which runs asynchronously. Poll for the persisted result; NEVER fabricate.
+      // If the model isn't installed the job fails → honest "unavailable" state.
+      setProgress({ msg: 'Running AI detection on this sheet…', pct: 60 });
+      let queuedJobId = null;
+      try {
+        const queued = await takeoffAPI.analyze(drawing.id);
+        queuedJobId = queued.data?.job_id || null;
+        result = await pollForResult(drawing.id, drawing, queuedJobId);
+      } catch (error) {
+        console.warn('AI analyze trigger failed:', error);
+      }
+      if (!result && !queuedJobId) result = await pollForResult(drawing.id, drawing);
+      if (!result) {
+        setDetection(null);
+        setStatus('unavailable');
+        setProgress(null);
+        return;
+      }
     }
 
     setDetection(result);
-    annotationStore.loadFromDetection(result);
-    setStatus('ready');
-
-    // The vector AUTODETECT endpoint already persisted a TakeoffResult; only the
-    // mock/fallback path needs to save here (avoids a duplicate row + usage count).
-    if (!fromVector) {
-      try {
-        await takeoffAPI.saveResults(drawing.id, {
-          detection_data: JSON.stringify(result),
-          quantities_data: JSON.stringify(result.summary || {}),
-          confidence_scores: JSON.stringify({ avg: 0.95 }),
-          processing_time_ms: result.processingTimeMs || 1500,
-        });
-      } catch (error) {
-        console.error('Failed to save AI results:', error);
+    const measurementContext = {
+      scaleRatio: confirmedScaleInfo.scale_ratio,
+      fileType: drawing.file_type,
+      planDpi: confirmedScaleInfo.plan_dpi,
+    };
+    try {
+      const saved = await takeoffAPI.getAnnotations(drawing.id);
+      if (saved.data?.saved) {
+        annotationStore.loadFromJSON(saved.data.annotations, measurementContext);
+      } else {
+        annotationStore.loadFromDetection(result, measurementContext);
       }
+    } catch (error) {
+      console.warn('Persisted annotations unavailable; using detection result:', error);
+      annotationStore.loadFromDetection(result, measurementContext);
     }
+    setAnnotationReadyDrawingId(drawing.id);
+    setStatus('ready');
+    // Both real paths (vector AUTODETECT and raster /analyze) persist their own
+    // TakeoffResult server-side, so there's nothing to save from the client here.
+    // (The old client-side save existed only for the removed mock path.)
   };
 
-  const selectDrawing = (drawing) => {
+  const selectDrawing = async (drawing) => {
     setSelectedDrawing(drawing);
+    setAnnotationReadyDrawingId(null);
+    setDetection(null);
+    annotationStore.loadFromDetection(null);
+    setManualTool(null);
     setCalibrating(false);
     setPendingCalPoints(null);
     setSuggestionDismissed(false);
-    fetchScaleInfo(drawing.id);
+    setScaleInfo(null);
     fetchRevisions(drawing.id);
-    runAnalysisForDrawing(drawing);
+    const info = await fetchScaleInfo(drawing.id);
+    if (isScaleConfirmed(info)) {
+      runAnalysisForDrawing(drawing, info);
+    } else {
+      setStatus('needs_scale');
+    }
   };
 
   async function fetchScaleInfo(drawingId) {
     try {
       const res = await scaleAPI.get(drawingId);
       setScaleInfo(res.data);
+      return res.data;
     } catch (error) {
       console.error('Failed to fetch scale info:', error);
       setScaleInfo(null);
+      return null;
     }
   }
 
@@ -546,6 +580,7 @@ export default function Takeoff() {
       });
       setScaleInfo(res.data);
       setPendingCalPoints(null);
+      runAnalysisForDrawing(selectedDrawing, res.data);
     } catch (error) {
       console.error('Calibration failed:', error);
       alert(error.response?.data?.detail || 'Failed to calibrate scale. Please try again.');
@@ -559,6 +594,7 @@ export default function Takeoff() {
     try {
       const res = await scaleAPI.acceptSuggestion(selectedDrawing.id);
       setScaleInfo(res.data);
+      runAnalysisForDrawing(selectedDrawing, res.data);
     } catch (error) {
       console.error('Failed to accept scale suggestion:', error);
     }
@@ -690,7 +726,10 @@ export default function Takeoff() {
   // SearchPanel gates "Add" on that since the annotation store is scoped to
   // whichever sheet's detection is currently loaded.
   function addSearchResultAsAnnotation(result, type) {
-    const geometry = result.geometry.slice(0, -1);
+    const raw = result.geometry || [];
+    const closed = raw.length > 2 && raw[0][0] === raw[raw.length - 1][0] && raw[0][1] === raw[raw.length - 1][1];
+    const geometry = closed ? raw.slice(0, -1) : raw;
+    if (!geometry.length) return;
     annotationStore.addAnnotation({
       id: `search_${result.detection_id}_${Date.now()}`,
       type,
@@ -698,20 +737,171 @@ export default function Takeoff() {
       layerId: 'search',
       source: 'manual',
       meta: { label: result.label_hint, similarity: result.similarity, fromSearch: true },
+    }, {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
+    });
+  }
+
+  function activateManualTool(tool) {
+    if (!selectedDrawing || !isScaleConfirmed(scaleInfo)) return;
+    setManualTool((current) => (current === tool ? null : tool));
+    setCalibrating(false);
+    setCommentMode(false);
+    setSelectMode(false);
+    if (!['select', 'split', 'hole'].includes(tool)) setSelectedManualAnnotationIds([]);
+    if (tool !== 'split') setSplitPick(null);
+  }
+
+  function updateManualGeometry(annotationId, geometry) {
+    annotationStore.updateGeometry(annotationId, geometry, {
+      scaleRatio: scaleInfo?.scale_ratio,
+      fileType: selectedDrawing?.file_type,
+      planDpi: scaleInfo?.plan_dpi,
+    });
+  }
+
+  function deleteSelectedManualAnnotation() {
+    if (!selectedManualAnnotationIds.length) return;
+    annotationStore.deleteAnnotations(selectedManualAnnotationIds);
+    setSelectedManualAnnotationIds([]);
+  }
+
+  function transformManualSelection(transform) {
+    if (!selectedManualAnnotationIds.length) return;
+    annotationStore.transformAnnotations(selectedManualAnnotationIds, transform, currentMeasurementContext());
+  }
+
+  function copyManualSelection() {
+    annotationClipboardRef.current = selectedManualAnnotationIds
+      .map((annotationId) => annotationsById.get(annotationId))
+      .filter(Boolean)
+      .map((annotation) => JSON.parse(JSON.stringify(annotation)));
+  }
+
+  function mergeManualSelection() {
+    const preview = mergeAreaAnnotations(annotationStore.annotations, selectedManualAnnotationIds, currentMeasurementContext());
+    if (!preview.merged) {
+      alert('Only touching or overlapping area annotations can be merged.');
+      return;
+    }
+    annotationStore.mergeAreas(selectedManualAnnotationIds, currentMeasurementContext());
+    setSelectedManualAnnotationIds([preview.merged.id]);
+  }
+
+  function handleSplitVertex(annotationId, vertexIndex) {
+    if (!splitPick || splitPick.annotationId !== annotationId) {
+      setSplitPick({ annotationId, firstIndex: vertexIndex });
+      return;
+    }
+    const annotation = annotationsById.get(annotationId);
+    const low = Math.min(splitPick.firstIndex, vertexIndex);
+    const high = Math.max(splitPick.firstIndex, vertexIndex);
+    if (!annotation || high - low < 2 || (low === 0 && high === annotation.geometry.length - 1)) {
+      alert('Choose two non-adjacent vertices to split the polygon.');
+      setSplitPick(null);
+      return;
+    }
+    annotationStore.splitArea(annotationId, splitPick.firstIndex, vertexIndex, currentMeasurementContext());
+    setSplitPick(null);
+    setSelectedManualAnnotationIds([]);
+    setManualTool('select');
+  }
+
+  function bulkRelabelSelection() {
+    const label = window.prompt('New label for selected annotations:');
+    if (label?.trim()) annotationStore.updateAnnotationsMeta(selectedManualAnnotationIds, { label: label.trim(), reviewed: true });
+  }
+
+  async function openAnnotationHistory() {
+    if (!selectedDrawing) return;
+    setShowAnnotationHistory(true);
+    setAnnotationHistoryBusy(true);
+    try {
+      const response = await takeoffAPI.getAnnotationHistory(selectedDrawing.id);
+      setAnnotationVersions(response.data || []);
+    } catch (error) {
+      console.error('Failed to load annotation history:', error);
+      setAnnotationVersions([]);
+    } finally {
+      setAnnotationHistoryBusy(false);
+    }
+  }
+
+  async function restoreAnnotationVersion(revisionId) {
+    if (!selectedDrawing) return;
+    setAnnotationHistoryBusy(true);
+    try {
+      const response = await takeoffAPI.restoreAnnotationHistory(selectedDrawing.id, revisionId);
+      annotationStore.loadFromJSON(response.data.annotations, currentMeasurementContext());
+      setDetection((current) => ({
+        ...(current || {}),
+        quantities: response.data.quantities || [],
+        summary: response.data.summary || current?.summary || {},
+      }));
+      setSelectedManualAnnotationIds([]);
+      setShowAnnotationHistory(false);
+    } catch (error) {
+      alert(error.response?.data?.detail || 'Could not restore this annotation version.');
+    } finally {
+      setAnnotationHistoryBusy(false);
+    }
+  }
+
+  function addManualTakeoff({ type, geometry }) {
+    if (!selectedDrawing || !isScaleConfirmed(scaleInfo)) return;
+    const uniquePart = window.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const colors = { area: '#ec4899', line: '#06b6d4', count: '#f97316' };
+    if (type === 'hole') {
+      const targetId = selectedManualAnnotationIds[0];
+      const target = annotationsById.get(targetId);
+      if (!target || !ringInsidePolygon(geometry, target.geometry)) {
+        alert('The entire opening must be drawn inside the selected area.');
+        return;
+      }
+      annotationStore.addHole(targetId, geometry, currentMeasurementContext());
+      setManualTool('select');
+      return;
+    }
+    const annotationType = type === 'arc' ? 'line' : type;
+    annotationStore.addAnnotation({
+      id: `manual_${type}_${uniquePart}`,
+      type: annotationType,
+      geometry,
+      layerId: 'manual',
+      source: 'manual',
+      style: {
+        stroke: colors[annotationType],
+        fill: colors[annotationType],
+        fillOpacity: type === 'area' ? 0.2 : undefined,
+        strokeWidth: annotationType === 'line' ? 3 : 2,
+      },
+      meta: { label: `Manual ${type}`, drawingId: selectedDrawing.id, ...(type === 'arc' ? { curve: 'arc' } : {}) },
+    }, {
+      scaleRatio: scaleInfo.scale_ratio,
+      fileType: selectedDrawing.file_type,
+      planDpi: scaleInfo.plan_dpi,
     });
   }
 
   async function runAnalysis() {
-    setStatus('processing'); setDetection(null); setProgress({ msg: 'Starting...', pct: 0 });
-    const res = await runTakeoffAI({ onProgress: (s) => setProgress({ msg: s.msg, pct: s.pct }) });
-    setDetection(res);
-    annotationStore.loadFromDetection(res);
-    setStatus('ready');
+    // Route to the single real analysis path (vector AUTODETECT → raster AI).
+    if (!selectedDrawing) return;
+    if (!isScaleConfirmed(scaleInfo)) {
+      setStatus('needs_scale');
+      return;
+    }
+    return runAnalysisForDrawing(selectedDrawing, scaleInfo);
   }
 
   async function handleExport(format) {
     if (!selectedDrawing && !id) {
       alert('No drawing or project selected');
+      return;
+    }
+    if (selectedDrawing && !isScaleConfirmed(scaleInfo)) {
+      alert("Confirm this drawing's scale before exporting measured quantities.");
       return;
     }
     try {
@@ -747,49 +937,11 @@ export default function Takeoff() {
     }
   }
 
-  function zoomBy(delta) { setZoom((z) => Math.max(0.5, Math.min(3, z + delta))); }
-  function resetView() { setZoom(1); setPan({ x: 0, y: 0 }); }
-
-  function onMouseDown(e) { dragRef.current = { x: e.clientX, y: e.clientY, sx: pan.x, sy: pan.y }; }
-  function onMouseMove(e) {
-    if (!dragRef.current) return;
-    setPan({ x: dragRef.current.sx + (e.clientX - dragRef.current.x), y: dragRef.current.sy + (e.clientY - dragRef.current.y) });
-  }
-  function onMouseUp() { dragRef.current = null; }
-
   const annotationsById = useMemo(() => {
     const map = new Map();
     annotationStore.annotations.forEach((a) => map.set(a.id, a));
     return map;
   }, [annotationStore.annotations]);
-
-  // Advanced tools (Togal parity: split/merge/cut/backout) — see
-  // useAnnotationStore.js's mergeSelection/backoutSelection/splitSelection
-  // for the actual geometry. These wrappers just turn a thrown validation
-  // error into a visible message instead of an uncaught exception, and
-  // clear the selection/menu on success.
-  function runShapeOp(op) {
-    try {
-      op();
-      setShapeOpError(null);
-      setContextMenu(null);
-      setSelectedIds([]);
-    } catch (error) {
-      setShapeOpError(error.message);
-      setContextMenu(null);
-    }
-  }
-  const handleMergeSelection = () => runShapeOp(() => annotationStore.mergeSelection(selectedIds));
-  const handleBackoutSelection = () => runShapeOp(() => annotationStore.backoutSelection(selectedIds));
-  const handleSplitSelection = () => runShapeOp(() => annotationStore.splitSelection(selectedIds));
-
-  const selectedShapeTypes = useMemo(
-    () => selectedIds.map((sid) => annotationsById.get(sid)?.type).filter(Boolean),
-    [selectedIds, annotationsById],
-  );
-  const canMerge = selectedShapeTypes.length >= 2 && selectedShapeTypes.every((t) => t === selectedShapeTypes[0]) && selectedShapeTypes[0] !== 'count';
-  const canBackout = selectedShapeTypes.length === 2 && selectedShapeTypes.every((t) => t === 'area');
-  const canSplit = selectedShapeTypes.length === 2 && selectedShapeTypes.includes('area') && selectedShapeTypes.includes('line');
 
   const selected = useMemo(() => {
     if (!detection || !selectedId) return null;
@@ -834,6 +986,29 @@ export default function Takeoff() {
     () => Array.from(conditionCostTotals.values()).reduce((sum, v) => sum + v, 0),
     [conditionCostTotals]
   );
+  const scaleConfirmed = isScaleConfirmed(scaleInfo);
+
+  if (loadingProject) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300 gap-2">
+        <Loader2 className="w-5 h-5 animate-spin" /> Loading project…
+      </div>
+    );
+  }
+
+  if (projectError || !project) {
+    return (
+      <div data-testid="project-error-state" className="min-h-screen flex items-center justify-center bg-slate-50 px-4">
+        <div className="max-w-md text-center">
+          <div className="text-lg font-semibold text-slate-900">Project unavailable</div>
+          <p className="mt-2 text-sm text-slate-600">{projectError || 'This project does not exist or you no longer have access.'}</p>
+          <button onClick={() => nav('/app')} className="mt-5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium">
+            Return to dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900">
@@ -848,7 +1023,7 @@ export default function Takeoff() {
             {drawings.length > 0 ? `${drawings.length} drawing${drawings.length > 1 ? 's' : ''} · ` : ''}
             {selectedDrawing
               ? (scaleInfo?.scale_label ? `Scale ${scaleInfo.scale_label}` : 'Scale not calibrated')
-              : 'Scale 1/8" = 1\'-0"'}
+              : 'No drawing selected'}
           </div>
         </div>
         {selectedDrawing && (
@@ -885,6 +1060,61 @@ export default function Takeoff() {
             <Box className="w-3.5 h-3.5" /> 3D View
           </button>
         )}
+        {selectedDrawing && (
+          <button
+            onClick={() => setShowBOQ(true)}
+            title="Bill of Quantities — IS 1200 metric takeoff priced against the DSR/SOR rate book with GST"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+          >
+            <IndianRupee className="w-3.5 h-3.5" /> BOQ (India)
+          </button>
+        )}
+        {selectedDrawing && (
+          <button
+            onClick={() => setShowEstimate(true)}
+            title="Estimate — trade assemblies auto-mapped from this drawing's takeoff, priced by cost book"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border-indigo-500/30"
+          >
+            <Calculator className="w-3.5 h-3.5" /> Estimate
+          </button>
+        )}
+        {drawings.length > 0 && (
+          <button
+            onClick={() => setShowPlanSet(true)}
+            title="Plan set — sheets grouped by discipline; rename / reclassify"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
+          >
+            <FolderTree className="w-3.5 h-3.5" /> Sheets
+          </button>
+        )}
+        <button
+          onClick={() => setShowAIDash(true)}
+          title="AI & Model dashboard — accuracy + what to label next"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-violet-500/10 hover:bg-violet-500/20 text-violet-300 border-violet-500/30"
+        >
+          <Brain className="w-3.5 h-3.5" /> AI
+        </button>
+        <button
+          onClick={() => setShowShare(true)}
+          title="Share this project with people outside your team (no account needed)"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border-teal-500/30"
+        >
+          <Share2 className="w-3.5 h-3.5" /> Share
+        </button>
+        <button
+          onClick={() => setShowClassifications(true)}
+          title="Classification library — apply a reusable set of conditions to this project"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30"
+        >
+          <Library className="w-3.5 h-3.5" /> Library
+        </button>
+        <button
+          onClick={() => setShowHelp(true)}
+          title="Help & how-tos"
+          className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300"
+        >
+          <HelpCircle className="w-4 h-4" />
+        </button>
         <div className="ml-auto flex items-center gap-2">
           <div className="flex items-center -space-x-1.5">
             {/* Live presence — memory/TOGAL_PARITY_REAUDIT.md #16 (was hardcoded 'AR'/'PK'/'JL'). */}
@@ -900,21 +1130,20 @@ export default function Takeoff() {
             ))}
             <button className="w-7 h-7 rounded-full border-2 border-slate-900 bg-slate-700 flex items-center justify-center text-slate-300 ml-1"><Users className="w-3 h-3" /></button>
           </div>
-          <button
-            onClick={() => setShowShareModal(true)}
-            title="External collaboration — share a view/comment link, no account needed"
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-slate-800 hover:bg-slate-700 text-white border-slate-700"
-          >
-            <Link2 className="w-3.5 h-3.5" /> Share
-          </button>
           <div className="w-px h-5 bg-slate-700" />
           <button onClick={() => setShowUpload(!showUpload)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-xs font-medium text-white"><Upload className="w-3.5 h-3.5" /> Upload Blueprint</button>
           <button className="w-9 h-9 rounded-lg hover:bg-slate-800 flex items-center justify-center text-slate-400"><Bell className="w-4 h-4" /></button>
-          <button onClick={runAnalysis} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700"><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
+          <button
+            onClick={runAnalysis}
+            disabled={!selectedDrawing || !scaleConfirmed}
+            title={!selectedDrawing ? 'Select a drawing first' : !scaleConfirmed ? 'Confirm the drawing scale first' : 'Run takeoff again'}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-white border border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          ><RefreshCw className="w-3.5 h-3.5" /> Re-run AI</button>
           <div className="relative">
             <button
               onClick={() => setShowExportMenu(!showExportMenu)}
-              disabled={exporting}
+              disabled={exporting || !selectedDrawing || !scaleConfirmed}
+              title={!selectedDrawing ? 'Select a drawing first' : !scaleConfirmed ? 'Confirm the drawing scale before export' : 'Export takeoff quantities'}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white text-slate-900 text-xs font-medium hover:bg-slate-100 disabled:opacity-50"
             >
               {exporting ? (
@@ -963,12 +1192,6 @@ export default function Takeoff() {
           onClose={() => setShowHandoff(false)}
         />
       )}
-      {showShareModal && (
-        <ShareLinksModal
-          projectId={id}
-          onClose={() => setShowShareModal(false)}
-        />
-      )}
       {showRepeatingGroups && (
         <RepeatingGroupsModal
           projectId={id}
@@ -981,9 +1204,47 @@ export default function Takeoff() {
           drawingId={selectedDrawing.id}
           drawingName={selectedDrawing.sheet_name || selectedDrawing.original_filename}
           scaleRatio={scaleInfo?.scale_ratio}
+          planDpi={scaleInfo?.plan_dpi}
           onClose={() => setShow3DView(false)}
         />
       )}
+      {showBOQ && selectedDrawing && (
+        <IndiaBOQPanel drawing={selectedDrawing} onClose={() => setShowBOQ(false)} />
+      )}
+      {showEstimate && selectedDrawing && (
+        <EstimatePanel drawing={selectedDrawing} onClose={() => setShowEstimate(false)} />
+      )}
+      {showPlanSet && (
+        <PlanSetModal
+          projectId={id}
+          selectedDrawingId={selectedDrawing?.id}
+          onSelectSheet={(sheetId) => {
+            const d = drawings.find((dr) => dr.id === sheetId);
+            if (d) setSelectedDrawing(d);
+            setShowPlanSet(false);
+          }}
+          onClose={() => setShowPlanSet(false)}
+        />
+      )}
+      {showAIDash && (
+        <AIDashboardModal
+          projectId={id}
+          onSelectDrawing={(drawingId) => {
+            const d = drawings.find((dr) => dr.id === drawingId);
+            if (d) setSelectedDrawing(d);
+            setShowAIDash(false);
+          }}
+          onClose={() => setShowAIDash(false)}
+        />
+      )}
+      {showShare && (
+        <ShareModal projectId={id} projectName={project?.name || 'Project'} onClose={() => setShowShare(false)} />
+      )}
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
+      {showClassifications && (
+        <ClassificationModal projectId={id} onClose={() => setShowClassifications(false)} />
+      )}
+      <OnboardingChecklist onOpenHelp={() => setShowHelp(true)} />
 
       <div className="flex-1 grid grid-cols-[260px_1fr_340px] min-h-0">
         <aside className="bg-slate-900 text-slate-200 border-r border-slate-800 p-4 overflow-auto">
@@ -993,99 +1254,37 @@ export default function Takeoff() {
               <FileUploadZone projectId={id} onUploadComplete={handleUploadComplete} />
             </div>
           )}
-          {(drawings.length > 0 || folders.length > 0) && (
+          {drawings.length > 0 && (
             <>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Drawings</div>
-                <button
-                  onClick={() => setShowNewFolder((v) => !v)}
-                  title="New folder"
-                  className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-300"
-                >
-                  <FolderPlus className="w-3.5 h-3.5" />
-                </button>
-              </div>
-
-              {showNewFolder && (
-                <div className="mb-3 p-2 rounded-lg bg-slate-800 border border-slate-700 space-y-2">
-                  <input
-                    autoFocus
-                    value={newFolderName}
-                    onChange={(e) => setNewFolderName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') createFolder(); if (e.key === 'Escape') setShowNewFolder(false); }}
-                    placeholder="Folder name"
-                    className="w-full px-2 py-1 text-xs rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    {FOLDER_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => setNewFolderColor(c)}
-                        className="w-4 h-4 rounded-full flex-shrink-0"
-                        style={{ background: c, boxShadow: newFolderColor === c ? `0 0 0 2px #0f172a, 0 0 0 3.5px ${c}` : 'none' }}
-                        aria-label={`Color ${c}`}
-                      />
-                    ))}
-                    <div className="flex-1" />
-                    <button onClick={createFolder} className="px-2 py-0.5 text-[11px] rounded bg-indigo-500 text-white hover:bg-indigo-400">Create</button>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-3 mb-4">
-                {folders.map((folder) => {
-                  const folderDrawings = drawingGroups.byFolder.get(folder.id) || [];
-                  const collapsed = collapsedFolders.has(folder.id);
-                  return (
-                    <div key={folder.id}>
-                      <div className="group flex items-center gap-1 px-1">
-                        <button onClick={() => toggleFolderCollapsed(folder.id)} className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
-                          <ChevronRight className={`w-3 h-3 flex-shrink-0 text-slate-500 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
-                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: folder.color }} />
-                          <span className="text-[11px] font-semibold text-slate-300 truncate">{folder.name}</span>
-                          <span className="text-[10px] text-slate-500">({folderDrawings.length})</span>
-                        </button>
-                        <button
-                          onClick={() => deleteFolder(folder.id)}
-                          title="Delete folder"
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-rose-400"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                      {!collapsed && (
-                        <div className="mt-0.5 ml-4 space-y-0.5">
-                          {folderDrawings.length === 0
-                            ? <div className="text-[10px] text-slate-600 px-2 py-1">Empty</div>
-                            : folderDrawings.map(renderDrawingRow)}
-                        </div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Drawings</div>
+              <div className="space-y-0.5 mb-4">
+                {drawings.map((drawing) => (
+                  <button
+                    key={drawing.id}
+                    onClick={() => selectDrawing(drawing)}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs ${selectedDrawing?.id === drawing.id ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {drawing.discipline && (
+                        <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: DISCIPLINE_COLORS[drawing.discipline] || '#64748b' }} />
                       )}
+                      {drawing.sheet_number && <span className="mono flex-shrink-0">{drawing.sheet_number}</span>}
+                      <span className="truncate">{drawing.sheet_name || drawing.original_filename}</span>
                     </div>
-                  );
-                })}
-
-                {[...drawingGroups.sets.entries()].map(([batchId, setDrawings]) => (
-                  <div key={batchId}>
-                    <div className="flex items-center gap-1.5 px-1 mb-0.5">
-                      <span className="text-[10px] uppercase tracking-wider text-slate-500">Set</span>
-                      <span className="text-[10px] text-slate-600">· {setDrawings.length} sheets</span>
+                    <div className="text-[10px] text-slate-500">
+                      {drawing.file_type} · {(drawing.file_size / 1024 / 1024).toFixed(1)}MB
+                      {drawing.total_pages > 1 && ` · Sheet ${drawing.page_number + 1}/${drawing.total_pages}`}
                     </div>
-                    <div className="space-y-0.5">{setDrawings.map(renderDrawingRow)}</div>
-                  </div>
+                  </button>
                 ))}
-
-                {drawingGroups.unfiledFlat.length > 0 && (
-                  <div className="space-y-0.5">{drawingGroups.unfiledFlat.map(renderDrawingRow)}</div>
-                )}
               </div>
             </>
           )}
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Mock Sheets</div>
-          <div className="space-y-0.5">
-            {['A-001 Cover', 'A-101 Level 12', 'A-102 Level 13', 'A-201 Elevations', 'M-101 HVAC', 'E-101 Power'].map((s, i) => (
-              <button key={s} className={`w-full text-left px-2 py-1.5 rounded text-xs ${i === 1 && drawings.length === 0 ? 'bg-indigo-500/20 text-indigo-300 font-medium' : 'text-slate-400 hover:bg-slate-800'}`}>{s}</button>
-            ))}
-          </div>
+          {drawings.length === 0 && (
+            <div className="rounded-lg border border-dashed border-slate-700 p-3 text-xs text-slate-500">
+              No drawings yet. Upload a PDF or image to begin.
+            </div>
+          )}
           <div className="mt-6 text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2 flex items-center gap-1.5"><Layers className="w-3 h-3" /> Detection layers</div>
           <div className="space-y-1">
             {LAYER_CONFIG.map((l) => {
@@ -1104,10 +1303,7 @@ export default function Takeoff() {
           </div>
           <div className="mt-6 mb-2 flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5"><Tag className="w-3 h-3" /> Conditions</div>
-            <div className="flex items-center gap-1">
-              <ConditionLibraryMenu projectId={id} projectName={project?.name} conditions={conditions} onChanged={fetchConditions} />
-              <ConditionCreateButton onCreate={createCondition} />
-            </div>
+            <ConditionCreateButton onCreate={createCondition} />
           </div>
           <div className="space-y-1">
             {conditions.length === 0 && (
@@ -1171,13 +1367,50 @@ export default function Takeoff() {
           )}
         </aside>
 
-        <main className="relative bg-slate-100 overflow-hidden" onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
+        <main className="relative bg-slate-100 overflow-hidden">
           {status === 'processing' && <ProcessingOverlay progress={progress} />}
+          {status === 'needs_scale' && selectedDrawing && !calibrating && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-lg">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-3">
+                <Ruler className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-900">
+                  <div className="font-semibold">Confirm the drawing scale before takeoff.</div>
+                  Accept the detected scale below, or calibrate it by selecting two points with a known distance.
+                  <button onClick={() => setCalibrating(true)} className="mt-2 block font-semibold text-amber-800 underline">
+                    Calibrate manually
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {status === 'unavailable' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 max-w-md">
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 shadow-lg flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-800">
+                  <div className="font-semibold">AI auto-detect isn’t available for this sheet yet.</div>
+                  Vector PDFs are read directly; scanned images need the trained model installed.
+                  You can measure this sheet manually with the takeoff tools in the meantime.
+                </div>
+                <button onClick={() => setStatus('ready')} className="ml-1 text-amber-500 hover:text-amber-700">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
           {selectedDrawing ? (
             <div className="absolute inset-0">
               <DrawingRenderer
                 drawing={selectedDrawing}
                 detection={detection}
+                annotations={annotationStore.annotations}
+                manualTool={manualTool}
+                onManualAnnotation={addManualTakeoff}
+                selectedAnnotationIds={selectedManualAnnotationIds}
+                onSelectAnnotation={setSelectedManualAnnotationIds}
+                onUpdateAnnotationGeometry={updateManualGeometry}
+                onTransformSelection={transformManualSelection}
+                onSplitVertex={handleSplitVertex}
                 onLoad={(data) => console.log('Drawing loaded:', data)}
                 calibrating={calibrating}
                 onCalibrationPoints={handleCalibrationPoints}
@@ -1202,36 +1435,19 @@ export default function Takeoff() {
               )}
             </div>
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center" onMouseDown={selectMode ? undefined : onMouseDown}>
-              <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: dragRef.current ? 'none' : 'transform 180ms ease' }}>
-                <CanvasFull
-                  detection={detection}
-                  layers={layers}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  selectMode={selectMode}
-                  selectedIds={selectedIds}
-                  annotationsById={annotationsById}
-                  conditionsById={conditionsById}
-                  onBoxSelect={handleBoxSelect}
-                  onContextMenuRequest={handleContextMenuRequest}
-                />
+            <div className="absolute inset-0 flex items-center justify-center p-6">
+              <div className="max-w-sm text-center">
+                <div className="mx-auto w-12 h-12 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center">
+                  <Upload className="w-5 h-5 text-slate-500" />
+                </div>
+                <h2 className="mt-4 text-base font-semibold text-slate-900">Upload your first drawing</h2>
+                <p className="mt-1 text-sm text-slate-600">Takeoff results are shown only for real project drawings. Upload a PDF, PNG, JPG, or TIFF to begin.</p>
+                <button onClick={() => setShowUpload(true)} className="mt-4 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">
+                  Upload drawing
+                </button>
               </div>
             </div>
           )}
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 p-1 rounded-xl bg-white border border-slate-200 shadow-lg">
-            {!selectedDrawing && (
-              <>
-                <ToolBtn active={selectMode} onClick={() => { setSelectMode((v) => !v); setSelectedIds([]); }}><MousePointer2 className="w-4 h-4" /></ToolBtn>
-                <div className="w-px h-5 bg-slate-200 mx-1" />
-              </>
-            )}
-            <ToolBtn onClick={() => zoomBy(-0.2)}><ZoomOut className="w-4 h-4" /></ToolBtn>
-            <div className="mono text-xs px-2 text-slate-700 w-14 text-center">{Math.round(zoom * 100)}%</div>
-            <ToolBtn onClick={() => zoomBy(0.2)}><ZoomIn className="w-4 h-4" /></ToolBtn>
-            <div className="w-px h-5 bg-slate-200 mx-1" />
-            <ToolBtn onClick={resetView}><Maximize2 className="w-4 h-4" /></ToolBtn>
-          </div>
           {status === 'ready' && (
             <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm text-xs font-medium text-slate-800">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -1269,16 +1485,103 @@ export default function Takeoff() {
               onConfirm={submitCalibration}
             />
           )}
+          {selectedDrawing && (
+            <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2">
+              {selectedManualAnnotationIds.length > 0 && (
+                <div className="flex flex-wrap items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl text-[11px]">
+                  <span className="px-2 font-semibold text-slate-500">{selectedManualAnnotationIds.length} selected</span>
+                  <button type="button" onClick={() => annotationStore.duplicate(selectedManualAnnotationIds, currentMeasurementContext())} className="px-2 py-1.5 rounded hover:bg-slate-100" title="Duplicate (Ctrl+D)">Duplicate</button>
+                  <button type="button" onClick={copyManualSelection} className="px-2 py-1.5 rounded hover:bg-slate-100" title="Copy (Ctrl+C)">Copy</button>
+                  <button type="button" onClick={() => transformManualSelection({ rotation: -15 })} className="px-2 py-1.5 rounded hover:bg-slate-100">↶ 15°</button>
+                  <button type="button" onClick={() => transformManualSelection({ rotation: 15 })} className="px-2 py-1.5 rounded hover:bg-slate-100">↷ 15°</button>
+                  <button type="button" onClick={() => transformManualSelection({ scale: 0.9 })} className="px-2 py-1.5 rounded hover:bg-slate-100">Resize −</button>
+                  <button type="button" onClick={() => transformManualSelection({ scale: 1.1 })} className="px-2 py-1.5 rounded hover:bg-slate-100">Resize +</button>
+                  {selectedManualAnnotationIds.length === 1 && annotationsById.get(selectedManualAnnotationIds[0])?.type === 'area' && <button type="button" onClick={() => activateManualTool('split')} className="px-2 py-1.5 rounded hover:bg-amber-50 text-amber-700">Split</button>}
+                  {selectedManualAnnotationIds.length === 1 && annotationsById.get(selectedManualAnnotationIds[0])?.type === 'area' && <button type="button" onClick={() => activateManualTool('hole')} className="px-2 py-1.5 rounded hover:bg-amber-50 text-amber-700">Cut hole</button>}
+                  {selectedManualAnnotationIds.length > 1 && selectedManualAnnotationIds.every((annotationId) => annotationsById.get(annotationId)?.type === 'area') && <button type="button" onClick={mergeManualSelection} className="px-2 py-1.5 rounded hover:bg-indigo-50 text-indigo-700">Merge</button>}
+                  <button type="button" onClick={bulkRelabelSelection} className="px-2 py-1.5 rounded hover:bg-slate-100">Relabel</button>
+                  <select value="" onChange={(event) => { if (event.target.value) annotationStore.assignCondition(selectedManualAnnotationIds, Number(event.target.value)); }} className="rounded border border-slate-200 px-2 py-1.5 bg-white" aria-label="Move selected annotations to condition"><option value="">Move to condition…</option>{conditions.map((condition) => <option key={condition.id} value={condition.id}>{condition.name}</option>)}</select>
+                  <button type="button" onClick={deleteSelectedManualAnnotation} className="px-2 py-1.5 rounded text-rose-600 hover:bg-rose-50">Delete</button>
+                </div>
+              )}
+              {manualTool && (
+                <div className="px-3 py-1.5 rounded-full bg-slate-950/90 text-white text-[11px] shadow-lg">
+                  {manualTool === 'select' && 'Click a shape to select · drag the shape or its vertices · Delete removes it'}
+                  {manualTool === 'area' && 'Click each corner, then double-click or press Enter to finish · Esc cancels'}
+                  {manualTool === 'line' && 'Click line points, then double-click or Enter · snaps to vertices and 45° angles'}
+                  {manualTool === 'count' && 'Click each item to place a count · Esc clears preview'}
+                  {manualTool === 'arc' && 'Click the arc start, a point on the curve, and the end'}
+                  {manualTool === 'split' && `Click two non-adjacent polygon vertices${splitPick ? ' · first vertex selected' : ''}`}
+                  {manualTool === 'hole' && 'Click the opening corners, then double-click or press Enter to subtract it'}
+                </div>
+              )}
+              <div className="flex items-center gap-1 p-1.5 rounded-xl bg-white border border-slate-200 shadow-xl">
+                <span className="px-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Manual takeoff</span>
+                <button
+                  type="button"
+                  aria-pressed={manualTool === 'select'}
+                  disabled={!scaleConfirmed}
+                  onClick={() => activateManualTool('select')}
+                  title="Select, move, or edit annotation vertices"
+                  className={`p-2 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    manualTool === 'select' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <MousePointer2 className="w-4 h-4" />
+                </button>
+                {ANNOTATION_TYPES.map((tool) => (
+                  <button
+                    key={tool.value}
+                    type="button"
+                    aria-pressed={manualTool === tool.value}
+                    disabled={!scaleConfirmed}
+                    onClick={() => activateManualTool(tool.value)}
+                    title={scaleConfirmed ? `Draw ${tool.label}` : 'Confirm the drawing scale first'}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      manualTool === tool.value
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {tool.label}
+                  </button>
+                ))}
+                <button type="button" aria-pressed={manualTool === 'arc'} disabled={!scaleConfirmed} onClick={() => activateManualTool('arc')} title="Measure a three-point arc" className={`px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 ${manualTool === 'arc' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>Arc</button>
+                <div className="w-px h-6 bg-slate-200 mx-0.5" />
+                <button type="button" onClick={annotationStore.undo} disabled={!annotationStore.canUndo}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Undo (Ctrl+Z)" aria-label="Undo">
+                  <Undo2 className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={annotationStore.redo} disabled={!annotationStore.canRedo}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-30" title="Redo (Ctrl+Y)" aria-label="Redo">
+                  <Redo2 className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={openAnnotationHistory}
+                  className="p-2 rounded-lg text-slate-600 hover:bg-slate-100" title="Annotation version history" aria-label="Annotation version history">
+                  <History className="w-4 h-4" />
+                </button>
+                <button type="button" onClick={deleteSelectedManualAnnotation} disabled={!selectedManualAnnotationIds.length}
+                  className="p-2 rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-30" title="Delete selected (Delete)" aria-label="Delete selected annotation">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                {manualTool && (
+                  <button
+                    type="button"
+                    onClick={() => setManualTool(null)}
+                    className="ml-1 p-2 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    title="Close manual takeoff tools"
+                    aria-label="Close manual takeoff tools"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           {selectMode && selectedIds.length > 0 && !contextMenu && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-900 text-white shadow-lg text-xs font-medium">
               <MousePointer2 className="w-3.5 h-3.5 text-indigo-400" />
-              {selectedIds.length} selected · right-click for actions
-            </div>
-          )}
-          {shapeOpError && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-600 text-white shadow-lg text-xs font-medium max-w-md">
-              {shapeOpError}
-              <button onClick={() => setShapeOpError(null)} className="ml-1 opacity-80 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+              {selectedIds.length} selected · right-click to assign a condition
             </div>
           )}
           {contextMenu && (
@@ -1289,13 +1592,19 @@ export default function Takeoff() {
               onAssign={assignSelectionToCondition}
               onCreateAndAssign={createConditionAndAssign}
               onClose={() => setContextMenu(null)}
-              canMerge={canMerge}
-              canBackout={canBackout}
-              canSplit={canSplit}
-              onMerge={handleMergeSelection}
-              onBackout={handleBackoutSelection}
-              onSplit={handleSplitSelection}
             />
+          )}
+          {showAnnotationHistory && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-6" onClick={() => setShowAnnotationHistory(false)}>
+              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                <div className="flex items-center justify-between"><div><h3 className="font-semibold text-slate-900">Annotation history</h3><p className="mt-1 text-xs text-slate-500">Restore any of the 50 most recent saved versions.</p></div><button type="button" onClick={() => setShowAnnotationHistory(false)} className="p-2 text-slate-400 hover:text-slate-700"><X className="w-4 h-4" /></button></div>
+                <div className="mt-4 max-h-80 space-y-2 overflow-auto">
+                  {annotationHistoryBusy && <div className="flex justify-center p-6"><Loader2 className="w-5 h-5 animate-spin text-indigo-600" /></div>}
+                  {!annotationHistoryBusy && annotationVersions.length === 0 && <p className="p-6 text-center text-sm text-slate-500">No saved versions yet.</p>}
+                  {!annotationHistoryBusy && annotationVersions.map((version) => <div key={version.id} className="flex items-center justify-between rounded-lg border border-slate-200 p-3"><div><div className="text-sm font-medium text-slate-800">{version.annotation_count} annotations</div><div className="text-xs text-slate-500">{new Date(version.created_at).toLocaleString()}</div></div><button type="button" onClick={() => restoreAnnotationVersion(version.id)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium hover:bg-slate-50">Restore</button></div>)}
+                </div>
+              </div>
+            </div>
           )}
         </main>
 
@@ -1303,7 +1612,6 @@ export default function Takeoff() {
           <div className="flex border-b border-slate-200">
             {[
               { key: 'quantities', label: 'Quantities' },
-              { key: 'breakdown', label: 'Breakdown' },
               { key: 'search', label: 'Search' },
               { key: 'chat', label: 'Chat' },
               { key: 'summary', label: 'Summary' },
@@ -1313,12 +1621,12 @@ export default function Takeoff() {
           </div>
           <div className="flex-1 overflow-auto">
             {tab === 'quantities' && <QuantitiesPanel detection={detection} />}
-            {tab === 'breakdown' && <BreakdownPanel projectId={id} />}
             {tab === 'search' && (
               <SearchPanel
                 projectId={id}
                 drawings={drawings}
                 selectedDrawing={selectedDrawing}
+                selectedAnnotation={annotationsById.get(selectedManualAnnotationIds[0] || selectedIds[0] || selectedId)}
                 onAddAnnotation={addSearchResultAsAnnotation}
               />
             )}
@@ -1345,17 +1653,6 @@ export default function Takeoff() {
         />
       )}
     </div>
-  );
-}
-
-function ToolBtn({ children, onClick, active = false }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`w-8 h-8 rounded-md flex items-center justify-center ${active ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'hover:bg-slate-100 text-slate-700'}`}
-    >
-      {children}
-    </button>
   );
 }
 
@@ -1725,161 +2022,6 @@ function ConditionForm({ initial, initialType = 'area', onSubmit, onCancel, subm
   );
 }
 
-// Classification libraries (Togal parity: "Reusable templates, import/export").
-// Org-scoped templates (routes/template_routes.py) plus raw JSON
-// download/upload for exchanging condition sets outside the app entirely.
-function ConditionLibraryMenu({ projectId, projectName, conditions, onChanged }) {
-  const [open, setOpen] = useState(false);
-  const [templates, setTemplates] = useState(null); // null = not loaded yet
-  const [saving, setSaving] = useState(false);
-  const [newTemplateName, setNewTemplateName] = useState('');
-  const fileInputRef = useRef(null);
-
-  async function loadTemplates() {
-    try {
-      const res = await templatesAPI.list();
-      setTemplates(res.data || []);
-    } catch (error) {
-      console.error('Failed to load templates:', error);
-      setTemplates([]);
-    }
-  }
-
-  function toggle() {
-    const next = !open;
-    setOpen(next);
-    if (next && templates === null) loadTemplates();
-  }
-
-  async function saveAsTemplate() {
-    const name = newTemplateName.trim();
-    if (!name || conditions.length === 0) return;
-    setSaving(true);
-    try {
-      const res = await templatesAPI.saveFromProject(projectId, { name });
-      setTemplates((prev) => [...(prev || []), res.data]);
-      setNewTemplateName('');
-    } catch (error) {
-      console.error('Failed to save template:', error);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function applyTemplate(templateId) {
-    try {
-      await templatesAPI.apply(projectId, templateId);
-      onChanged();
-      setOpen(false);
-    } catch (error) {
-      console.error('Failed to apply template:', error);
-    }
-  }
-
-  async function deleteTemplate(templateId) {
-    try {
-      await templatesAPI.delete(templateId);
-      setTemplates((prev) => prev.filter((t) => t.id !== templateId));
-    } catch (error) {
-      console.error('Failed to delete template:', error);
-    }
-  }
-
-  async function exportJson() {
-    try {
-      const res = await templatesAPI.exportProject(projectId);
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${(projectName || 'conditions').replace(/[^a-z0-9]+/gi, '-')}-conditions.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Failed to export conditions:', error);
-    }
-  }
-
-  async function importJsonFile(e) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const payload = JSON.parse(text);
-      await templatesAPI.importJson(projectId, payload);
-      onChanged();
-      setOpen(false);
-    } catch (error) {
-      console.error('Failed to import conditions JSON:', error);
-    }
-  }
-
-  return (
-    <div className="relative">
-      <button onClick={toggle} title="Classification library" className="text-slate-500 hover:text-slate-200">
-        <Folder className="w-3.5 h-3.5" />
-      </button>
-      {open && (
-        <div className="fixed inset-0 z-30" onClick={() => setOpen(false)}>
-          <div
-            className="absolute right-4 top-32 w-72 rounded-xl bg-slate-800 border border-slate-700 shadow-2xl p-3 text-xs"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Classification library</div>
-
-            <div className="space-y-1 mb-3 max-h-40 overflow-auto">
-              {templates === null && <div className="text-slate-500 px-1 py-1">Loading…</div>}
-              {templates?.length === 0 && <div className="text-slate-500 px-1 py-1">No saved templates yet.</div>}
-              {templates?.map((t) => (
-                <div key={t.id} className="flex items-center gap-1.5 group">
-                  <button
-                    onClick={() => applyTemplate(t.id)}
-                    className="flex-1 min-w-0 text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300"
-                  >
-                    <span className="truncate block">{t.name}</span>
-                    <span className="text-[10px] text-slate-500">{t.items.length} condition{t.items.length === 1 ? '' : 's'}</span>
-                  </button>
-                  <button
-                    onClick={() => deleteTemplate(t.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-700 text-slate-500 hover:text-rose-400"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-1.5 mb-2">
-              <input
-                value={newTemplateName}
-                onChange={(e) => setNewTemplateName(e.target.value)}
-                placeholder="Save current conditions as…"
-                disabled={conditions.length === 0}
-                className="flex-1 min-w-0 px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 outline-none focus:border-indigo-500 disabled:opacity-50"
-              />
-              <button
-                onClick={saveAsTemplate}
-                disabled={saving || !newTemplateName.trim() || conditions.length === 0}
-                className="px-2 py-1 rounded bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-50 flex-shrink-0"
-              >
-                Save
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-700">
-              <button onClick={exportJson} disabled={conditions.length === 0} className="text-slate-400 hover:text-slate-200 disabled:opacity-50">Export JSON</button>
-              <span className="text-slate-600">·</span>
-              <button onClick={() => fileInputRef.current?.click()} className="text-slate-400 hover:text-slate-200">Import JSON</button>
-              <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={importJsonFile} />
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ConditionCreateButton({ onCreate }) {
   const [open, setOpen] = useState(false);
   if (!open) {
@@ -2130,7 +2272,6 @@ function ExportModal({ projectId, drawings, projectName, onClose }) {
                   className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
                 >
                   <option value="">None</option>
-                  <option value="folder">Phase / Floor</option>
                   <option value="trade">Trade</option>
                   <option value="drawing">Sheet</option>
                   <option value="item">Item</option>
@@ -2229,125 +2370,6 @@ const HANDOFF_TARGET_SYSTEMS = [
 // (routes/handoff_routes.py, handoff_engine.py). Not an estimating engine:
 // this maps the AI's trade/item quantities to the cost codes a partner tool
 // imports, and logs every mapping edit + every export for accountability.
-// External collaboration without an account (Togal parity: "External
-// collaboration — unlimited, no account needed"). A link is view-only or
-// view+comment (see models.ShareLink) — never edit; guests hit it at
-// /share/:token (pages/GuestView.jsx), which never touches the
-// authenticated `api` client.
-function ShareLinksModal({ projectId, onClose }) {
-  const [links, setLinks] = useState(null);
-  const [creating, setCreating] = useState(false);
-  const [permission, setPermission] = useState('view');
-  const [label, setLabel] = useState('');
-  const [copiedId, setCopiedId] = useState(null);
-
-  useEffect(() => {
-    shareAPI.list(projectId).then((res) => setLinks(res.data)).catch(() => setLinks([]));
-  }, [projectId]);
-
-  async function create() {
-    setCreating(true);
-    try {
-      const res = await shareAPI.create(projectId, { permission, label: label.trim() || undefined });
-      setLinks((prev) => [res.data, ...(prev || [])]);
-      setLabel('');
-    } catch (error) {
-      console.error('Failed to create share link:', error);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function revoke(linkId) {
-    try {
-      await shareAPI.revoke(linkId);
-      setLinks((prev) => prev.map((l) => (l.id === linkId ? { ...l, revoked_at: new Date().toISOString() } : l)));
-    } catch (error) {
-      console.error('Failed to revoke share link:', error);
-    }
-  }
-
-  function copy(link) {
-    navigator.clipboard.writeText(shareAPI.guestUrl(link.token));
-    setCopiedId(link.id);
-    setTimeout(() => setCopiedId((c) => (c === link.id ? null : c)), 1500);
-  }
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40" onClick={onClose}>
-      <div className="w-[420px] max-h-[80vh] flex flex-col rounded-2xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <div className="flex items-center gap-2">
-            <Link2 className="w-4 h-4 text-slate-500" />
-            <h2 className="text-sm font-semibold text-slate-900">Share this project</h2>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-4 h-4" /></button>
-        </div>
-
-        <div className="px-5 py-4 border-b border-slate-100 space-y-2.5">
-          <p className="text-xs text-slate-500">Anyone with the link can view — no TakeOff account needed.</p>
-          <div className="flex items-center gap-2">
-            <select
-              value={permission}
-              onChange={(e) => setPermission(e.target.value)}
-              className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 bg-white outline-none focus:border-indigo-500"
-            >
-              <option value="view">View only</option>
-              <option value="comment">View &amp; comment</option>
-            </select>
-            <input
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="Label (optional) — e.g. For GC review"
-              className="flex-1 min-w-0 px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 outline-none focus:border-indigo-500"
-            />
-            <button
-              onClick={create}
-              disabled={creating}
-              className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-medium hover:bg-slate-800 disabled:opacity-50 flex-shrink-0"
-            >
-              Create link
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-auto px-5 py-3">
-          {links === null && <div className="text-xs text-slate-500 py-4 text-center">Loading…</div>}
-          {links?.length === 0 && <div className="text-xs text-slate-500 py-4 text-center">No share links yet.</div>}
-          <div className="space-y-2">
-            {links?.map((link) => {
-              const isRevoked = !!link.revoked_at;
-              return (
-                <div key={link.id} className={`p-3 rounded-lg border ${isRevoked ? 'border-slate-100 bg-slate-50 opacity-60' : 'border-slate-200'}`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-slate-800 truncate">{link.label || 'Untitled link'}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">
-                        {link.permission === 'comment' ? 'View & comment' : 'View only'}
-                        {isRevoked && ' · Revoked'}
-                      </div>
-                    </div>
-                    {!isRevoked && (
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button onClick={() => copy(link)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500" title="Copy link">
-                          {copiedId === link.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                        </button>
-                        <button onClick={() => revoke(link.id)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-rose-600" title="Revoke">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function HandoffModal({ projectId, projectName, onClose }) {
   const [tab, setTab] = useState('mapping'); // 'mapping' | 'audit'
   const [rows, setRows] = useState(null);
@@ -2360,7 +2382,7 @@ function HandoffModal({ projectId, projectName, onClose }) {
   const [auditEvents, setAuditEvents] = useState(null);
   const [auditLoading, setAuditLoading] = useState(false);
 
-  const rowKey = (r) => `${r.trade} ${r.item}`;
+  const rowKey = (r) => `${r.trade}\u0000${r.item}`;
 
   async function loadMappings() {
     setLoading(true);
@@ -2690,37 +2712,13 @@ function CommentPopover({ point, comment, replies, currentUserId, onSubmitNew, o
   );
 }
 
-function ConditionAssignMenu({
-  position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose,
-  canMerge, canBackout, canSplit, onMerge, onBackout, onSplit,
-}) {
+function ConditionAssignMenu({ position, conditions, selectedCount, onAssign, onCreateAndAssign, onClose }) {
   const [creating, setCreating] = useState(false);
   const menuStyle = { left: Math.min(position.x, window.innerWidth - 260), top: Math.min(position.y, window.innerHeight - 320) };
-  const showAdvancedTools = !creating && (canMerge || canBackout || canSplit);
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose} onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
       <div className="fixed w-64 rounded-xl bg-white border border-slate-200 shadow-2xl py-2" style={menuStyle} onClick={(e) => e.stopPropagation()}>
-        {showAdvancedTools && (
-          <div className="pb-1 mb-1 border-b border-slate-100">
-            <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Advanced tools</div>
-            {canMerge && (
-              <button onClick={onMerge} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
-                <Combine className="w-3.5 h-3.5 text-slate-400" /> Merge shapes
-              </button>
-            )}
-            {canBackout && (
-              <button onClick={onBackout} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
-                <SquareMinus className="w-3.5 h-3.5 text-slate-400" /> Backout (deduct)
-              </button>
-            )}
-            {canSplit && (
-              <button onClick={onSplit} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50">
-                <Scissors className="w-3.5 h-3.5 text-slate-400" /> Split along line
-              </button>
-            )}
-          </div>
-        )}
         {!creating ? (
           <>
             <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5">
@@ -2774,7 +2772,7 @@ function QuantitiesPanel({ detection }) {
       </div>
       <div className="mt-4 space-y-1">
         {rows.map((q, i) => (
-          <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
+          <div key={i} data-testid="quantity-row" data-quantity-item={q.item} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg hover:bg-slate-50">
             <div className="min-w-0">
               <div className="text-sm text-slate-900 truncate">{q.item}</div>
               <div className="text-[11px] text-slate-500">{q.trade}</div>
@@ -2790,141 +2788,18 @@ function QuantitiesPanel({ detection }) {
   );
 }
 
-// Togal parity: "Breakdowns / multipliers — phase/floor/unit breakdowns".
-// Backed by routes/export_routes.py's /breakdown endpoint, which reuses
-// export_engine's grouping (same machinery Rich Export uses) plus
-// DrawingFolder as the phase/floor dimension and Repeating Groups'
-// per-drawing multiplier — both already-shipped features, tied together
-// here rather than duplicated.
-const BREAKDOWN_DIMENSIONS = [
-  { key: 'folder', label: 'Phase / Floor' },
-  { key: 'trade', label: 'Trade' },
-  { key: 'drawing', label: 'Sheet' },
-  { key: 'item', label: 'Item' },
-];
-
-function BreakdownSection({ section, depth = 0 }) {
-  const [collapsed, setCollapsed] = useState(false);
-  if (section.label === null && section.children.length === 0) {
-    // Root with no group_by, or a leaf with rows directly.
-    return (
-      <div className="space-y-1">
-        {section.rows.map((r) => (
-          <div key={r.row_id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
-            <span className="text-slate-600 truncate">{r.item}</span>
-            <span className="mono text-slate-900 flex-shrink-0">{r.quantity.toLocaleString()} {r.unit}</span>
-          </div>
-        ))}
-      </div>
-    );
-  }
-  return (
-    <div>
-      {section.children.map((child) => {
-        const childTotal = sectionTotal(child);
-        return (
-          <div key={child.label}>
-            <button
-              onClick={() => setCollapsed((c) => !c)}
-              className="w-full flex items-center justify-between gap-2 px-3 py-2 hover:bg-slate-50 text-left"
-              style={{ paddingLeft: 12 + depth * 14 }}
-            >
-              <span className="flex items-center gap-1.5 min-w-0 text-sm font-medium text-slate-800">
-                <ChevronRight className={`w-3.5 h-3.5 text-slate-400 flex-shrink-0 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
-                <span className="truncate">{child.label}</span>
-              </span>
-              <span className="mono text-xs text-slate-500 flex-shrink-0">{formatTotals(childTotal)}</span>
-            </button>
-            {!collapsed && <BreakdownSection section={child} depth={depth + 1} />}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function sectionTotal(section) {
-  const totals = {};
-  const add = (rows) => rows.forEach((r) => { totals[r.unit] = (totals[r.unit] || 0) + r.quantity; });
-  if (section.rows?.length) add(section.rows);
-  (section.children || []).forEach((c) => {
-    const childTotals = sectionTotal(c);
-    Object.entries(childTotals).forEach(([unit, v]) => { totals[unit] = (totals[unit] || 0) + v; });
-  });
-  return totals;
-}
-
-function formatTotals(totals) {
-  const entries = Object.entries(totals).filter(([, v]) => v);
-  if (entries.length === 0) return '—';
-  return entries.map(([unit, v]) => `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit}`).join(' · ');
-}
-
-function BreakdownPanel({ projectId }) {
-  const [dims, setDims] = useState(['folder', 'trade']);
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    exportAPI.getBreakdown(projectId, { groupBy: dims })
-      .then((res) => { if (!cancelled) setData(res.data); })
-      .catch(() => { if (!cancelled) setError('Failed to load breakdown'); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [projectId, dims]);
-
-  function toggleDim(key) {
-    setDims((prev) => {
-      if (prev.includes(key)) return prev.filter((d) => d !== key);
-      if (prev.length >= 3) return prev; // build_grouped_sections caps at 3 levels
-      return [...prev, key];
-    });
-  }
-
-  return (
-    <div className="p-4">
-      <h3 className="text-sm font-semibold text-slate-900">Breakdown</h3>
-      <p className="text-xs text-slate-500 mt-0.5">Quantities by phase/floor and trade — includes Repeating Groups multipliers</p>
-
-      <div className="mt-3 flex flex-wrap gap-1">
-        {BREAKDOWN_DIMENSIONS.map((d) => (
-          <button
-            key={d.key}
-            onClick={() => toggleDim(d.key)}
-            className={`px-2.5 py-1 text-[11px] font-medium rounded-md ${dims.includes(d.key) ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-          >
-            {dims.includes(d.key) ? `${dims.indexOf(d.key) + 1}. ` : ''}{d.label}
-          </button>
-        ))}
-      </div>
-
-      {loading && <div className="mt-6 text-xs text-slate-500">Loading…</div>}
-      {error && <div className="mt-6 text-xs text-rose-600">{error}</div>}
-      {!loading && !error && data && (
-        <>
-          <div className="mt-4 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100 text-xs text-slate-700">
-            <span className="font-medium">Project total:</span> {formatTotals(data.total_quantity_by_unit)}
-          </div>
-          <div className="mt-3 border border-slate-100 rounded-lg divide-y divide-slate-100 overflow-hidden">
-            {data.sections.children.length === 0
-              ? <div className="p-4 text-xs text-slate-500">No quantities yet — run AI analysis on a sheet first.</div>
-              : <BreakdownSection section={data.sections} />}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) {
+function SearchPanel({ projectId, drawings, selectedDrawing, selectedAnnotation, onAddAnnotation }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
+  const [count, setCount] = useState(null);      // { total, per_drawing, matches }
+  const [mode, setMode] = useState('find');       // 'find' | 'count'
+  const [minSim, setMinSim] = useState(85);       // similarity % for count mode
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [selectedMatches, setSelectedMatches] = useState(new Set());
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewed, setReviewed] = useState(false);
+  const [queryKind, setQueryKind] = useState('text');
 
   const drawingNameById = useMemo(() => {
     const map = new Map();
@@ -2936,71 +2811,194 @@ function SearchPanel({ projectId, drawings, selectedDrawing, onAddAnnotation }) 
     e?.preventDefault();
     const q = query.trim();
     if (!q || loading) return;
-    setLoading(true); setError(null); setResults(null);
+    setLoading(true); setError(null); setResults(null); setCount(null); setReviewed(false);
     try {
-      const res = await searchAPI.text(projectId, q);
-      setResults(res.data.results);
+      if (mode === 'count') {
+        const res = await searchAPI.count(projectId, { text: q, minSimilarity: minSim / 100 });
+        setCount(res.data);
+        const matches = (res.data.matches || []).map((item) => ({ ...item, result_kind: 'visual' }));
+        setResults(matches);
+        setSelectedMatches(new Set(matches.map((item) => `visual-${item.drawing_id}-${item.detection_id}`)));
+        setQueryKind('text');
+      } else {
+        const res = await searchAPI.text(projectId, q);
+        const visual = (res.data.results || []).map((item) => ({ ...item, result_kind: 'visual' }));
+        const ocr = (res.data.ocr_results || []).map((item) => ({
+          ...item,
+          detection_id: `ocr_${item.chunk_id}`,
+          label_hint: item.text,
+          similarity: Math.min(1, Number(item.score || 0)),
+          geometry: item.bbox ? rectFromBbox(item.bbox) : [],
+          result_kind: 'ocr',
+        }));
+        const combined = [...visual, ...ocr];
+        setResults(combined);
+        setSelectedMatches(new Set(combined.map((item) => `${item.result_kind}-${item.drawing_id}-${item.detection_id}`)));
+        setQueryKind('text');
+      }
     } catch (err) {
-      setError(err.response?.status === 503
-        ? "AI Search isn't available yet — the server is missing its CLIP model dependencies."
-        : (err.response?.data?.detail || 'Search failed. Please try again.'));
+      setError(err.response?.data?.detail || 'Search failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function findAllLikeSelected() {
+    if (!selectedDrawing || !selectedAnnotation?.geometry?.length || loading) return;
+    setLoading(true); setError(null); setResults(null); setCount(null); setReviewed(false);
+    try {
+      const bbox = boundsOf(selectedAnnotation.geometry);
+      const res = await searchAPI.image(projectId, selectedDrawing.id, bbox, 100);
+      const matches = (res.data.results || []).map((item) => ({ ...item, result_kind: 'visual' }));
+      setResults(matches);
+      setSelectedMatches(new Set(matches.map((item) => `visual-${item.drawing_id}-${item.detection_id}`)));
+      setQueryKind('region');
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Visual search failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const matchKey = (item) => `${item.result_kind || 'visual'}-${item.drawing_id}-${item.detection_id}`;
+  function toggleMatch(item) {
+    const key = matchKey(item);
+    setSelectedMatches((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  async function approveReviewedMatches() {
+    if (!results?.length || reviewing) return;
+    setReviewing(true); setError(null);
+    try {
+      await searchAPI.review(projectId, {
+        query_kind: queryKind,
+        query_text: queryKind === 'text' ? query.trim() : selectedAnnotation?.meta?.label,
+        decisions: results.map((item) => ({
+          drawing_id: item.drawing_id,
+          detection_id: item.detection_id,
+          similarity: item.similarity,
+          decision: selectedMatches.has(matchKey(item)) ? 'accepted' : 'rejected',
+        })),
+      });
+      results.filter((item) => selectedMatches.has(matchKey(item)) && item.drawing_id === selectedDrawing?.id && item.geometry?.length)
+        .forEach((item) => onAddAnnotation(item, item.result_kind === 'ocr' ? 'area' : 'count'));
+      setReviewed(true);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Could not save the search review.');
+    } finally {
+      setReviewing(false);
     }
   }
 
   return (
     <div className="h-full flex flex-col">
       <div className="p-4 border-b border-slate-200">
+        <div className="mb-2 inline-flex rounded-lg bg-slate-100 p-0.5 text-[11px] font-medium">
+          {[['find', 'Find'], ['count', 'Count all']].map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => { setMode(m); setResults(null); setCount(null); setError(null); }}
+              className={`px-3 py-1 rounded-md ${mode === m ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <form onSubmit={runSearch} className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 focus-within:border-slate-500 focus-within:ring-2 focus-within:ring-slate-200">
           <SearchIcon className="w-4 h-4 text-slate-400" />
           <input
             value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder='Find "outlets", "bedrooms"...'
+            placeholder={mode === 'count' ? 'Count "outlets", "doors"...' : 'Find "outlets", "bedrooms"...'}
             className="flex-1 text-sm outline-none bg-transparent"
           />
           <button type="submit" disabled={!query.trim() || loading} className="w-7 h-7 rounded-md bg-slate-900 text-white flex items-center justify-center disabled:opacity-40">
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SearchIcon className="w-3.5 h-3.5" />}
           </button>
         </form>
-        <p className="mt-2 text-[11px] text-slate-500">Search across every sheet in this project by description. CLIP embeds every AI detection on ingest; results rank by similarity.</p>
+        <button
+          type="button"
+          onClick={findAllLikeSelected}
+          disabled={!selectedDrawing || !selectedAnnotation?.geometry?.length || loading}
+          className="mt-2 w-full rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-40"
+        >
+          Find all like selected annotation
+        </button>
+        {mode === 'count' ? (
+          <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+            <span className="whitespace-nowrap">Match ≥ {minSim}%</span>
+            <input
+              type="range" min="60" max="99" value={minSim}
+              onChange={(e) => setMinSim(Number(e.target.value))}
+              className="flex-1 accent-slate-900"
+            />
+          </label>
+        ) : (
+          <p className="mt-2 text-[11px] text-slate-500">Search CLIP visuals plus OCR text across every drawing and specification. Select an annotation to run visual “find all like this”.</p>
+        )}
       </div>
       <div className="flex-1 overflow-auto p-4 space-y-2">
         {error && <div className="text-xs text-rose-600 bg-rose-50 rounded-lg p-3">{error}</div>}
+
+        {count && (
+          <div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-center">
+              <div className="text-3xl font-bold text-emerald-700 tabular-nums">{count.total}</div>
+              <div className="text-[11px] uppercase tracking-wide text-emerald-600 mt-0.5">
+                matches for “{query.trim()}”
+              </div>
+            </div>
+            {count.total === 0 ? (
+              <p className="mt-3 text-xs text-slate-500">Nothing above {minSim}% similarity — lower the threshold or index more sheets.</p>
+            ) : (
+              <div className="mt-3 space-y-1">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Per sheet</div>
+                {count.per_drawing.map((row) => (
+                  <div key={row.drawing_id} className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-1.5 text-sm">
+                    <span className="text-slate-700 truncate">{drawingNameById.get(row.drawing_id) || `Sheet #${row.drawing_id}`}</span>
+                    <span className="tabular-nums font-semibold text-slate-900">{row.count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {results && results.length === 0 && <div className="text-sm text-slate-500">No matches found.</div>}
+        {results && results.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="text-xs font-semibold text-amber-900">Review matches before adding</div>
+            <div className="mt-1 text-[11px] text-amber-700">Uncheck false matches. Accepted matches on this open sheet will be added after review.</div>
+            <button type="button" onClick={approveReviewedMatches} disabled={reviewing || reviewed} className="mt-2 w-full rounded-md bg-amber-700 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+              {reviewing ? 'Saving review…' : reviewed ? 'Review saved' : `Approve ${selectedMatches.size} selected`}
+            </button>
+          </div>
+        )}
         {results && results.map((r) => {
           const onCurrentDrawing = r.drawing_id === selectedDrawing?.id;
+          const checked = selectedMatches.has(matchKey(r));
           return (
-            <div key={`${r.drawing_id}-${r.detection_id}`} className="rounded-lg border border-slate-200 p-3">
+            <div key={`${r.result_kind}-${r.drawing_id}-${r.detection_id}`} className={`rounded-lg border p-3 ${checked ? 'border-indigo-300 bg-indigo-50/40' : 'border-slate-200 opacity-60'}`}>
               <div className="flex items-center justify-between">
-                <div className="text-sm font-medium text-slate-900">{r.label_hint || 'Match'}</div>
-                <div className="text-[11px] mono text-emerald-600 font-semibold">{Math.round(r.similarity * 100)}%</div>
+                <label className="flex min-w-0 items-center gap-2 text-sm font-medium text-slate-900">
+                  <input type="checkbox" checked={checked} onChange={() => toggleMatch(r)} className="accent-indigo-600" />
+                  <span className="truncate">{r.label_hint || 'Match'}</span>
+                </label>
+                <div className="ml-2 text-[11px] mono text-emerald-600 font-semibold">{r.result_kind === 'ocr' ? 'OCR' : `${Math.round(r.similarity * 100)}%`}</div>
               </div>
-              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`}</div>
-              <div className="mt-2 flex gap-1.5">
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'count')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-white bg-slate-900 rounded-md hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Count
-                </button>
-                <button
-                  disabled={!onCurrentDrawing}
-                  onClick={() => onAddAnnotation(r, 'area')}
-                  title={onCurrentDrawing ? undefined : "Select this result's sheet to add it"}
-                  className="flex-1 py-1 text-[11px] font-medium text-slate-700 bg-slate-100 rounded-md hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  Add as Area
-                </button>
-              </div>
+              <div className="mt-0.5 text-[11px] text-slate-500">{drawingNameById.get(r.drawing_id) || `Sheet #${r.drawing_id}`} · {onCurrentDrawing ? 'open sheet' : 'another sheet'}</div>
+              {r.result_kind === 'ocr' && <div className="mt-1 line-clamp-2 text-[11px] text-slate-600">{r.text}</div>}
             </div>
           );
         })}
-        {!results && !error && (
+        {!results && !count && !error && (
           <p className="text-xs text-slate-500">
-            Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project's sheets.
+            {mode === 'count'
+              ? 'Type what to count — "outlets", "doors", "fire extinguishers" — and get a total plus a per-sheet breakdown across the project.'
+              : 'Type a description above — "outlets", "fire extinguishers", "bedrooms" — to find every matching detection across this project\'s sheets.'}
           </p>
         )}
       </div>
@@ -3025,20 +3023,16 @@ function ChatPanel({ detection, drawing }) {
     setMessages((m) => [...m, { role: 'user', text: q, time: 'now' }]);
     setInput(''); setSending(true);
     try {
-      if (drawing) {
-        // Real TakeOff.CHAT — RAG over this sheet's detections, conditions,
-        // human corrections, and OCR (routes/ai_routes.py).
-        const res = await chatAPI.send(drawing.id, q, history);
-        setMessages((m) => [...m, { role: 'assistant', text: res.data.answer, time: 'now', citations: res.data.citations }]);
-      } else {
-        // No real Sheet selected (demo canvas) — nothing to ground a real
-        // chat in yet, same scoping as scale calibration/corrections.
-        const res = await askTakeoffChat(q);
-        setMessages((m) => [...m, { role: 'assistant', text: res.answer, time: 'now', citations: res.citations }]);
-      }
+      if (!drawing) throw new Error('Select a real drawing before using TakeOff.CHAT.');
+      // Real TakeOff.CHAT — RAG over this sheet's detections, conditions,
+      // human corrections, and OCR (routes/ai_routes.py).
+      const res = await chatAPI.send(drawing.id, q, history);
+      setMessages((m) => [...m, { role: 'assistant', text: res.data.answer, time: 'now', citations: res.data.citations }]);
     } catch (error) {
       const detail = error.response?.data?.detail;
-      const text = error.response?.status === 503
+      const text = !drawing
+        ? 'Select a real drawing before using TakeOff.CHAT.'
+        : error.response?.status === 503
         ? "TakeOff.CHAT isn't configured yet — the server is missing its Claude API key."
         : (detail || "Something went wrong answering that. Please try again.");
       setMessages((m) => [...m, { role: 'assistant', text, time: 'now' }]);
@@ -3049,9 +3043,7 @@ function ChatPanel({ detection, drawing }) {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
-  const suggestions = drawing
-    ? ['How many rooms?', 'Total paintable area?', 'Draft a Scope of Work', 'Draft an RFP', 'Draft an RFI']
-    : ['How many rooms?', 'Total paintable area?', 'Generate a scope of work', 'Any door irregularities?'];
+  const suggestions = ['How many rooms?', 'Total paintable area?', 'Draft a Scope of Work', 'Draft an RFP', 'Draft an RFI'];
 
   return (
     <div className="h-full flex flex-col">

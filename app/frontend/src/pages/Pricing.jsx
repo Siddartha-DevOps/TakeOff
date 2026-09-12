@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import LogoCloud from '../components/sections/LogoCloud';
 import CtaBand from '../components/sections/CtaBand';
 import { paymentsAPI } from '../services/api';
+import { getAuthToken } from '../services/session.js';
 
 export default function Pricing() {
   const [billing, setBilling] = useState('yearly');
@@ -13,7 +14,7 @@ export default function Pricing() {
 
   const handleSubscribe = async (planName) => {
     // Check if user is logged in
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     if (!token) {
       navigate('/login');
       return;

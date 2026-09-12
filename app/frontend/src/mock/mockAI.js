@@ -104,49 +104,6 @@ export function getRoomColor(label) {
   return ROOM_COLORS[label] || '#818cf8';
 }
 
-// Simulated async AI call with progress events
-export async function runTakeoffAI({ onProgress, seed }) {
-  const stages = [
-    { msg: 'Initializing AI scanner...', delay: 300, pct: 8 },
-    { msg: 'Parsing drawing geometry...', delay: 500, pct: 18 },
-    { msg: 'Detecting auto-scale reference...', delay: 400, pct: 32 },
-    { msg: 'Running room segmentation (AI)...', delay: 700, pct: 58 },
-    { msg: 'Classifying doors, windows & fixtures...', delay: 550, pct: 80 },
-    { msg: 'Detecting wall boundaries...', delay: 350, pct: 90 },
-    { msg: 'Computing quantities per trade...', delay: 400, pct: 95 },
-    { msg: 'Finalizing report...', delay: 250, pct: 100 },
-  ];
-
-  for (const s of stages) {
-    await new Promise((r) => setTimeout(r, s.delay));
-    if (onProgress) onProgress(s);
-  }
-  // Slightly randomize confidence values to feel alive
-
-// Randomize confidence values and add slight variation to detection counts
-  const out = JSON.parse(JSON.stringify(SAMPLE_DETECTION));
-
-    // Add slight randomness to confidence scores
-  out.rooms = out.rooms.map((r) => ({ ...r, confidence: Math.min(0.99, r.confidence + rand(-0.02, 0.02)) }));
-  out.doors = out.doors.map((d) => ({ ...d, confidence: Math.min(0.99, d.confidence + rand(-0.03, 0.02)) }));
-  out.windows = out.windows.map((w) => ({ ...w, confidence: Math.min(0.99, w.confidence + rand(-0.03, 0.02)) }));
-  
-   // Randomize processing time
-  out.processingTimeMs = 1200 + Math.floor(rand(200, 800));
-
-  // Add staggered reveal delays for animation (used by canvas)
-  out.rooms = out.rooms.map((r, i) => ({ ...r, revealDelay: i * 80 }));
-  out.doors = out.doors.map((d, i) => ({ ...d, revealDelay: i * 40 }));
-  out.windows = out.windows.map((w, i) => ({ ...w, revealDelay: i * 40 }));
-
-  // True wall vectorization (annotations/wallVectorization.js, mirrors
-  // ai/wall_vectorization.py) — real typed centerline segments derived from
-  // the room layout above, replacing CanvasFull's old hardcoded SVG walls.
-  out.wall_segments = vectorizeWallsFromRooms(out.rooms);
-
-  return out;
-}
-
 export async function askTakeoffChat(question) {
   await new Promise((r) => setTimeout(r, 900));
   const canned = [

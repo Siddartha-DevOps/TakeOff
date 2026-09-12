@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "dataset_name": "takeoff-in-domain-spaces-v1",
+  "status": "NOT_READY",
+  "split_policy": "project_level_no_page_or_revision_leakage",
+  "target_counts": {
+    "train": 280,
+    "val": 50,
+    "test": 40,
+    "golden": 30
+  },
+  "actual_counts": {
+    "train": 0,
+    "val": 0,
+    "test": 0,
+    "golden": 0
+  },
+  "projects": {
+    "train": [],
+    "val": [],
+    "test": [],
+    "golden": []
+  },
+  "samples": []
+}

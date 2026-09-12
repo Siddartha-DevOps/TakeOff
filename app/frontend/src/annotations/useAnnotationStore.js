@@ -1,33 +1,39 @@
-// The single annotation store. Milestone 0 was load/serialize only.
-// assignCondition() was the first real mutation — meta.conditionId only,
-// geometry/measuredValue untouched.
-//
-// mergeSelection/backoutSelection/splitSelection (Togal parity: "Advanced
-// tools — split/merge/cut/backout") are geometry mutations, but a
-// deliberately narrow kind: each one replaces whole shapes with new,
-// computed ones (real polygon union/difference/intersection — see
-// shapeOps.js) triggered by a single menu action. That's different from,
-// and doesn't require, the freeform interactive editing (drag a vertex,
-// resize a handle live on the canvas) "Milestone 1" of the Editable
-// Annotation Overlay spec means — that territory (select/move/resize/
-// delete via a Konva-style live-editable canvas) is still unbuilt.
+// Unified annotation document with bounded undo/redo history. Every geometry
+// mutation recomputes its measured value before the autosave layer persists it.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { annotationsFromDetection } from './fromDetection';
 import { computeMeasuredValue } from './geometry';
 import { deserializeAnnotations, serializeAnnotations } from './serialize';
-import { mergeAreaGeometry, backoutAreaGeometry, splitAreaGeometry, mergeLineGeometry } from './shapeOps';
+import { addAreaHole, duplicateAnnotations, mergeAreaAnnotations, splitAreaAnnotation, transformAnnotation } from './operations';
 
 export function useAnnotationStore() {
-  const [annotations, setAnnotations] = useState([]);
+  const [history, setHistory] = useState({ past: [], present: [], future: [] });
+  const annotations = history.present;
 
-  const loadFromDetection = useCallback((detection) => {
-    setAnnotations(annotationsFromDetection(detection));
+  const replaceDocument = useCallback((next) => {
+    setHistory({ past: [], present: next, future: [] });
   }, []);
 
-  const loadFromJSON = useCallback((json) => {
-    setAnnotations(deserializeAnnotations(json));
+  const commit = useCallback((mutator) => {
+    setHistory((current) => {
+      const next = mutator(current.present);
+      if (next === current.present) return current;
+      return {
+        past: [...current.past, current.present].slice(-100),
+        present: next,
+        future: [],
+      };
+    });
   }, []);
+
+  const loadFromDetection = useCallback((detection, measurementContext = null) => {
+    replaceDocument(annotationsFromDetection(detection, measurementContext));
+  }, [replaceDocument]);
+
+  const loadFromJSON = useCallback((json, measurementContext = null) => {
+    replaceDocument(deserializeAnnotations(json, measurementContext));
+  }, [replaceDocument]);
 
   const toJSON = useCallback(() => serializeAnnotations(annotations), [annotations]);
 
@@ -35,113 +41,177 @@ export function useAnnotationStore() {
   // values (AI or manual, doesn't matter — same store, same object).
   const assignCondition = useCallback((ids, conditionId) => {
     const idSet = new Set(ids);
-    setAnnotations((prev) => prev.map((a) => (
+    commit((prev) => prev.map((a) => (
       idSet.has(a.id) ? { ...a, meta: { ...a.meta, conditionId } } : a
     )));
-  }, []);
+  }, [commit]);
 
   // Accept/reject/relabel from DetectionHoverCard — same rule as
   // assignCondition: meta only, geometry/measuredValue untouched.
   const updateAnnotationMeta = useCallback((id, patch) => {
-    setAnnotations((prev) => prev.map((a) => (
+    commit((prev) => prev.map((a) => (
       a.id === id ? { ...a, meta: { ...a.meta, ...patch } } : a
     )));
-  }, []);
+  }, [commit]);
 
   // AI Search results -> count/area annotation (the same "source: 'manual',
   // since the user triggered it" rule the original overlay spec gives for
   // Smart-fill — a search match only becomes a real shape once a person
   // picks it, but it's the identical Annotation object from then on).
-  const addAnnotation = useCallback((partial) => {
+  const addAnnotation = useCallback((partial, measurementContext = null) => {
     const annotation = { style: {}, meta: {}, ...partial };
-    annotation.measuredValue = computeMeasuredValue(annotation);
-    setAnnotations((prev) => [...prev, annotation]);
+    annotation.measuredValue = computeMeasuredValue(annotation, measurementContext);
+    commit((prev) => [...prev, annotation]);
     return annotation;
+  }, [commit]);
+
+  const updateGeometry = useCallback((id, geometry, measurementContext = null) => {
+    commit((prev) => {
+      const index = prev.findIndex((annotation) => annotation.id === id);
+      if (index < 0) return prev;
+      const current = prev[index];
+      const unchanged = current.geometry.length === geometry.length
+        && current.geometry.every((point, pointIndex) => (
+          point[0] === geometry[pointIndex][0] && point[1] === geometry[pointIndex][1]
+        ));
+      if (unchanged) return prev;
+      const updated = { ...current, geometry: geometry.map((point) => [...point]) };
+      const next = [...prev];
+      next[index] = { ...updated, measuredValue: computeMeasuredValue(updated, measurementContext) };
+      return next;
+    });
+  }, [commit]);
+
+  const deleteAnnotation = useCallback((id) => {
+    commit((prev) => prev.filter((annotation) => annotation.id !== id));
+  }, [commit]);
+
+  const deleteAnnotations = useCallback((ids) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.filter((annotation) => !idSet.has(annotation.id)));
+  }, [commit]);
+
+  const updateAnnotationsMeta = useCallback((ids, patch) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.map((annotation) => idSet.has(annotation.id)
+      ? { ...annotation, meta: { ...annotation.meta, ...patch } }
+      : annotation));
+  }, [commit]);
+
+  const transformAnnotations = useCallback((ids, transform, measurementContext = null) => {
+    const idSet = new Set(ids);
+    commit((prev) => prev.map((annotation) => idSet.has(annotation.id)
+      ? transformAnnotation(annotation, transform, measurementContext)
+      : annotation));
+  }, [commit]);
+
+  const duplicate = useCallback((ids, measurementContext = null) => {
+    let created = [];
+    commit((prev) => {
+      const result = duplicateAnnotations(prev, ids, {}, measurementContext);
+      created = result.copies;
+      return result.annotations;
+    });
+    return created;
+  }, [commit]);
+
+  const pasteAnnotations = useCallback((clipboard, measurementContext = null) => {
+    commit((prev) => {
+      const copies = clipboard.map((item, index) => {
+        const copy = transformAnnotation(item, { dx: 12, dy: 12 }, measurementContext);
+        return {
+          ...copy,
+          id: `${item.id}_paste_${Date.now()}_${index}`,
+          source: 'manual',
+          meta: { ...copy.meta, duplicatedFrom: item.id },
+        };
+      });
+      return copies.length ? [...prev, ...copies] : prev;
+    });
+  }, [commit]);
+
+  const mergeAreas = useCallback((ids, measurementContext = null) => {
+    let merged = null;
+    commit((prev) => {
+      const result = mergeAreaAnnotations(prev, ids, measurementContext);
+      merged = result.merged;
+      return result.annotations;
+    });
+    return merged;
+  }, [commit]);
+
+  const splitArea = useCallback((id, firstIndex, secondIndex, measurementContext = null) => {
+    let created = [];
+    commit((prev) => {
+      const annotation = prev.find((item) => item.id === id);
+      if (!annotation) return prev;
+      created = splitAreaAnnotation(
+        annotation,
+        firstIndex,
+        secondIndex,
+        (index) => `${id}_split_${Date.now()}_${index}`,
+        measurementContext,
+      );
+      if (created.length !== 2) return prev;
+      return [...prev.filter((item) => item.id !== id), ...created];
+    });
+    return created;
+  }, [commit]);
+
+  const addHole = useCallback((id, ring, measurementContext = null) => {
+    commit((prev) => prev.map((annotation) => {
+      if (annotation.id !== id) return annotation;
+      return addAreaHole(annotation, ring, measurementContext) || annotation;
+    }));
+  }, [commit]);
+
+  const undo = useCallback(() => {
+    setHistory((current) => {
+      if (current.past.length === 0) return current;
+      return {
+        past: current.past.slice(0, -1),
+        present: current.past[current.past.length - 1],
+        future: [current.present, ...current.future].slice(0, 100),
+      };
+    });
   }, []);
 
-  // Merge (union): 2+ shapes of the same type -> one. Validation and the
-  // actual geometry math happen against the *current* `annotations` closure
-  // before calling setAnnotations, so a rejected op (shapes don't touch,
-  // would produce a hole, etc.) throws synchronously to the caller and
-  // leaves state completely untouched — never a partial/inconsistent update.
-  const mergeSelection = useCallback((ids) => {
-    const targets = annotations.filter((a) => ids.includes(a.id));
-    if (targets.length < 2) throw new Error('Select at least 2 shapes to merge');
-    const type = targets[0].type;
-    if (!targets.every((a) => a.type === type)) throw new Error('Can only merge shapes of the same type (all area, or all line)');
-    if (type === 'count') throw new Error('Count shapes have no shape to merge');
-
-    const geometry = type === 'area'
-      ? mergeAreaGeometry(targets.map((a) => a.geometry))
-      : mergeLineGeometry(targets.map((a) => a.geometry));
-
-    const merged = {
-      ...targets[0],
-      id: `merged-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      geometry,
-      source: 'manual',
-      meta: { ...targets[0].meta, mergedFrom: targets.map((a) => a.id) },
-    };
-    merged.measuredValue = computeMeasuredValue(merged);
-
-    const idSet = new Set(ids);
-    setAnnotations((prev) => [...prev.filter((a) => !idSet.has(a.id)), merged]);
-    return merged;
-  }, [annotations]);
-
-  // Backout (deduct): exactly 2 area shapes. The larger-area one is always
-  // the base and the smaller the deduction — real takeoff deductions are
-  // always "cut the small thing out of the big thing," so this avoids
-  // needing the box-select interaction to convey an explicit base/deduct
-  // order it doesn't naturally carry.
-  const backoutSelection = useCallback((ids) => {
-    const targets = annotations.filter((a) => ids.includes(a.id));
-    if (targets.length !== 2) throw new Error('Select exactly 2 area shapes — the larger becomes the base, the smaller is deducted from it');
-    if (!targets.every((a) => a.type === 'area')) throw new Error('Backout only applies to area shapes');
-    const [base, deduct] = targets[0].measuredValue >= targets[1].measuredValue ? targets : [targets[1], targets[0]];
-
-    const geometry = backoutAreaGeometry(base.geometry, deduct.geometry);
-    const result = { ...base, geometry, source: 'manual', meta: { ...base.meta, backedOutFrom: deduct.id } };
-    result.measuredValue = computeMeasuredValue(result);
-
-    const idSet = new Set(ids);
-    setAnnotations((prev) => [...prev.filter((a) => !idSet.has(a.id)), result]);
-    return result;
-  }, [annotations]);
-
-  // Split: exactly one area shape + one line shape (the line is the cut
-  // line, auto-extended across the area's bounds — see shapeOps.js). The
-  // line annotation is consumed (removed) along with the original area
-  // shape, replaced by the two resulting pieces.
-  const splitSelection = useCallback((ids) => {
-    const targets = annotations.filter((a) => ids.includes(a.id));
-    if (targets.length !== 2) throw new Error('Select exactly 1 area shape and 1 line shape to use as the cut line');
-    const area = targets.find((a) => a.type === 'area');
-    const line = targets.find((a) => a.type === 'line');
-    if (!area || !line) throw new Error('Select exactly 1 area shape and 1 line shape to use as the cut line');
-
-    const [geoA, geoB] = splitAreaGeometry(area.geometry, line.geometry);
-    const makePiece = (geometry, suffix) => {
-      const piece = {
-        ...area,
-        id: `split-${Date.now()}-${suffix}-${Math.random().toString(36).slice(2, 6)}`,
-        geometry,
-        source: 'manual',
-        meta: { ...area.meta, splitFrom: area.id },
+  const redo = useCallback(() => {
+    setHistory((current) => {
+      if (current.future.length === 0) return current;
+      return {
+        past: [...current.past, current.present].slice(-100),
+        present: current.future[0],
+        future: current.future.slice(1),
       };
-      piece.measuredValue = computeMeasuredValue(piece);
-      return piece;
-    };
-    const pieceA = makePiece(geoA, 'a');
-    const pieceB = makePiece(geoB, 'b');
+    });
+  }, []);
 
-    const idSet = new Set(ids); // removes both the original area AND the cut line
-    setAnnotations((prev) => [...prev.filter((a) => !idSet.has(a.id)), pieceA, pieceB]);
-    return [pieceA, pieceB];
-  }, [annotations]);
+  const historyState = useMemo(() => ({
+    canUndo: history.past.length > 0,
+    canRedo: history.future.length > 0,
+  }), [history.past.length, history.future.length]);
 
   return {
-    annotations, loadFromDetection, loadFromJSON, toJSON, assignCondition, updateAnnotationMeta, addAnnotation,
-    mergeSelection, backoutSelection, splitSelection,
+    annotations,
+    loadFromDetection,
+    loadFromJSON,
+    toJSON,
+    assignCondition,
+    updateAnnotationMeta,
+    addAnnotation,
+    updateGeometry,
+    deleteAnnotation,
+    deleteAnnotations,
+    updateAnnotationsMeta,
+    transformAnnotations,
+    duplicate,
+    pasteAnnotations,
+    mergeAreas,
+    splitArea,
+    addHole,
+    undo,
+    redo,
+    ...historyState,
   };
 }

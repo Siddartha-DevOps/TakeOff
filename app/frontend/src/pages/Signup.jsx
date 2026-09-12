@@ -1,19 +1,28 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Sparkles, Mail, Lock, User, Building2, ArrowRight, Loader2, Check } from 'lucide-react';
+import { Sparkles, Mail, Lock, User, Building2, ArrowRight, Loader2, Check, AlertCircle } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function Signup() {
   const [form, setForm] = useState({ name: '', email: '', company: '', pw: '' });
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const nav = useNavigate();
+  const { signup } = useAuth();
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
-      localStorage.setItem('takeoff_user', JSON.stringify({ email: form.email, name: form.name, company: form.company }));
+    setError('');
+
+    const result = await signup(form.email, form.pw, form.name, form.company);
+
+    if (result.success) {
       nav('/app');
-    }, 900);
+    } else {
+      setError(result.error);
+      setLoading(false);
+    }
   };
 
   const upd = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -31,6 +40,13 @@ export default function Signup() {
         <div className="max-w-sm mx-auto w-full">
           <h1 className="text-3xl font-semibold tracking-tight text-slate-900">Start free for 14 days.</h1>
           <p className="mt-2 text-sm text-slate-600">No credit card required. Full Growth plan access.</p>
+
+          {error && (
+            <div className="mt-4 p-3 rounded-lg bg-rose-50 border border-rose-200 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 mt-0.5 flex-shrink-0" />
+              <p className="text-sm text-rose-800">{error}</p>
+            </div>
+          )}
 
           <form onSubmit={submit} className="mt-8 space-y-4">
             <div className="grid grid-cols-2 gap-3">

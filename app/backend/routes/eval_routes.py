@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import models
+import permissions
 import schemas
 from auth import get_current_user
 from database import get_db
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/eval", tags=["Eval Harness"])
 @router.post("/model-versions", response_model=schemas.ModelVersion)
 async def create_model_version(
     payload: schemas.ModelVersionCreate,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     existing = db.query(models.ModelVersion).filter(
@@ -92,7 +93,7 @@ def _record_eval(mv: models.ModelVersion, metrics: dict) -> None:
 async def evaluate(
     model_version_id: int,
     payload: EvaluateRequest,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
@@ -115,7 +116,7 @@ async def evaluate(
 async def promote(
     model_version_id: int,
     payload: EvaluateRequest,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(permissions.require_role(models.UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """

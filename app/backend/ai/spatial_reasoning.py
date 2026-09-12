@@ -25,11 +25,10 @@ class ScaleDetector:
             result = self._from_ocr(image_path)
             if result: return result
 
-        if rooms:
-            result = self._from_rooms(rooms)
-            if result: return result
-
-        return (9.0, 0.3, "fallback_standard")
+        # Typical-room-size inference is useful as a diagnostic hint, never as
+        # a measurement scale. Returning None prevents a guessed px/ft value
+        # from becoming trusted quantities.
+        return None
 
     def _from_ocr(self, image_path):
         try:
@@ -151,7 +150,13 @@ def derive_quantities(rooms, walls, doors, windows, scale, wall_segments=None):
     return qs
 
 
-def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Dict[str, Any]:
+def enrich_takeoff_result(
+    detection_json_str: str,
+    image_path: str = None,
+    *,
+    scale_ratio: Optional[float] = None,
+    plan_dpi: Optional[float] = None,
+) -> Dict[str, Any]:
     """
     Call this after YOLOv8 inference. Adds spatial intelligence.
 
@@ -167,9 +172,10 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
     doors   = detection.get("doors",   [])
     windows = detection.get("windows", [])
 
-    # Scale detection
-    detector = ScaleDetector()
-    scale, conf, method = detector.get_scale(image_path=image_path, rooms=rooms, walls=walls)
+    trusted_scale = bool(scale_ratio and scale_ratio > 0 and plan_dpi and plan_dpi > 0)
+    scale = (float(plan_dpi) * 12.0 / float(scale_ratio)) if trusted_scale else None
+    conf = 1.0 if trusted_scale else 0.0
+    method = "persisted_confirmed_scale" if trusted_scale else "confirmation_required"
 
     # Assign openings to rooms
     door_map   = assign_openings(rooms, doors)
@@ -180,7 +186,7 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
     for r in rooms:
         enriched_rooms.append({
             **r,
-            "area_sqft":      round(r["area"] / (scale**2), 1),
+            "area_sqft":      round(r["area"] / (scale**2), 1) if trusted_scale else None,
             "doors":          door_map.get(r["id"], []),
             "windows":        window_map.get(r["id"], []),
             "natural_light":  round(min(1.0, len(window_map.get(r["id"], [])) / 2.0), 2),
@@ -192,7 +198,7 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
     # Spatial scores
     circ  = circulation_score(rooms, adj)
     nl    = round(float(np.mean([r["natural_light"] for r in enriched_rooms])) if enriched_rooms else 0, 2)
-    total = round(sum(r["area"] / (scale**2) for r in rooms), 1)
+    total = round(sum(r["area"] / (scale**2) for r in rooms), 1) if trusted_scale else None
 
     from collections import Counter
     room_count = dict(Counter(r["label"] for r in rooms))
@@ -201,7 +207,10 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
     # centerline segments, not the old area-based perimeter guess.
     wall_segments = vectorize_walls(rooms, wall_detections=walls)
 
-    quantities = derive_quantities(rooms, walls, doors, windows, scale, wall_segments=wall_segments)
+    quantities = (
+        derive_quantities(rooms, walls, doors, windows, scale, wall_segments=wall_segments)
+        if trusted_scale else []
+    )
 
     return {
         "detection": {
@@ -213,9 +222,10 @@ def enrich_takeoff_result(detection_json_str: str, image_path: str = None) -> Di
                 "total_area_sqft":     total,
                 "circulation_score":   circ,
                 "natural_light_score": nl,
-                "scale_px_per_ft":     round(scale, 2),
+                "scale_px_per_ft":     round(scale, 2) if trusted_scale else None,
                 "scale_confidence":    round(conf, 2),
                 "scale_method":        method,
+                "scale_confirmation_required": not trusted_scale,
             }
         },
         "quantities": quantities,

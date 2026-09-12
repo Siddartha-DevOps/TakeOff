@@ -55,7 +55,12 @@ def test_identify_sheet_falls_back_to_placeholder_without_tesseract(monkeypatch)
 
     monkeypatch.setattr(tbo, "title_block_available", lambda: False)
     result = identify_sheet(np.zeros((10, 10, 3), dtype=np.uint8), page_index=2)
-    assert result == {"sheet_number": None, "discipline": None, "sheet_title": "Page 3"}
+    assert result == {
+        "sheet_number": None,
+        "discipline": None,
+        "sheet_title": "Page 3",
+        "scale_candidate": None,
+    }
 
 
 @pytest.mark.skipif(not title_block_available(), reason="tesseract-ocr binary/pytesseract not installed")

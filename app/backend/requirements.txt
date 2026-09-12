@@ -22,7 +22,6 @@ numpy>=1.26.0
 python-multipart>=0.0.9
 jq>=1.6.0
 typer>=0.9.0
-emergentintegrations==0.1.0
 sqlalchemy==2.0.49
 psycopg2-binary==2.9.11
 alembic==1.18.4
@@ -30,11 +29,17 @@ geoalchemy2==0.20.0
 pgvector==0.5.0
 shapely>=2.0.0            # vector geometry engine: polygon building + WKT/GeoJSON
 PyMuPDF>=1.24.0           # native PDF vector-geometry + symbol extraction (fitz)
+Pillow>=10.0.0            # durable Deep Zoom tile generation
+opencv-python-headless>=4.9,<5  # worker rasterization / tile generation
+pytesseract>=0.3.10       # full-sheet OCR index; Docker installs the system binary
 aiofiles==25.1.0
+loguru>=0.7.2
 httpx>=0.27.0
+gradio_client==2.6.0
 openpyxl==3.1.5
 reportlab==5.0.0
 websockets==12.0
 redis==5.3.1
 celery==5.4.0
 pytesseract==0.3.13  # ai/title_block_ocr.py — sheet auto-naming OCR; requires the tesseract-ocr system binary
+stripe>=7.0.0            # routes/stripe_routes.py imports this at module load; required to boot

@@ -26,16 +26,32 @@ Bbox = Sequence[float]  # [x1, y1, x2, y2]
 # ──────────────────────────────────────────────────────────────
 # IoU
 # ──────────────────────────────────────────────────────────────
-def poly_iou(a: Ring, b: Ring) -> float:
-    """Intersection-over-union of two polygon rings (plan-space coords)."""
+def _safe_polygon(ring: Ring):
+    """A shapely Polygon for a coordinate ring, or None if it can't form one.
+
+    A polygon needs >= 3 distinct vertices; a ring with fewer is a point or a
+    line (which is exactly what a truncated CubiCasa contour or a sliver
+    prediction can be) — it has zero area, so it contributes 0 IoU rather than
+    raising `ValueError: A linearring requires at least 4 coordinates` and taking
+    the whole golden-set eval down with it.
+    """
     from shapely.geometry import Polygon
 
-    pa, pb = Polygon(a), Polygon(b)
-    if not pa.is_valid:
-        pa = pa.buffer(0)
-    if not pb.is_valid:
-        pb = pb.buffer(0)
-    if pa.is_empty or pb.is_empty:
+    if not ring or len(ring) < 3:
+        return None
+    try:
+        poly = Polygon(ring)
+    except (ValueError, TypeError):
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    return None if poly.is_empty else poly
+
+
+def poly_iou(a: Ring, b: Ring) -> float:
+    """Intersection-over-union of two polygon rings (plan-space coords)."""
+    pa, pb = _safe_polygon(a), _safe_polygon(b)
+    if pa is None or pb is None:
         return 0.0
     inter = pa.intersection(pb).area
     union = pa.area + pb.area - inter

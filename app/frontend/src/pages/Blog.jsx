@@ -14,7 +14,7 @@ export default function Blog() {
 
   const fetchBlogs = async () => {
     try {
-      const API_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      const API_URL = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
       const response = await axios.get(`${API_URL}/api/blogs/`);
       setBlogs(response.data);
     } catch (error) {

@@ -1,0 +1,232 @@
+{
+  "conversion_version": "swiss-dwellings-takeoff-pilot-v1",
+  "source": {
+    "dataset": "Swiss Dwellings",
+    "doi": "10.5281/zenodo.7788422",
+    "version": "3.0.0"
+  },
+  "spaces": {
+    "classes": {
+      "bedroom": 1,
+      "bathroom": 2,
+      "kitchen": 3,
+      "living": 4,
+      "living_dining": 5,
+      "corridor": 6,
+      "storage": 7,
+      "balcony": 8,
+      "office": 9,
+      "utility": 10,
+      "stairs": 11,
+      "entry_lobby": 12,
+      "generic_room": 13,
+      "shaft": 14
+    },
+    "source_mapping": {
+      "BALCONY": "balcony",
+      "BATHROOM": "bathroom",
+      "BEDROOM": "bedroom",
+      "CORRIDOR": "corridor",
+      "CORRIDORS_AND_HALLS": "corridor",
+      "FOYER": "entry_lobby",
+      "KITCHEN": "kitchen",
+      "LIVING_DINING": "living_dining",
+      "LIVING_ROOM": "living",
+      "LOBBY": "entry_lobby",
+      "OFFICE": "office",
+      "OFFICE_SPACE": "office",
+      "ROOM": "generic_room",
+      "SHAFT": "shaft",
+      "STAIRCASE": "stairs",
+      "STOREROOM": "storage",
+      "TECHNICAL_AREA": "utility",
+      "WASH_AND_DRY_ROOM": "utility"
+    },
+    "review_policy": {
+      "ARCHIVE": {
+        "canonical_takeoff_class": "storage",
+        "mapping_state": "REVIEW",
+        "reason": "Storage-like, but document/archive use is not equivalent to a general storeroom."
+      },
+      "BASEMENT": {
+        "canonical_takeoff_class": null,
+        "mapping_state": "IGNORE_FOR_CURRENT_MODEL",
+        "reason": "Location/floor descriptor rather than a stable room function."
+      },
+      "BASEMENT_COMPARTMENT": {
+        "canonical_takeoff_class": "storage",
+        "mapping_state": "REVIEW",
+        "reason": "Often storage, but use is not guaranteed."
+      },
+      "CARPARK": {
+        "canonical_takeoff_class": "other_aec",
+        "mapping_state": "MAP_TO_OTHER",
+        "reason": "Useful AEC space outside the current room taxonomy."
+      },
+      "ELECTRICAL_SUPPLY": {
+        "canonical_takeoff_class": "utility",
+        "mapping_state": "REVIEW",
+        "reason": "Candidate utility space requiring a building-services policy."
+      },
+      "ELEVATOR": {
+        "canonical_takeoff_class": "shaft",
+        "mapping_state": "REVIEW",
+        "reason": "Vertical-transport area is not always equivalent to a shaft."
+      },
+      "ELEVATOR_FACILITIES": {
+        "canonical_takeoff_class": "utility",
+        "mapping_state": "REVIEW",
+        "reason": "Candidate plant/utility area requiring domain review."
+      },
+      "FACTORY_ROOM": {
+        "canonical_takeoff_class": "other_aec",
+        "mapping_state": "MAP_TO_OTHER",
+        "reason": "Industrial specialty room outside the current taxonomy."
+      },
+      "GARAGE": {
+        "canonical_takeoff_class": "other_aec",
+        "mapping_state": "MAP_TO_OTHER",
+        "reason": "Useful AEC space retained for a future garage/parking model."
+      },
+      "GARDEN": {
+        "canonical_takeoff_class": null,
+        "mapping_state": "IGNORE_FOR_CURRENT_MODEL",
+        "reason": "Exterior landscape area, not an enclosed room."
+      },
+      "HEATING": {
+        "canonical_takeoff_class": "utility",
+        "mapping_state": "REVIEW",
+        "reason": "Candidate building-services space requiring domain review."
+      },
+      "LIGHTWELL": {
+        "canonical_takeoff_class": null,
+        "mapping_state": "IGNORE_FOR_CURRENT_MODEL",
+        "reason": "Void/lightwell, not an occupied room."
+      },
+      "MEETING_ROOM": {
+        "canonical_takeoff_class": "office",
+        "mapping_state": "REVIEW",
+        "reason": "Office-related use, but not necessarily equivalent to office space."
+      },
+      "OFFICE_TECH_ROOM": {
+        "canonical_takeoff_class": "utility",
+        "mapping_state": "REVIEW",
+        "reason": "Composite office/technical use."
+      },
+      "OUTDOOR_VOID": {
+        "canonical_takeoff_class": null,
+        "mapping_state": "IGNORE_FOR_CURRENT_MODEL",
+        "reason": "Exterior void, not a room."
+      },
+      "PRAM_AND_BIKE_STORAGE_ROOM": {
+        "canonical_takeoff_class": "storage",
+        "mapping_state": "REVIEW",
+        "reason": "Specialty storage candidate retained for taxonomy review."
+      },
+      "SANITARY_ROOMS": {
+        "canonical_takeoff_class": "bathroom",
+        "mapping_state": "REVIEW",
+        "reason": "May include toilets or wash areas and is not forced into bathroom."
+      },
+      "SHELTER": {
+        "canonical_takeoff_class": "generic_room",
+        "mapping_state": "REVIEW",
+        "reason": "Specialty protected room requiring domain policy."
+      },
+      "TERRACE": {
+        "canonical_takeoff_class": "balcony",
+        "mapping_state": "REVIEW",
+        "reason": "Candidate exterior occupied area with different enclosure/measurement rules."
+      },
+      "TRANSPORT_SHAFT": {
+        "canonical_takeoff_class": "shaft",
+        "mapping_state": "REVIEW",
+        "reason": "Transport-specific vertical space requiring review before shaft mapping."
+      },
+      "VEHICLE_TRAFFIC_AREA": {
+        "canonical_takeoff_class": "other_aec",
+        "mapping_state": "MAP_TO_OTHER",
+        "reason": "Useful circulation geometry outside the current room model."
+      },
+      "VOID": {
+        "canonical_takeoff_class": null,
+        "mapping_state": "IGNORE_FOR_CURRENT_MODEL",
+        "reason": "Non-room void retained only in provenance."
+      }
+    },
+    "excluded_or_ambiguous": {
+      "ARCHIVE": "Storage-like, but document/archive use is not equivalent to a general storeroom.",
+      "BASEMENT": "Location/floor descriptor rather than a stable room function.",
+      "BASEMENT_COMPARTMENT": "Often storage, but use is not guaranteed.",
+      "CARPARK": "Outside the current room taxonomy.",
+      "ELECTRICAL_SUPPLY": "Specialized plant space; retain source semantics for a later building-services taxonomy.",
+      "ELEVATOR": "Vertical-transport area, not safely equivalent to a shaft or staircase.",
+      "ELEVATOR_FACILITIES": "Specialized plant space.",
+      "FACTORY_ROOM": "Industrial specialty room outside the current taxonomy.",
+      "GARAGE": "Outside the current room taxonomy.",
+      "GARDEN": "Exterior landscape area, not an enclosed room.",
+      "HEATING": "Specialized plant space; retain for later building-services taxonomy.",
+      "LIGHTWELL": "Void/lightwell, not an occupied room.",
+      "MEETING_ROOM": "Could be office-related, but is preserved separately pending an office taxonomy decision.",
+      "OFFICE_TECH_ROOM": "Composite office/technical use.",
+      "OUTDOOR_VOID": "Void, not a room.",
+      "PRAM_AND_BIKE_STORAGE_ROOM": "Composite specialty storage; preserve until explicitly approved.",
+      "SANITARY_ROOMS": "Could include toilets or wash areas; not forced into bathroom.",
+      "SHELTER": "Specialty protected room outside the current taxonomy.",
+      "TERRACE": "Not forced into balcony because enclosure and measurement policy differ.",
+      "TRANSPORT_SHAFT": "Transport-specific vertical space; not forced into generic shaft.",
+      "VEHICLE_TRAFFIC_AREA": "Outside the current room taxonomy.",
+      "VOID": "Not a room."
+    }
+  },
+  "separators": {
+    "classes": {
+      "wall": 1,
+      "column": 2,
+      "railing": 3
+    },
+    "source_mapping": {
+      "COLUMN": "column",
+      "RAILING": "railing",
+      "WALL": "wall"
+    },
+    "excluded_or_ambiguous": {
+      "AREA_SPLITTER": "Semantic boundary without evidence of a physical wall.",
+      "NOT_DEFINED": "Unknown separator semantics."
+    }
+  },
+  "doors": {
+    "classes": {
+      "door": 1,
+      "entrance_door": 2
+    },
+    "source_mapping": {
+      "DOOR": "door",
+      "ENTRANCE_DOOR": "entrance_door"
+    },
+    "excluded_or_ambiguous": {
+      "NOT_DEFINED": "Unknown opening semantics."
+    }
+  },
+  "windows": {
+    "classes": {
+      "window": 1,
+      "window_envelope": 2,
+      "window_interior": 3
+    },
+    "source_mapping": {
+      "WINDOW": "window",
+      "WINDOW_ENVELOPE": "window_envelope",
+      "WINDOW_INTERIOR": "window_interior"
+    },
+    "excluded_or_ambiguous": {
+      "NOT_DEFINED": "Unknown opening semantics."
+    }
+  },
+  "mapping_states": {
+    "TRAIN": "Included as a supervised class in the current model.",
+    "MAP_TO_OTHER": "Preserved under a provenance-only other-AEC bucket; not painted into the current model mask.",
+    "IGNORE_FOR_CURRENT_MODEL": "Excluded from current supervision but retained losslessly in provenance.",
+    "REVIEW": "Candidate canonical mapping requiring human/domain approval before training."
+  }
+}

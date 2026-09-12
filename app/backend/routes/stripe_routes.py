@@ -9,6 +9,7 @@ import json
 import os
 import stripe
 from datetime import datetime, timezone
+from stripe_security import StripeWebhookNotConfigured, construct_verified_event
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -252,19 +253,7 @@ async def stripe_webhook(
         body = await request.body()
         signature = request.headers.get("Stripe-Signature")
 
-        if not signature:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing Stripe signature"
-            )
-
-        get_stripe_client()
-        webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
-
-        if webhook_secret:
-            event = stripe.Webhook.construct_event(body, signature, webhook_secret)
-        else:
-            event = stripe.Event.construct_from(json.loads(body), stripe.api_key)
+        event = construct_verified_event(body, signature)
 
         if event["type"] in ["checkout.session.completed", "payment_intent.succeeded"]:
             session_obj = event["data"]["object"]
@@ -280,8 +269,20 @@ async def stripe_webhook(
 
         return {"status": "success", "event_type": event["type"]}
 
-    except Exception as e:
+    except StripeWebhookNotConfigured:
+        # Fail closed. Never parse or act on an unverified event merely because
+        # a deployment forgot to configure its signing secret.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Stripe webhook verification is not configured",
+        )
+    except HTTPException:
+        raise
+    except (ValueError, stripe.error.SignatureVerificationError):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Webhook error: {str(e)}"
+            detail="Invalid Stripe webhook signature",
         )
+    except Exception:
+        # Do not return Stripe/parser internals to an unauthenticated caller.
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook payload")

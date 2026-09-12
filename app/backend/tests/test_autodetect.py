@@ -67,3 +67,21 @@ def test_empty_measure_yields_no_quantities():
     assert vector_quantities(empty) == []
     result = autodetect_from_measure(empty)
     assert result["primitives"] == {"area": 0.0, "line": 0.0, "count": 0}
+
+
+def test_symbol_counts_become_quantity_rows(vector_pdf):
+    symbol_counts = {"door": 3, "window": 2, "fixture": 0}
+    rows = vector_quantities(measure_pdf(vector_pdf, SCALE_RATIO), symbol_counts)
+
+    doors = next(r for r in rows if r["item"] == "Doors")
+    windows = next(r for r in rows if r["item"] == "Windows")
+    assert doors == {"trade": "Counts", "item": "Doors", "quantity": 3, "unit": "ea"}
+    assert windows == {"trade": "Counts", "item": "Windows", "quantity": 2, "unit": "ea"}
+    # A type with zero instances doesn't produce a row.
+    assert not any(r["item"] == "Fixtures" for r in rows)
+
+
+def test_autodetect_from_measure_wires_symbol_counts_through(vector_pdf):
+    symbol_counts = {"door": 1}
+    result = autodetect_from_measure(measure_pdf(vector_pdf, SCALE_RATIO), symbol_counts)
+    assert any(r["item"] == "Doors" and r["quantity"] == 1 for r in result["quantities"])
