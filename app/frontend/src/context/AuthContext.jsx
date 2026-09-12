@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { authAPI } from '../services/api';
+import { clearSession, getAuthToken, getSessionUser, storeSession } from '../services/session.js';
 
 const AuthContext = createContext(null);
 
@@ -16,10 +17,10 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // Load user from localStorage on mount
+  // Session-scoped storage avoids leaving a seven-day bearer token on disk.
   useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    const savedUser = localStorage.getItem('user');
+    const token = getAuthToken();
+    const savedUser = getSessionUser();
     
     if (token && savedUser) {
       try {
@@ -28,20 +29,30 @@ export const AuthProvider = ({ children }) => {
         setIsAuthenticated(true);
       } catch (e) {
         console.error('Failed to parse saved user', e);
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('user');
+        clearSession();
       }
     }
     setLoading(false);
   }, []);
+
+  // Turn an axios error into an honest, actionable message. A real backend
+  // rejection carries error.response (e.g. 401 "Incorrect email or password");
+  // no error.response means the request never reached the server — a network /
+  // CORS / wrong-backend-URL problem, NOT a bad password.
+  const authErrorMessage = (error, action) => {
+    if (error.response) {
+      return error.response.data?.detail || `${action} failed. Please try again.`;
+    }
+    return `Can't reach the server. Check that the backend is deployed and reachable ` +
+           `(VITE_BACKEND_URL), then try again.`;
+  };
 
   const login = async (email, password) => {
     try {
       const response = await authAPI.login(email, password);
       const { access_token, user: userData } = response.data;
       
-      localStorage.setItem('auth_token', access_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      storeSession(access_token, userData);
       
       setUser(userData);
       setIsAuthenticated(true);
@@ -49,20 +60,16 @@ export const AuthProvider = ({ children }) => {
       return { success: true, user: userData };
     } catch (error) {
       console.error('Login failed:', error);
-      return {
-        success: false,
-        error: error.response?.data?.detail || 'Login failed. Please try again.',
-      };
+      return { success: false, error: authErrorMessage(error, 'Login') };
     }
   };
 
-  const signup = async (email, password, fullName) => {
+  const signup = async (email, password, fullName, organizationName) => {
     try {
-      const response = await authAPI.signup(email, password, fullName);
+      const response = await authAPI.signup(email, password, fullName, organizationName);
       const { access_token, user: userData } = response.data;
       
-      localStorage.setItem('auth_token', access_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      storeSession(access_token, userData);
       
       setUser(userData);
       setIsAuthenticated(true);
@@ -70,16 +77,12 @@ export const AuthProvider = ({ children }) => {
       return { success: true, user: userData };
     } catch (error) {
       console.error('Signup failed:', error);
-      return {
-        success: false,
-        error: error.response?.data?.detail || 'Signup failed. Please try again.',
-      };
+      return { success: false, error: authErrorMessage(error, 'Signup') };
     }
   };
 
   const logout = () => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('user');
+    clearSession();
     setUser(null);
     setIsAuthenticated(false);
   };
@@ -89,8 +92,7 @@ export const AuthProvider = ({ children }) => {
   // returns the same Token shape as login/signup so the newly-created
   // member lands straight in the app instead of having to log in again.
   const loginWithSession = (accessToken, userData) => {
-    localStorage.setItem('auth_token', accessToken);
-    localStorage.setItem('user', JSON.stringify(userData));
+    storeSession(accessToken, userData);
     setUser(userData);
     setIsAuthenticated(true);
   };

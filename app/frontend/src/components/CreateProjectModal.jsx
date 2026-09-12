@@ -105,10 +105,11 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
 
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  <label htmlFor="project-name" className="block text-sm font-medium text-slate-700 mb-1.5">
                     Project Name
                   </label>
                   <input
+                    id="project-name"
                     type="text"
                     required
                     value={formData.name}
@@ -119,10 +120,11 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  <label htmlFor="project-type" className="block text-sm font-medium text-slate-700 mb-1.5">
                     Project Type
                   </label>
                   <select
+                    id="project-type"
                     value={formData.project_type}
                     onChange={(e) => setFormData({ ...formData, project_type: e.target.value })}
                     className="w-full px-3 py-2.5 text-sm rounded-lg border border-slate-300 bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
@@ -136,10 +138,11 @@ export default function CreateProjectModal({ isOpen, onClose, onSuccess }) {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  <label htmlFor="project-description" className="block text-sm font-medium text-slate-700 mb-1.5">
                     Description <span className="text-slate-400">(optional)</span>
                   </label>
                   <textarea
+                    id="project-description"
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     placeholder="Brief project description..."

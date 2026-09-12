@@ -1,12 +1,19 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import OpenSeadragon from "openseadragon";
 import { uploadsAPI } from "../services/api";
+import { getAuthToken } from "../services/session.js";
+import { snapPoint } from "../annotations/geometry.js";
 
-// Configure PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// Keep the PDF.js worker in the Vite bundle. React-PDF 10 uses PDF.js 5,
+// whose worker is an ES module (`.mjs`); the former `.js` CDN URL returns a
+// missing/incompatible worker and makes otherwise valid PDFs fail to load.
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 // Deep Zoom pyramid tiling (tiling.py / routes/upload_routes.py) — closes
 // memory/TOGAL_PARITY_REAUDIT.md #11: rendering a full-resolution PDF page
@@ -33,6 +40,183 @@ function toPlanSpacePoint(e, rect, nativeWidth, nativeHeight) {
   ];
 }
 
+const MANUAL_STYLE = {
+  area: { stroke: '#ec4899', fill: '#ec4899', unit: 'sf' },
+  line: { stroke: '#06b6d4', fill: 'none', unit: 'lf' },
+  count: { stroke: '#f97316', fill: '#f97316', unit: 'ea' },
+};
+
+function ManualTakeoffOverlay({
+  annotations, draftPoints, hoverPoint, tool, screenPointFor, planPointForScreen,
+  planScale = 1, selectedAnnotationIds = [], onSelectAnnotation, onUpdateGeometry,
+  onTransformSelection, onSplitVertex, snapPlanPoint,
+}) {
+  const [drag, setDrag] = useState(null);
+  const [dragPreview, setDragPreview] = useState(null);
+  const dragDeltaRef = useRef(null);
+  const dragPreviewRef = useRef(null);
+  const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
+  const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
+  const selectedSet = new Set(selectedAnnotationIds);
+
+  useEffect(() => {
+    if (!drag) return undefined;
+    const handleMove = (event) => {
+      const raw = planPointForScreen?.(event.clientX, event.clientY);
+      if (!raw) return;
+      if (drag.mode === 'vertex') {
+        const anchor = drag.originalGeometry[drag.vertexIndex === 0 ? 1 : drag.vertexIndex - 1] || null;
+        const point = snapPlanPoint ? snapPlanPoint(raw, anchor, drag.annotationId) : raw;
+        const preview = drag.originalGeometry.map((item, index) => (index === drag.vertexIndex ? point : item));
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
+      } else {
+        let dx = raw[0] - drag.startPoint[0];
+        let dy = raw[1] - drag.startPoint[1];
+        if (snapPlanPoint && drag.originalGeometry[0]) {
+          const translatedFirst = [drag.originalGeometry[0][0] + dx, drag.originalGeometry[0][1] + dy];
+          const snappedFirst = snapPlanPoint(translatedFirst, null, drag.annotationId);
+          dx += snappedFirst[0] - translatedFirst[0];
+          dy += snappedFirst[1] - translatedFirst[1];
+        }
+        const preview = drag.originalGeometry.map(([x, y]) => [x + dx, y + dy]);
+        dragPreviewRef.current = preview;
+        setDragPreview(preview);
+        if (drag.mode === 'selection') dragDeltaRef.current = [dx, dy];
+      }
+    };
+    const handleUp = () => {
+      if (drag.mode === 'selection' && dragDeltaRef.current) onTransformSelection?.(drag.selectionIds, { dx: dragDeltaRef.current[0], dy: dragDeltaRef.current[1] });
+      else if (dragPreviewRef.current) onUpdateGeometry?.(drag.annotationId, dragPreviewRef.current);
+      setDrag(null);
+      setDragPreview(null);
+      dragDeltaRef.current = null;
+      dragPreviewRef.current = null;
+    };
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [drag, onTransformSelection, onUpdateGeometry, planPointForScreen, snapPlanPoint]);
+
+  const beginDrag = (event, annotation, mode, vertexIndex = null) => {
+    if (tool !== 'select') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const nextSelection = event.shiftKey
+      ? (selectedSet.has(annotation.id) ? selectedAnnotationIds.filter((id) => id !== annotation.id) : [...selectedAnnotationIds, annotation.id])
+      : (selectedSet.has(annotation.id) ? selectedAnnotationIds : [annotation.id]);
+    onSelectAnnotation?.(nextSelection);
+    const startPoint = planPointForScreen?.(event.clientX, event.clientY);
+    if (!startPoint) return;
+    const preview = annotation.geometry.map((point) => [...point]);
+    dragPreviewRef.current = preview;
+    setDragPreview(preview);
+    dragDeltaRef.current = null;
+    setDrag({
+      annotationId: annotation.id,
+      mode: mode === 'shape' && nextSelection.length > 1 ? 'selection' : mode,
+      selectionIds: nextSelection,
+      vertexIndex,
+      startPoint,
+      originalGeometry: annotation.geometry.map((point) => [...point]),
+    });
+  };
+
+  const renderShape = (annotation) => {
+    const geometry = drag?.annotationId === annotation.id && dragPreview ? dragPreview : annotation.geometry;
+    const points = geometry.map(toScreen).filter(Boolean);
+    if (points.length === 0) return null;
+    const style = { ...MANUAL_STYLE[annotation.type], ...annotation.style };
+    const center = points.reduce((acc, point) => ({ x: acc.x + point.x / points.length, y: acc.y + point.y / points.length }), { x: 0, y: 0 });
+    const measuredValue = Number(annotation.measuredValue) || 0;
+    const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
+
+    return (
+      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
+        {annotation.type === 'area' && (
+          <path data-testid="manual-annotation-shape" d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
+            style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+        )}
+        {annotation.type === 'line' && (
+          annotation.meta?.curve === 'arc' && points.length === 3
+            ? <path data-testid="manual-annotation-shape" d={arcSvgPath(points)} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"} style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }} onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+            : <polyline data-testid="manual-annotation-shape" points={points.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "6" : "3"}
+            style={{ pointerEvents: tool === 'select' ? 'stroke' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')} />
+        )}
+        {annotation.type === 'count' && (
+          <g data-testid="manual-annotation-shape" style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
+            onPointerDown={(event) => beginDrag(event, annotation, 'shape')}>
+            <circle cx={center.x} cy={center.y} r="8" fill={style.fill} stroke="#fff" strokeWidth="2" />
+            <path d={`M ${center.x - 4} ${center.y} H ${center.x + 4} M ${center.x} ${center.y - 4} V ${center.y + 4}`} stroke="#fff" strokeWidth="1.5" />
+          </g>
+        )}
+        <text x={center.x} y={center.y - 12} textAnchor="middle" fontSize="11" fontWeight="700" fill={style.stroke}
+          style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3 }}>
+          {label}
+        </text>
+        {(tool === 'select' || tool === 'split') && selectedSet.has(annotation.id) && points.map((point, index) => (
+          <circle key={`handle-${index}`} data-testid="manual-annotation-handle" data-handle-index={index} cx={point.x} cy={point.y} r="6" fill="#fff" stroke={style.stroke} strokeWidth="2"
+            style={{ pointerEvents: 'all', cursor: tool === 'split' ? 'crosshair' : 'grab' }}
+            onPointerDown={(event) => tool === 'split' ? (event.stopPropagation(), onSplitVertex?.(annotation.id, index)) : beginDrag(event, annotation, 'vertex', index)} />
+        ))}
+      </g>
+    );
+  };
+
+  const previewPlanPoints = tool && hoverPoint ? [...draftPoints, hoverPoint] : draftPoints;
+  const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
+
+  return (
+    <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+      {manualAnnotations.map(renderShape)}
+      {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
+        <>
+          <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
+          {draftPoints.map(toScreen).filter(Boolean).map((point, index) => (
+            <circle key={index} cx={point.x} cy={point.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1.5" />
+          ))}
+        </>
+      )}
+      {tool === 'line' && previewPoints.length > 0 && (
+        <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#06b6d4" strokeWidth="3" strokeDasharray="6 4" />
+      )}
+      {tool === 'arc' && previewPoints.length > 0 && (
+        <path d={previewPoints.length === 3 ? arcSvgPath(previewPoints) : `M ${previewPoints.map((p) => `${p.x} ${p.y}`).join(' L ')}`} fill="none" stroke="#06b6d4" strokeWidth="3" strokeDasharray="6 4" />
+      )}
+      {tool === 'count' && hoverPoint && previewPoints[0] && (
+        <circle cx={previewPoints[0].x} cy={previewPoints[0].y} r="8" fill="#f97316" fillOpacity="0.65" stroke="#fff" strokeWidth="2" />
+      )}
+    </svg>
+  );
+}
+
+function arcSvgPath(points) {
+  if (points.length !== 3) return `M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')}`;
+  const [a, b, c] = points;
+  const d = 2 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+  if (Math.abs(d) < 1e-6) return `M ${a.x} ${a.y} L ${b.x} ${b.y} L ${c.x} ${c.y}`;
+  const aa = a.x ** 2 + a.y ** 2;
+  const bb = b.x ** 2 + b.y ** 2;
+  const cc = c.x ** 2 + c.y ** 2;
+  const center = {
+    x: (aa * (b.y - c.y) + bb * (c.y - a.y) + cc * (a.y - b.y)) / d,
+    y: (aa * (c.x - b.x) + bb * (a.x - c.x) + cc * (b.x - a.x)) / d,
+  };
+  const radius = Math.hypot(a.x - center.x, a.y - center.y);
+  const normalize = (value) => (value + Math.PI * 2) % (Math.PI * 2);
+  const start = Math.atan2(a.y - center.y, a.x - center.x);
+  const middle = normalize(Math.atan2(b.y - center.y, b.x - center.x) - start);
+  const end = normalize(Math.atan2(c.y - center.y, c.x - center.x) - start);
+  const sweep = middle <= end ? 1 : 0;
+  const span = sweep ? end : Math.PI * 2 - end;
+  return `M ${a.x} ${a.y} A ${radius} ${radius} 0 ${span > Math.PI ? 1 : 0} ${sweep} ${c.x} ${c.y}`;
+}
+
 /**
  * @param {object} props
  * @param {boolean} [props.calibrating] - when true, the next two clicks on the
@@ -48,21 +232,31 @@ function toPlanSpacePoint(e, rect, nativeWidth, nativeHeight) {
  * @param {Array<{id:number,x:number,y:number,resolved:boolean}>} [props.commentPins]
  *   - persisted comment pins on this drawing, in plan-space.
  * @param {(id:number) => void} [props.onPinClick]
+ * @param {'select'|'area'|'line'|'count'|null} [props.manualTool]
+ * @param {import('../annotations/types').Annotation[]} [props.annotations]
+ * @param {(shape:{type:string,geometry:number[][]}) => void} [props.onManualAnnotation]
  */
 export default function DrawingRenderer({
   drawing, onLoad, calibrating = false, onCalibrationPoints,
   commentMode = false, onCommentClick, onPointerMove,
   remoteCursors = [], commentPins = [], onPinClick,
   detection = null,
+  manualTool = null, annotations = [], onManualAnnotation,
+  selectedAnnotationIds = [], onSelectAnnotation, onUpdateAnnotationGeometry,
+  onTransformSelection, onSplitVertex,
 }) {
   const [numPages, setNumPages] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1);
   const [error, setError] = useState(null);
   const [pageNativeSize, setPageNativeSize] = useState(null); // PDF points at scale=1
+  const [imageReady, setImageReady] = useState(false);
   const [calScreenPoints, setCalScreenPoints] = useState([]); // for the on-screen marker overlay only
   const [tileMeta, setTileMeta] = useState(null); // null until this drawing's tile pyramid is ready
+  const [tileViewerReady, setTileViewerReady] = useState(false);
   const [osdTick, setOsdTick] = useState(0); // bumped on OSD pan/zoom so overlay positions recompute
+  const [manualPoints, setManualPoints] = useState([]);
+  const [manualHoverPoint, setManualHoverPoint] = useState(null);
   const canvasRef = useRef(null);
   const imageWrapRef = useRef(null);
   const pageWrapRef = useRef(null);
@@ -70,6 +264,11 @@ export default function DrawingRenderer({
   const osdViewerRef = useRef(null);
   const calibratingRef = useRef(calibrating); // OSD's click handler closes over this once — needs the live value
   const commentModeRef = useRef(commentMode);
+  const manualToolRef = useRef(manualTool);
+  const manualPointsRef = useRef(manualPoints);
+  const onManualAnnotationRef = useRef(onManualAnnotation);
+  const annotationsRef = useRef(annotations);
+  const snapToleranceRef = useRef(8);
 
   useEffect(() => {
     calibratingRef.current = calibrating;
@@ -78,6 +277,124 @@ export default function DrawingRenderer({
   useEffect(() => {
     commentModeRef.current = commentMode;
   }, [commentMode]);
+
+  useEffect(() => {
+    manualToolRef.current = manualTool;
+    manualPointsRef.current = [];
+    setManualPoints([]);
+    setManualHoverPoint(null);
+  }, [manualTool, drawing?.id]);
+
+  useEffect(() => {
+    manualPointsRef.current = manualPoints;
+  }, [manualPoints]);
+
+  useEffect(() => {
+    onManualAnnotationRef.current = onManualAnnotation;
+  }, [onManualAnnotation]);
+
+  useEffect(() => {
+    annotationsRef.current = annotations;
+  }, [annotations]);
+
+  const snapManualPoint = useCallback((point, anchor = null, excludedId = null) => {
+    const vertices = annotationsRef.current
+      .filter((annotation) => annotation.source === 'manual' && annotation.id !== excludedId)
+      .flatMap((annotation) => annotation.geometry || []);
+    return snapPoint(point, {
+      anchor,
+      vertices,
+      tolerance: snapToleranceRef.current,
+      angleStep: anchor ? 45 : 0,
+    });
+  }, []);
+
+  const finishManualShape = useCallback((finalPoint = null) => {
+    const tool = manualToolRef.current;
+    const points = manualPointsRef.current;
+    const geometry = finalPoint ? [...points, finalPoint] : points;
+    if ((tool === 'area' || tool === 'hole') && geometry.length < 3) return;
+    if (tool === 'line' && geometry.length < 2) return;
+    if (tool === 'arc' && geometry.length !== 3) return;
+    if (!['area', 'hole', 'line', 'arc'].includes(tool)) return;
+    onManualAnnotationRef.current?.({ type: tool, geometry });
+    manualPointsRef.current = [];
+    setManualPoints([]);
+    setManualHoverPoint(null);
+  }, []);
+
+  useEffect(() => {
+    if (!manualTool) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        manualPointsRef.current = [];
+        setManualPoints([]);
+        setManualHoverPoint(null);
+      } else if (event.key === 'Enter') {
+        finishManualShape();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [manualTool, finishManualShape]);
+
+  const handleManualPlanClick = useCallback((rawPoint, isDoubleClick = false) => {
+    const tool = manualToolRef.current;
+    if (!tool) return false;
+    if (tool === 'select' || tool === 'split') {
+      if (tool === 'select') onSelectAnnotation?.([]);
+      return true;
+    }
+
+    const anchor = manualPointsRef.current[manualPointsRef.current.length - 1] || null;
+    const point = snapManualPoint(rawPoint, anchor);
+
+    if (tool === 'count') {
+      onManualAnnotationRef.current?.({ type: 'count', geometry: [point] });
+      return true;
+    }
+
+    if (tool === 'line') {
+      if (isDoubleClick && manualPointsRef.current.length >= 1) {
+        finishManualShape(point);
+      } else {
+        setManualPoints((prev) => {
+          const next = [...prev, point];
+          manualPointsRef.current = next;
+          return next;
+        });
+      }
+      return true;
+    }
+
+    if (tool === 'arc') {
+      const next = [...manualPointsRef.current, point];
+      if (next.length === 3) {
+        onManualAnnotationRef.current?.({ type: 'arc', geometry: next });
+        manualPointsRef.current = [];
+        setManualPoints([]);
+        setManualHoverPoint(null);
+      } else {
+        manualPointsRef.current = next;
+        setManualPoints(next);
+      }
+      return true;
+    }
+
+    if (tool === 'area' || tool === 'hole') {
+      if (isDoubleClick && manualPointsRef.current.length >= 3) {
+        finishManualShape();
+      } else {
+        setManualPoints((prev) => {
+          const next = [...prev, point];
+          manualPointsRef.current = next;
+          return next;
+        });
+      }
+      return true;
+    }
+    return false;
+  }, [finishManualShape, onSelectAnnotation, snapManualPoint]);
 
   // Plan-set ingestion (memory/TOGAL_PARITY_REAUDIT.md #13): a sheet split
   // from a multi-page PDF has its own page_number (0-indexed) even though
@@ -88,6 +405,8 @@ export default function DrawingRenderer({
   // from just its own page (tiling.py), not the whole source file.
   useEffect(() => {
     setPageNumber((drawing?.page_number ?? 0) + 1);
+    setPageNativeSize(null);
+    setImageReady(false);
   }, [drawing?.id]);
 
   useEffect(() => {
@@ -107,6 +426,7 @@ export default function DrawingRenderer({
   // isn't installed server-side, see tiling.py's graceful-degradation gate).
   useEffect(() => {
     setTileMeta(null);
+    setTileViewerReady(false);
     setError(null);
     if (!drawing) return undefined;
 
@@ -145,7 +465,7 @@ export default function DrawingRenderer({
     if (!tileMeta || !drawing || !osdContainerRef.current) return undefined;
 
     const apiUrl = import.meta.env.VITE_BACKEND_URL || '';
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     const tileSource = {
       width: tileMeta.width,
       height: tileMeta.height,
@@ -177,31 +497,8 @@ export default function DrawingRenderer({
     osdViewerRef.current = viewer;
 
     viewer.addHandler('open', () => {
+      setTileViewerReady(true);
       onLoad?.({ width: tileMeta.width, height: tileMeta.height });
-    });
-
-    viewer.addHandler('canvas-click', (event) => {
-      if (!osdContainerRef.current) return;
-      const viewportPoint = viewer.viewport.pointFromPixel(event.position);
-      const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-      const point = [imagePoint.x, imagePoint.y];
-
-      if (commentModeRef.current) {
-        onCommentClick?.(point);
-        return;
-      }
-      if (!calibratingRef.current) return;
-      const rect = osdContainerRef.current.getBoundingClientRect();
-      const screenPoint = { x: rect.left + event.position.x, y: rect.top + event.position.y };
-
-      setCalScreenPoints((prev) => {
-        const next = [...prev, { ...screenPoint, plan: point }];
-        if (next.length === 2) {
-          onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
-          return [];
-        }
-        return next;
-      });
     });
 
     // Repositions remote-cursor/comment-pin overlays (rendered as plain
@@ -211,11 +508,12 @@ export default function DrawingRenderer({
     viewer.addHandler('update-viewport', () => setOsdTick((t) => t + 1));
 
     return () => {
+      setTileViewerReady(false);
       viewer.destroy();
       osdViewerRef.current = null;
     };
     // eslint-disable-next-line
-  }, [tileMeta, drawing?.id]);
+  }, [tileMeta, drawing?.id, handleManualPlanClick]);
 
   // Plan-space point -> pixel position relative to the OSD viewer element,
   // for overlay rendering. Recomputes on every `osdTick` bump above so
@@ -228,14 +526,61 @@ export default function DrawingRenderer({
     return { x: pixel.x, y: pixel.y };
   }
 
+  function osdScreenToPlanPoint(clientX, clientY) {
+    const viewer = osdViewerRef.current;
+    if (!viewer || !osdContainerRef.current) return null;
+    const rect = osdContainerRef.current.getBoundingClientRect();
+    const viewportPoint = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(clientX - rect.left, clientY - rect.top));
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    return [imagePoint.x / planScale, imagePoint.y / planScale];
+  }
+
   function handleOsdPointerMove(e) {
     const viewer = osdViewerRef.current;
-    if (!viewer || !osdContainerRef.current || !onPointerMove) return;
+    if (!viewer || !osdContainerRef.current) return;
     const rect = osdContainerRef.current.getBoundingClientRect();
     const offset = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
     const viewportPoint = viewer.viewport.pointFromPixel(offset);
     const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
-    onPointerMove([imagePoint.x, imagePoint.y]);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    const point = [imagePoint.x / planScale, imagePoint.y / planScale];
+    if (manualToolRef.current) setManualHoverPoint(point);
+    onPointerMove?.(point);
+  }
+
+  function handleOsdContainerClick(e) {
+    if (!osdContainerRef.current || !osdViewerRef.current) return;
+    const point = osdScreenToPlanPoint(e.clientX, e.clientY);
+    if (!point) return;
+
+    const viewer = osdViewerRef.current;
+    const rect = osdContainerRef.current.getBoundingClientRect();
+    const offset = new OpenSeadragon.Point(e.clientX - rect.left, e.clientY - rect.top);
+    const viewportPoint = viewer.viewport.pointFromPixel(offset);
+    const imagePoint = viewer.viewport.viewportToImageCoordinates(viewportPoint);
+    const adjacentViewport = viewer.viewport.pointFromPixel(new OpenSeadragon.Point(offset.x + 12, offset.y));
+    const adjacentImage = viewer.viewport.viewportToImageCoordinates(adjacentViewport);
+    const planScale = String(drawing?.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+    snapToleranceRef.current = Math.abs(adjacentImage.x - imagePoint.x) / planScale;
+
+    if (commentModeRef.current) {
+      onCommentClick?.(point);
+      return;
+    }
+    if (calibratingRef.current) {
+      const screenPoint = { x: e.clientX, y: e.clientY };
+      setCalScreenPoints((prev) => {
+        const next = [...prev, { ...screenPoint, plan: point }];
+        if (next.length === 2) {
+          onCalibrationPoints?.({ point1: next[0].plan, point2: next[1].plan });
+          return [];
+        }
+        return next;
+      });
+      return;
+    }
+    handleManualPlanClick(point, e.detail >= 2);
   }
 
   const loadImage = () => {
@@ -250,7 +595,7 @@ export default function DrawingRenderer({
     // everything else) — fetch it as an authenticated blob instead and
     // point the <img> at an object URL.
     const apiUrl = import.meta.env.VITE_BACKEND_URL || '';
-    const token = localStorage.getItem('auth_token');
+    const token = getAuthToken();
     let objectUrl;
 
     fetch(`${apiUrl}/api/uploads/drawings/${drawing.id}/file`, {
@@ -271,6 +616,7 @@ export default function DrawingRenderer({
       canvas.height = img.height;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
+      setImageReady(true);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       if (onLoad) {
         onLoad({ width: img.width, height: img.height });
@@ -278,6 +624,7 @@ export default function DrawingRenderer({
     };
 
     img.onerror = () => {
+      setImageReady(false);
       setError('Failed to load image');
     };
   };
@@ -298,15 +645,23 @@ export default function DrawingRenderer({
     setPageNativeSize({ width: page.width, height: page.height });
   };
 
-  function handleCalibrationClick(e, rect, nativeWidth, nativeHeight) {
+  function handlePlanClick(e, rect, nativeWidth, nativeHeight) {
     if (!nativeWidth || !nativeHeight) return;
+    // Manual shapes own their pointer interaction. Letting their subsequent
+    // click bubble into the plan background would immediately clear the
+    // selection that beginDrag established on pointerdown.
+    if (e.target?.closest?.('[data-testid="manual-annotation"]')) return;
     const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
+    snapToleranceRef.current = (nativeWidth / Math.max(rect.width, 1)) * 12;
 
     if (commentMode) {
       onCommentClick?.(point);
       return;
     }
-    if (!calibrating) return;
+    if (!calibrating) {
+      handleManualPlanClick(point, e.detail >= 2);
+      return;
+    }
     // Viewport-relative (not element-relative): the canvas carries its own CSS
     // `transform: scale()`, which doesn't affect layout, so an element-relative
     // overlay would drift out of sync with the visually scaled canvas. Fixed
@@ -324,8 +679,10 @@ export default function DrawingRenderer({
   }
 
   function handlePointerMove(e, rect, nativeWidth, nativeHeight) {
-    if (!onPointerMove || !nativeWidth || !nativeHeight) return;
-    onPointerMove(toPlanSpacePoint(e, rect, nativeWidth, nativeHeight));
+    if (!nativeWidth || !nativeHeight) return;
+    const point = toPlanSpacePoint(e, rect, nativeWidth, nativeHeight);
+    if (manualToolRef.current) setManualHoverPoint(point);
+    onPointerMove?.(point);
   }
 
   // Plan-space -> viewport-fixed screen point, for the untiled paths (both
@@ -352,7 +709,7 @@ export default function DrawingRenderer({
         )}
         {calScreenPoints.map((p, i) => (
           <g key={i}>
-            <circle cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
+            <circle data-testid="calibration-point" cx={p.x} cy={p.y} r="6" fill="#f59e0b" stroke="#fff" strokeWidth="2" />
           </g>
         ))}
       </svg>
@@ -488,8 +845,13 @@ export default function DrawingRenderer({
       <div className="w-full h-full relative bg-slate-800">
         <div
           ref={osdContainerRef}
+          data-testid="plan-surface"
+          data-plan-ready={tileViewerReady ? 'true' : 'false'}
+          data-renderer="tiles"
+          data-calibrating={calibrating ? 'true' : 'false'}
           className="w-full h-full"
-          style={{ cursor: calibrating || commentMode ? 'crosshair' : undefined }}
+          style={{ cursor: calibrating || commentMode || manualTool ? 'crosshair' : undefined }}
+          onClickCapture={handleOsdContainerClick}
           onMouseMove={handleOsdPointerMove}
         />
         <CalibrationMarkers />
@@ -502,10 +864,27 @@ export default function DrawingRenderer({
             void osdTick; // recompute this callback's closure whenever the viewport moves
             return { x: rect.left + pixel.x, y: rect.top + pixel.y };
           };
+          const planScale = String(drawing.file_type).toUpperCase() === 'PDF' ? 300 / 72 : 1;
+          const canonicalScreenPointFor = (x, y) => osdScreenPointFor(x * planScale, y * planScale);
           return (
             <>
-              <DetectionShapes screenPointFor={osdScreenPointFor} planScale={300 / 72} />
-              <CollabOverlay screenPointFor={osdScreenPointFor} />
+              <DetectionShapes screenPointFor={osdScreenPointFor} planScale={planScale} />
+              <ManualTakeoffOverlay
+                annotations={annotations}
+                draftPoints={manualPoints}
+                hoverPoint={manualHoverPoint}
+                tool={manualTool}
+                screenPointFor={osdScreenPointFor}
+                planPointForScreen={osdScreenToPlanPoint}
+                planScale={planScale}
+              selectedAnnotationIds={selectedAnnotationIds}
+              onSelectAnnotation={onSelectAnnotation}
+              onUpdateGeometry={onUpdateAnnotationGeometry}
+              onTransformSelection={onTransformSelection}
+              onSplitVertex={onSplitVertex}
+                snapPlanPoint={snapManualPoint}
+              />
+              <CollabOverlay screenPointFor={canonicalScreenPointFor} />
             </>
           );
         })()}
@@ -543,8 +922,8 @@ export default function DrawingRenderer({
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
-    const token = localStorage.getItem('auth_token');
+    const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
+    const token = getAuthToken();
     const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
 
     return (
@@ -587,11 +966,15 @@ export default function DrawingRenderer({
         {/* PDF Document */}
         <div
           ref={pageWrapRef}
-          className={`relative inline-block ${calibrating || commentMode ? 'cursor-crosshair' : ''}`}
+          data-testid="plan-surface"
+          data-plan-ready={pageNativeSize ? 'true' : 'false'}
+          data-renderer="pdf"
+          data-calibrating={calibrating ? 'true' : 'false'}
+          className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
-            handleCalibrationClick(e, rect, pageNativeSize.width, pageNativeSize.height);
+            handlePlanClick(e, rect, pageNativeSize.width, pageNativeSize.height);
           }}
           onMouseMove={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
@@ -622,6 +1005,27 @@ export default function DrawingRenderer({
               <>
                 {/* Untiled PDF canvas is in PDF points — same space the engine emits. */}
                 <DetectionShapes screenPointFor={pdfScreenPointFor} planScale={1} />
+              <ManualTakeoffOverlay
+                  annotations={annotations}
+                  draftPoints={manualPoints}
+                  hoverPoint={manualHoverPoint}
+                  tool={manualTool}
+                  screenPointFor={pdfScreenPointFor}
+                  planPointForScreen={(clientX, clientY) => {
+                    if (!pageWrapRef.current || !pageNativeSize) return null;
+                    const rect = pageWrapRef.current.getBoundingClientRect();
+                    return [
+                      ((clientX - rect.left) / rect.width) * pageNativeSize.width,
+                      ((clientY - rect.top) / rect.height) * pageNativeSize.height,
+                    ];
+                  }}
+                  selectedAnnotationIds={selectedAnnotationIds}
+                  onSelectAnnotation={onSelectAnnotation}
+                  onUpdateGeometry={onUpdateAnnotationGeometry}
+                  onTransformSelection={onTransformSelection}
+                  onSplitVertex={onSplitVertex}
+                  snapPlanPoint={snapManualPoint}
+                />
                 <CollabOverlay screenPointFor={pdfScreenPointFor} />
               </>
             );
@@ -636,11 +1040,15 @@ export default function DrawingRenderer({
     <div className="w-full h-full overflow-auto flex items-center justify-center bg-slate-800">
       <div
         ref={imageWrapRef}
-        className={`relative inline-block ${calibrating || commentMode ? 'cursor-crosshair' : ''}`}
+        data-testid="plan-surface"
+        data-plan-ready={imageReady ? 'true' : 'false'}
+        data-renderer="image"
+        data-calibrating={calibrating ? 'true' : 'false'}
+        className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
         onClick={(e) => {
           if (!canvasRef.current) return;
           const rect = canvasRef.current.getBoundingClientRect();
-          handleCalibrationClick(e, rect, canvasRef.current.width, canvasRef.current.height);
+          handlePlanClick(e, rect, canvasRef.current.width, canvasRef.current.height);
         }}
         onMouseMove={(e) => {
           if (!canvasRef.current) return;
@@ -654,6 +1062,31 @@ export default function DrawingRenderer({
           className="max-w-full"
         />
         <CalibrationMarkers />
+        <ManualTakeoffOverlay
+          annotations={annotations}
+          draftPoints={manualPoints}
+          hoverPoint={manualHoverPoint}
+          tool={manualTool}
+          screenPointFor={(x, y) => {
+            if (!canvasRef.current) return null;
+            const rect = canvasRef.current.getBoundingClientRect();
+            return planToFixedScreenPoint(rect, canvasRef.current.width, canvasRef.current.height, x, y);
+          }}
+          planPointForScreen={(clientX, clientY) => {
+            if (!canvasRef.current) return null;
+            const rect = canvasRef.current.getBoundingClientRect();
+            return [
+              ((clientX - rect.left) / rect.width) * canvasRef.current.width,
+              ((clientY - rect.top) / rect.height) * canvasRef.current.height,
+            ];
+          }}
+          selectedAnnotationIds={selectedAnnotationIds}
+          onSelectAnnotation={onSelectAnnotation}
+          onUpdateGeometry={onUpdateAnnotationGeometry}
+          onTransformSelection={onTransformSelection}
+          onSplitVertex={onSplitVertex}
+          snapPlanPoint={snapManualPoint}
+        />
         <CollabOverlay
           screenPointFor={(x, y) => {
             if (!canvasRef.current) return null;

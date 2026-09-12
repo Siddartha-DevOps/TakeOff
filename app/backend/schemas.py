@@ -10,6 +10,7 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    organization_name: Optional[str] = None
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -94,11 +95,19 @@ class Drawing(DrawingBase):
     file_size: Optional[int]
     file_type: Optional[str]
     processing_status: ProcessingStatus
+    processing_job_id: Optional[str] = None
+    processing_attempts: int = 0
+    processing_started_at: Optional[datetime] = None
+    processing_error: Optional[str] = None
     uploaded_at: datetime
     processed_at: Optional[datetime]
     scale_ratio: Optional[float] = None
     scale_source: Optional[str] = None
     scale_calibrated_at: Optional[datetime] = None
+    scale_detection_method: Optional[str] = None
+    scale_confidence: Optional[float] = None
+    scale_requires_confirmation: bool = True
+    scale_dpi: Optional[float] = None
     page_number: int = 0
     total_pages: Optional[int] = None
     sheet_number: Optional[str] = None
@@ -204,5 +213,9 @@ class TakeoffResult(TakeoffResultCreate):
     
     class Config:
         from_attributes = True
+
+
+class AnnotationStateUpdate(BaseModel):
+    annotations: List[Dict[str, Any]]
 
 

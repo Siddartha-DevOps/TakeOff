@@ -1,30 +1,91 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 import os
 import logging
 from pathlib import Path
-from routes import auth_routes, project_routes, upload_routes, takeoff_routes, blog_routes, stripe_routes, export_routes, scale_routes, condition_routes, correction_routes, ai_routes, compare_routes, eval_routes, handoff_routes, realtime_routes, team_routes, repeating_routes, webhook_routes
+
+# Environment must be loaded before importing auth/routes: auth resolves the
+# JWT signing key at import time and previously missed values stored in .env.
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+from production_readiness import cors_origins, validate_startup_environment
+validate_startup_environment()
+
+from routes import (
+    auth_routes,
+    project_routes,
+    upload_routes,
+    takeoff_routes,
+    blog_routes,
+    stripe_routes,
+    export_routes,
+    scale_routes,
+    condition_routes,
+    correction_routes,
+    ai_routes,
+    compare_routes,
+    eval_routes,
+    handoff_routes,
+    realtime_routes,
+    team_routes,
+    repeating_routes,
+    webhook_routes,
+    india_routes,
+    active_learning_routes,
+    assemblies_routes,
+    plan_set_routes,
+    integrations_routes,
+    sharing_routes,
+    classification_routes,
+    audit_routes,
+    sso_routes,
+    job_routes,
+)
 
 # Import models so every relationship("ClassName") string reference across
 # the ORM mapper registry resolves before the app starts handling requests.
 import models
+from startup import auto_migrate_enabled, run_database_migrations
+from database import engine
+from healthcheck import database_ready
 
-# ── NEW: Import AI engine ─────────────────────────────────────────
-# Drop best.pt into backend/models/ after Colab training completes
+# Provision and import the AI engine. Weights are never committed to git: a GPU
+# deployment either mounts AI_MODEL_PATH or pulls the checksum-pinned private
+# Hugging Face artifact configured below.
 try:
-    from ai.inference_api import TakeoffAIInference
-    AI_MODEL_PATH = os.environ.get("AI_MODEL_PATH", "models/best.pt")
-    ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
-    print(f"[TakeOff.ai] AI engine loaded: {AI_MODEL_PATH}")
+    if os.environ.get("AI_INFERENCE_SPACE_ID"):
+        from ai.inference import RemoteSpaceInference
+
+        ai_engine = RemoteSpaceInference.from_env()
+        print(f"[TakeOff.ai] AI engine configured: {ai_engine.backend}")
+    else:
+        from ai.inference.artifacts import provision_hf_model
+        from ai.inference_api import TakeoffAIInference
+
+        _configured_model_path = Path(os.environ.get("AI_MODEL_PATH", "models/best.pt"))
+        AI_MODEL_PATH = str(
+            _configured_model_path
+            if _configured_model_path.is_absolute()
+            else ROOT_DIR / _configured_model_path
+        )
+        if os.environ.get("AI_MODEL_REPO_ID"):
+            provision_hf_model(
+                AI_MODEL_PATH,
+                repo_id=os.environ["AI_MODEL_REPO_ID"],
+                filename=os.environ.get("AI_MODEL_FILENAME", "best.pt"),
+                expected_sha256=os.environ.get("AI_MODEL_SHA256", ""),
+                token=os.environ.get("HF_TOKEN"),
+            )
+        ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
+        status = "loaded" if ai_engine.available else "unavailable"
+        print(f"[TakeOff.ai] AI engine {status}: {AI_MODEL_PATH}")
 except Exception as e:
     ai_engine = None
-    print(f"[TakeOff.ai] AI engine not loaded (mock mode): {e}")
-# ──────────────────────────────────────────────────────────────────
-
-# Load environment variables
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+    print(f"[TakeOff.ai] AI engine unavailable (no mock fallback): {e}")
 
 # Schema is Alembic-owned now (run `alembic upgrade head` before starting
 # the server — see backend/alembic/). Base.metadata.create_all() used to run
@@ -33,59 +94,135 @@ load_dotenv(ROOT_DIR / '.env')
 # things a migration can (e.g. `CREATE EXTENSION postgis`, dropping enum
 # types on rollback). Schema changes now only happen through `alembic upgrade`.
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Apply schema migrations before the service accepts API traffic."""
+    if auto_migrate_enabled():
+        run_database_migrations()
+    else:
+        logging.getLogger(__name__).info(
+            "AUTO_MIGRATE is disabled; expecting an external migration job"
+        )
+    from analysis_jobs import start_analysis_runner, stop_analysis_runner
+    await start_analysis_runner()
+    try:
+        yield
+    finally:
+        await stop_analysis_runner()
+
+
 # Create FastAPI app
 app = FastAPI(
     title="TakeOff.ai API",
     description="Backend API for TakeOff.ai SaaS platform",
     version="1.0.0",
-    redirect_slashes=False
+    redirect_slashes=False,
+    lifespan=lifespan,
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(auth_routes.router,    prefix="/api")
+# Observability — structured request logging + X-Request-ID, and Sentry when
+# SENTRY_DSN is set (no-op otherwise). Hardening #3.
+try:
+    from observability import init_observability
+
+    init_observability(app)
+except Exception as _obs_err:  # never let observability wiring block startup
+    import logging as _logging
+
+    _logging.getLogger(__name__).warning("observability init skipped: %s", _obs_err)
+
+app.include_router(auth_routes.router, prefix="/api")
 app.include_router(project_routes.router, prefix="/api")
-app.include_router(upload_routes.router,  prefix="/api")
+app.include_router(upload_routes.router, prefix="/api")
 app.include_router(takeoff_routes.router, prefix="/api")
-app.include_router(blog_routes.router,    prefix="/api")
-app.include_router(stripe_routes.router,  prefix="/api")
-app.include_router(export_routes.router,  prefix="/api")
-app.include_router(scale_routes.router,   prefix="/api")
+app.include_router(blog_routes.router, prefix="/api")
+app.include_router(stripe_routes.router, prefix="/api")
+app.include_router(export_routes.router, prefix="/api")
+app.include_router(scale_routes.router, prefix="/api")
 app.include_router(condition_routes.router, prefix="/api")
 app.include_router(correction_routes.router, prefix="/api")
-app.include_router(ai_routes.router,      prefix="/api")
+app.include_router(ai_routes.router, prefix="/api")
 app.include_router(compare_routes.router, prefix="/api")
-app.include_router(eval_routes.router,    prefix="/api")
+app.include_router(eval_routes.router, prefix="/api")
 app.include_router(handoff_routes.router, prefix="/api")
 app.include_router(realtime_routes.router, prefix="/api")
 app.include_router(realtime_routes.collab_router, prefix="/api")
 app.include_router(team_routes.router, prefix="/api")
 app.include_router(repeating_routes.router, prefix="/api")
 app.include_router(webhook_routes.router, prefix="/api")
+app.include_router(india_routes.router, prefix="/api")
+app.include_router(active_learning_routes.router, prefix="/api")
+app.include_router(assemblies_routes.router, prefix="/api")
+app.include_router(plan_set_routes.router, prefix="/api")
+app.include_router(integrations_routes.router, prefix="/api")
+app.include_router(sharing_routes.router, prefix="/api")
+app.include_router(classification_routes.router, prefix="/api")
+app.include_router(audit_routes.router, prefix="/api")
+app.include_router(sso_routes.router, prefix="/api")
+app.include_router(job_routes.router, prefix="/api")
 
 from routes.stripe_routes import stripe_webhook
+
 app.post("/api/webhook/stripe")(stripe_webhook)
+
 
 @app.get("/api/health")
 async def health_check():
-    return {
-        "status": "healthy",
+    ai_available = bool(ai_engine and getattr(ai_engine, "available", False))
+    db_available = database_ready(engine)
+    from production_readiness import configuration_snapshot
+    readiness = configuration_snapshot()
+    payload = {
+        "status": "healthy" if db_available else "unhealthy",
         "service": "TakeOff.ai API",
         "version": "1.0.0",
-        "ai_engine": "loaded" if ai_engine and ai_engine.model else "mock_mode"
+        "database": "ready" if db_available else "unavailable",
+        "ai_engine": "loaded" if ai_available else "unavailable",
+        "ai_backend": getattr(ai_engine, "backend", "local") if ai_engine else None,
+        "release_ready": readiness["release_ready"],
+        "dependencies": readiness["components"],
     }
+    if not db_available:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/api/readiness")
+async def release_readiness_check():
+    """Strict release probe: all Phase-0 production dependencies must exist."""
+    from production_readiness import configuration_snapshot
+
+    payload = configuration_snapshot()
+    db_available = database_ready(engine)
+    payload["database"] = {"ready": db_available}
+    payload["release_ready"] = bool(payload["release_ready"] and db_available)
+    if not payload["release_ready"]:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
+
+
+@app.get("/api/live")
+async def liveness_check():
+    """Process-only probe; readiness lives at /api/health."""
+    return {"status": "alive", "service": "TakeOff.ai API"}
+
 
 @app.get("/api")
 async def root():
     return {"message": "TakeOff.ai API v1.0", "docs": "/docs", "health": "/api/health"}
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 logger.info("TakeOff.ai API started successfully")

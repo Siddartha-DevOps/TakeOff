@@ -1,7 +1,17 @@
 import axios from 'axios';
+import { clearSession, getAuthToken } from './session.js';
 
 // Vite uses import.meta.env, not process.env
-const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+// In production VITE_BACKEND_URL MUST be set (Vercel env). Only fall back to
+// localhost during local `vite dev` — never ship localhost to a deployed build
+// (that's what made every deployed API call, including login, silently fail).
+const API_BASE_URL =
+  import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '');
+
+if (!import.meta.env.VITE_BACKEND_URL && !import.meta.env.DEV) {
+  // Same-origin '' only works if a proxy/rewrite forwards /api to the backend.
+  console.error('[api] VITE_BACKEND_URL is not set — API requests will fail. Set it in your host env.');
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -14,7 +24,18 @@ const api = axios.create({
 // Request interceptor to add auth token
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('auth_token');
+    // The instance defaults to JSON for ordinary API requests. FormData must
+    // not inherit that header: the browser supplies multipart/form-data plus
+    // its generated boundary, which FastAPI needs to parse UploadFile fields.
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      if (typeof config.headers?.delete === 'function') {
+        config.headers.delete('Content-Type');
+      } else if (config.headers) {
+        delete config.headers['Content-Type'];
+      }
+    }
+
+    const token = getAuthToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -30,8 +51,7 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401 || error.response?.status === 403) {
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('user');
+      clearSession();
       if (window.location.pathname !== '/login') {
         window.location.href = '/login';
       }
@@ -45,7 +65,12 @@ export default api;
 // Auth API
 export const authAPI = {
   login: (email, password) => api.post('/api/auth/login', { email, password }),
-  signup: (email, password, full_name) => api.post('/api/auth/signup', { email, password, full_name }),
+  signup: (email, password, full_name, organization_name) => api.post('/api/auth/signup', {
+    email,
+    password,
+    full_name,
+    organization_name: organization_name || undefined,
+  }),
   getCurrentUser: () => api.get('/api/auth/me'),
 };
 
@@ -94,11 +119,10 @@ function uploadDrawingViaProxy(projectId, file, metadata) {
   if (metadata?.sheet_name) formData.append('sheet_name', metadata.sheet_name);
   if (metadata?.scale) formData.append('scale', metadata.scale);
 
-  return api.post(`/api/uploads/project/${projectId}/drawings`, formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  });
+  // Do not set Content-Type manually. The browser must add the multipart
+  // boundary; forcing the bare media type can make FastAPI report a missing
+  // `file` field (422) even though FormData contains it.
+  return api.post(`/api/uploads/project/${projectId}/drawings`, formData);
 }
 
 // Uploads API
@@ -123,6 +147,18 @@ export const uploadsAPI = {
 export const takeoffAPI = {
   saveResults: (drawingId, results) => api.post(`/api/takeoff/drawings/${drawingId}/results`, results),
   getResults: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/results`),
+  getJob: (jobId) => api.get(`/api/jobs/${jobId}`),
+  getDrawingJobs: (drawingId) => api.get(`/api/jobs/drawing/${drawingId}/latest`),
+  getAnnotations: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/annotations`),
+  saveAnnotations: (drawingId, annotations) => api.put(
+    `/api/takeoff/drawings/${drawingId}/annotations`, { annotations },
+  ),
+  getAnnotationHistory: (drawingId) => api.get(`/api/takeoff/drawings/${drawingId}/annotations/history`),
+  restoreAnnotationHistory: (drawingId, revisionId) => api.post(`/api/takeoff/drawings/${drawingId}/annotations/history/${revisionId}/restore`),
+  // Real raster AI takeoff — triggers YOLOv8-seg in the background
+  // (routes/takeoff_routes.py _run_ai_analysis). Poll getResults for the result;
+  // marks the drawing FAILED (no fabricated data) when no model is installed.
+  analyze: (drawingId) => api.post(`/api/takeoff/drawings/${drawingId}/analyze`),
   getProjectResults: (projectId) => api.get(`/api/takeoff/projects/${projectId}/results`),
   // Real PostGIS geometry (as GeoJSON) — source data for the Interactive 3D
   // view (memory/TOGAL_PARITY_REAUDIT.md #19).
@@ -183,6 +219,20 @@ export const searchAPI = {
     x1: bbox[0], y1: bbox[1], x2: bbox[2], y2: bbox[3],
     top_k: topK,
   }),
+  // Pattern/count search — "find all like this -> N". Reference is text,
+  // a detection (detectionId), or a drawn region (drawingId + bbox).
+  // Returns { total, per_drawing, matches }.
+  count: (projectId, { text, detectionId, drawingId, bbox, minSimilarity = 0.85, maxMatches = 500 } = {}) =>
+    api.post(`/api/takeoff/projects/${projectId}/search/count`, {
+      text,
+      detection_id: detectionId,
+      drawing_id: drawingId,
+      x1: bbox?.[0], y1: bbox?.[1], x2: bbox?.[2], y2: bbox?.[3],
+      min_similarity: minSimilarity,
+      max_matches: maxMatches,
+    }),
+  reindex: (projectId) => api.post(`/api/takeoff/projects/${projectId}/search/reindex`),
+  review: (projectId, payload) => api.post(`/api/takeoff/projects/${projectId}/search/review`, payload),
 };
 
 // Drawing Compare — revision overlay/diff, OpenCV-backed (routes/compare_routes.py)
@@ -203,6 +253,11 @@ export const paymentsAPI = {
   getUserSubscription: () => api.get('/api/payments/subscription'),
   // Entitlements + usage metering (entitlements.py, routes/stripe_routes.py)
   getUsage: () => api.get('/api/payments/usage'),
+};
+
+// Organization-scoped audit feed (routes/audit_routes.py).
+export const activityAPI = {
+  list: (limit = 10) => api.get('/api/activity', { params: { limit } }),
 };
 
 // Export API
@@ -244,11 +299,15 @@ export const handoffAPI = {
 // Real-time collaboration — presence/cursors (WebSocket, see useCollabSocket
 // in pages/Takeoff.jsx) + durable pinned comments (REST, routes/realtime_routes.py)
 export const collabAPI = {
-  wsUrl: (projectId) => {
-    const httpBase = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+  wsConnection: (projectId) => {
+    const httpBase =
+      import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
     const wsBase = httpBase.replace(/^http/, 'ws');
-    const token = localStorage.getItem('auth_token');
-    return `${wsBase}/api/ws/projects/${projectId}?token=${encodeURIComponent(token || '')}`;
+    const token = getAuthToken();
+    return {
+      url: `${wsBase}/api/ws/projects/${projectId}`,
+      protocols: token ? ['takeoff-auth', token] : ['takeoff-auth'],
+    };
   },
   listComments: (projectId, params) => api.get(`/api/collab/projects/${projectId}/comments`, { params }),
   createComment: (projectId, comment) => api.post(`/api/collab/projects/${projectId}/comments`, comment),
@@ -267,4 +326,75 @@ export const teamAPI = {
   // Public — no auth token yet, the invitee doesn't have an account
   previewInvite: (token) => api.get(`/api/team/invites/${token}/preview`),
   acceptInvite: (token, fullName, password) => api.post(`/api/team/invites/${token}/accept`, { full_name: fullName, password }),
+};
+
+// Classification-library templates — reusable org-level condition sets
+// (routes/classification_routes.py).
+export const classificationAPI = {
+  list: () => api.get('/api/classifications/templates'),
+  seed: () => api.post('/api/classifications/templates/seed'),
+  create: (payload) => api.post('/api/classifications/templates', payload),
+  remove: (id) => api.delete(`/api/classifications/templates/${id}`),
+  apply: (templateId, projectId) => api.post(`/api/classifications/templates/${templateId}/apply/${projectId}`),
+};
+
+// External collaboration — share a project with people who have no account
+// (routes/sharing_routes.py). resolve() is the PUBLIC guest endpoint.
+export const sharingAPI = {
+  list: (projectId) => api.get(`/api/projects/${projectId}/shares`),
+  create: (projectId, payload) => api.post(`/api/projects/${projectId}/shares`, payload),
+  revoke: (shareId) => api.delete(`/api/shares/${shareId}`),
+  resolve: (token) => api.get(`/api/shared/${token}`),
+};
+
+// ML ops — model registry (eval_routes) + active-learning review queue
+// (active_learning_routes). Surfaces the training flywheel in the UI.
+export const mlAPI = {
+  listModelVersions: () => api.get('/api/eval/model-versions'),
+  reviewQueue: (projectId, limit = 20) =>
+    api.get(`/api/active-learning/projects/${projectId}/review-queue`, { params: { limit } }),
+  uncertainDetections: (projectId, limit = 50) =>
+    api.get(`/api/active-learning/projects/${projectId}/uncertain-detections`, { params: { limit } }),
+};
+
+// Plan-set organizer — discipline-grouped sheet tree + sheet rename/reclassify
+// (routes/plan_set_routes.py).
+export const planSetAPI = {
+  get: (projectId) => api.get(`/api/plan-set/projects/${projectId}`),
+  updateSheet: (drawingId, patch) => api.patch(`/api/plan-set/drawings/${drawingId}`, patch),
+};
+
+// Trade assemblies estimating — one measured qty -> many priced trade line items
+// (routes/assemblies_routes.py). Distinct from the India BOQ layer below.
+export const estimatingAPI = {
+  drawingAssemblies: (drawingId, costBookId) =>
+    api.get(`/api/estimating/drawings/${drawingId}/assemblies`, {
+      params: costBookId ? { cost_book_id: costBookId } : {},
+    }),
+  listCostBooks: () => api.get('/api/estimating/cost-books'),
+  createCostBook: (payload) => api.post('/api/estimating/cost-books', payload),
+  updateCostBook: (id, payload) => api.put(`/api/estimating/cost-books/${id}`, payload),
+  deleteCostBook: (id) => api.delete(`/api/estimating/cost-books/${id}`),
+  // Saved estimates
+  saveEstimate: (payload) => api.post('/api/estimating/estimates', payload),
+  listEstimates: (projectId) =>
+    api.get('/api/estimating/estimates', { params: projectId ? { project_id: projectId } : {} }),
+  getEstimate: (id) => api.get(`/api/estimating/estimates/${id}`),
+  deleteEstimate: (id) => api.delete(`/api/estimating/estimates/${id}`),
+  exportEstimate: (id) => api.get(`/api/estimating/estimates/${id}/export.xlsx`, { responseType: 'blob' }),
+};
+
+// India estimating — IS 1200 metric quantities -> DSR/SOR-priced BOQ -> GST
+// tender total, plus Excel/PDF download (routes/india_routes.py).
+// `params` tunes the tender waterfall: overhead_profit_pct, contingency_pct,
+// gst_rate (fraction, e.g. 0.18), inter_state (bool).
+export const indiaAPI = {
+  getBOQ: (drawingId, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq`, { params }),
+  // fmt = 'xlsx' | 'pdf'; returns a Blob for download
+  exportBOQ: (drawingId, fmt, params = {}) =>
+    api.get(`/api/india/drawings/${drawingId}/boq.${fmt}`, {
+      params,
+      responseType: 'blob',
+    }),
 };

@@ -5,12 +5,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 import auth
 import models
 import realtime
 from auth import get_current_user
 from database import get_db, SessionLocal
+from websocket_auth import bearer_from_subprotocol_header
 
 router = APIRouter(tags=["Real-time Collaboration"])
 
@@ -46,7 +48,7 @@ def _presence_entry(user: models.User, drawing_id: Optional[int] = None, x: Opti
 
 
 async def _authenticate_ws(websocket: WebSocket, project_id: int) -> Optional[models.User]:
-    token = websocket.query_params.get("token")
+    token = bearer_from_subprotocol_header(websocket.headers.get("sec-websocket-protocol"))
     if not token:
         return None
     payload = auth.decode_token(token)
@@ -57,8 +59,10 @@ async def _authenticate_ws(websocket: WebSocket, project_id: int) -> Optional[mo
         return None
     db = SessionLocal()
     try:
-        user = db.query(models.User).filter(models.User.email == email).first()
-        if not user:
+        user = db.query(models.User).filter(
+            func.lower(models.User.email) == str(email).strip().lower()
+        ).first()
+        if not user or not user.is_active:
             return None
         project = db.query(models.Project).filter(
             models.Project.id == project_id,
@@ -78,7 +82,7 @@ async def project_presence_socket(websocket: WebSocket, project_id: int):
         await websocket.close(code=4401)
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol="takeoff-auth")
     await realtime.hub.connect(project_id, user.id, websocket)
 
     join_presence = _presence_entry(user)

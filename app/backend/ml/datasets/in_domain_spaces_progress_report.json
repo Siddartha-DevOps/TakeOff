@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "dataset_name": "takeoff-in-domain-spaces-v1",
+  "generated_at": null,
+  "target_sheets": 60,
+  "counts": {
+    "received": 0,
+    "rights_cleared": 0,
+    "deidentified": 0,
+    "annotated": 0,
+    "reviewed": 0,
+    "accepted": 0
+  },
+  "rates": {
+    "rights_cleared_of_received": null,
+    "deidentified_of_rights_cleared": null,
+    "annotated_of_deidentified": null,
+    "reviewed_of_annotated": null,
+    "accepted_of_reviewed": null,
+    "accepted_of_target": 0.0
+  },
+  "blockers": {
+    "rights": 0,
+    "provenance": 0,
+    "deidentification": 0,
+    "duplicate": 0,
+    "corrupted": 0,
+    "project_leakage_risk": 0
+  },
+  "notes": [
+    "Counts remain zero until corresponding evidence exists.",
+    "A received sheet is not accepted merely because it was uploaded."
+  ]
+}

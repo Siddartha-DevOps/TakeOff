@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "dataset_name": "takeoff-in-domain-spaces-v1",
+  "classes": [
+    "living",
+    "bedroom",
+    "bathroom",
+    "kitchen",
+    "balcony",
+    "stair",
+    "storage"
+  ],
+  "target_counts": {
+    "train": 280,
+    "val": 50,
+    "test": 40,
+    "golden": 30
+  },
+  "allowed_total_range": [300, 500],
+  "allowed_golden_range": [20, 40],
+  "minimum_image_width": 1024,
+  "minimum_image_height": 768,
+  "minimum_instances_per_class": {
+    "living": 100,
+    "bedroom": 150,
+    "bathroom": 100,
+    "kitchen": 100,
+    "balcony": 30,
+    "stair": 30,
+    "storage": 50
+  },
+  "required_difficulty_tags": [
+    "open_plan",
+    "partial_room",
+    "corridor_or_shaft",
+    "closet_storage",
+    "stairs",
+    "balcony",
+    "crop_boundary",
+    "text_heavy",
+    "low_quality_scan",
+    "multi_unit"
+  ],
+  "minimum_sheets_per_difficulty_tag": 5,
+  "maximum_mask_overlap_ratio": 0.02,
+  "split_seed": "takeoff-spaces-v1-project-split",
+  "first_batch": {
+    "target_sheets": 60,
+    "allowed_range": [50, 75],
+    "building_type_targets": {
+      "residential_single_family": 15,
+      "apartment_multi_unit": 15,
+      "commercial_retail": 10,
+      "office": 10,
+      "hospitality": 10
+    },
+    "source_format_targets": {
+      "vector_pdf": 36,
+      "scanned_raster": 18,
+      "native_raster_export": 6
+    },
+    "complexity_targets": {
+      "simple": 20,
+      "dense": 30,
+      "mixed": 10
+    },
+    "minimum_multi_page_set_sheets": 30,
+    "minimum_class_instances": {
+      "living": 40,
+      "bedroom": 90,
+      "bathroom": 70,
+      "kitchen": 40,
+      "balcony": 15,
+      "stair": 15,
+      "storage": 25
+    }
+  }
+}

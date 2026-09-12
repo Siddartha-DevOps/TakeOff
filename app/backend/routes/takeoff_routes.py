@@ -5,8 +5,12 @@ import models
 import entitlements
 from auth import get_current_user
 from database import get_db
-from detection_geometry import persist_detection_geometries
+from detection_geometry import delete_detection_geometries, persist_detection_geometries
 from clip_embeddings import index_drawing_embeddings
+from ai.inference import ModelUnavailableError
+from ratelimit import RateLimit
+from scale_validation import require_confirmed_scale
+from canonical_takeoff import CanonicalAnnotationError, synchronize_corrected_takeoff
 import json
 import os
 import tempfile
@@ -37,8 +41,35 @@ def _require_ai_takeoff_entitlement(db: Session, organization_id: int):
         )
 
 
+def _replace_ai_geometry_projection(db: Session, drawing: models.Drawing, detection: dict) -> int:
+    """Replace measured AI geometry only when this sheet's scale is trusted."""
+    from scale_validation import is_scale_confirmed
+
+    if is_scale_confirmed(drawing):
+        return persist_detection_geometries(
+            db, drawing.project_id, drawing.id, detection, source="ai"
+        )
+    deleted = delete_detection_geometries(db, drawing.id, source="ai")
+    db.commit()
+    return -deleted
+
+
+def _takeoff_result_for_job(db: Session, drawing_id: int, job_id: str | None):
+    """Return the one result row owned by a durable job redelivery."""
+    result = None
+    if job_id:
+        result = db.query(models.TakeoffResult).filter(
+            models.TakeoffResult.processing_job_id == job_id
+        ).first()
+    if result is None:
+        result = models.TakeoffResult(drawing_id=drawing_id, processing_job_id=job_id)
+        db.add(result)
+    return result
+
+
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
-@router.post("/drawings/{drawing_id}/analyze")
+@router.post("/drawings/{drawing_id}/analyze",
+             dependencies=[Depends(RateLimit("ai_analyze", limit=20, window_s=60))])
 async def analyze_drawing(
     drawing_id: int,
     background_tasks: BackgroundTasks,
@@ -61,41 +92,47 @@ async def analyze_drawing(
     if not drawing:
         raise HTTPException(status_code=404, detail="Drawing not found")
 
+    require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
-    # Mark as processing immediately so frontend shows spinner
-    drawing.processing_status = models.ProcessingStatus.PROCESSING
-    db.commit()
-
-    # Real async queue (celery_app.py) is the primary path — CLAUDE.md
-    # guardrail #3: long work is a job, not in-request work. Only falls
-    # back to FastAPI's in-process BackgroundTasks (same failure mode as
-    # before this change, now an explicit degraded mode instead of the
-    # silent default) if enqueueing itself fails — i.e. the broker
-    # (Redis) is unreachable. A successfully enqueued task with no worker
-    # currently running to consume it is a deployment/ops concern, not
-    # something this request can detect or should paper over — that's
-    # true of every queue system, not specific to Celery.
-    async_mode = "celery"
+    # Celery is preferred when Redis is configured. Otherwise a database-
+    # recoverable single worker persists the job before enqueueing and resumes
+    # unfinished rows after restart. Never retain this request's DB session in
+    # FastAPI BackgroundTasks.
     try:
-        from celery_app import run_ai_analysis_task
-        run_ai_analysis_task.delay(drawing_id, drawing.file_path, drawing.page_number)
-    except Exception as e:
-        logger.warning(f"[AI] Celery broker unavailable, falling back to in-process background task: {e}")
-        async_mode = "in_process_fallback"
-        background_tasks.add_task(_run_ai_analysis, drawing_id, drawing.file_path, db, drawing.page_number)
+        from analysis_jobs import enqueue_analysis
+        queued = enqueue_analysis(db, drawing, requested_by_id=current_user.id)
+    except Exception as exc:
+        drawing.processing_status = models.ProcessingStatus.FAILED
+        drawing.processing_error = f"Could not enqueue analysis: {exc}"[:2000]
+        db.commit()
+        raise HTTPException(status_code=503, detail="AI job queue is unavailable; retry after the service recovers")
 
     return {
         "status": "processing",
         "drawing_id": drawing_id,
-        "async_mode": async_mode,
+        "async_mode": queued["backend"],
+        "job_id": queued["job_id"],
         "message": "AI analysis started. Poll /results for output."
     }
 
 
-async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_number: int = 0):
-    """Background task: run YOLOv8 + spatial reasoning, save to DB."""
+async def _run_ai_analysis(
+    drawing_id: int,
+    file_path: str,
+    db: Session,
+    page_number: int = 0,
+    *,
+    job_id: str | None = None,
+    progress_callback=None,
+    raise_errors: bool = False,
+):
+    """Run the idempotent analysis pipeline inside a durable worker."""
     from dataclasses import asdict
+
+    def report(value: int):
+        if progress_callback:
+            progress_callback(value)
 
     try:
         # Import AI engine (loaded once at server startup)
@@ -104,6 +141,26 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         import storage
 
         logger.info(f"[AI] Starting analysis: drawing_id={drawing_id} page={page_number}")
+        report(5)
+
+        # OCR is part of the same persisted job as inference so text search is
+        # restart-recoverable too. It is deliberately best-effort: a missing
+        # system OCR binary must not prevent room detection from completing.
+        drawing_for_ocr = db.query(models.Drawing).filter(
+            models.Drawing.id == drawing_id
+        ).first()
+        if drawing_for_ocr:
+            try:
+                from ocr_index import index_drawing_text
+
+                text_blocks = index_drawing_text(db, drawing_for_ocr)
+                logger.info("[OCR] Indexed %s text blocks for drawing_id=%s", text_blocks, drawing_id)
+            except Exception as ocr_index_err:
+                db.rollback()
+                logger.warning("[OCR] Index failed for drawing_id=%s: %s", drawing_id, ocr_index_err)
+                if raise_errors:
+                    raise
+        report(20)
 
         # file_path may be an object-storage URI (memory/TOGAL_PARITY_REAUDIT.md
         # #12) — resolve_local_path() downloads it to a temp file for the
@@ -129,11 +186,33 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                 os.close(fd)
                 cv2.imwrite(raster_path, raster_img)
             except ImportError:
-                pass  # heavy stack unavailable — fall back to the raw path, same as before this change
+                # Render's lightweight API image intentionally excludes cv2,
+                # but remote Gradio inference still needs a raster image. Use
+                # the already-installed PyMuPDF dependency for PDF pages so a
+                # scanned/vector PDF is never uploaded to an Image component.
+                if str(local_path).lower().endswith(".pdf"):
+                    import fitz
+
+                    fd, raster_path = tempfile.mkstemp(suffix=".png")
+                    os.close(fd)
+                    try:
+                        with fitz.open(local_path) as document:
+                            if page_number < 0 or page_number >= len(document):
+                                raise ValueError(f"PDF page {page_number} is out of range")
+                            page = document[page_number]
+                            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                            pixmap.save(raster_path)
+                    except Exception:
+                        if os.path.exists(raster_path):
+                            os.remove(raster_path)
+                        raise
+
+            report(40)
 
             try:
                 # Step 1: YOLOv8 inference
                 analysis = ai_engine.analyze(raster_path, drawing_id)
+                report(65)
 
                 # Step 2: Spatial reasoning layer (room graph, quantities, scale)
                 raw_detection = {
@@ -143,30 +222,37 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
                     "windows": analysis.windows,
                     "summary": analysis.summary,
                 }
-                enriched = enrich_takeoff_result(json.dumps(raw_detection), raster_path)
+                from scale_validation import is_scale_confirmed
+
+                persisted_drawing = db.query(models.Drawing).filter(
+                    models.Drawing.id == drawing_id
+                ).first()
+                trusted = bool(persisted_drawing and is_scale_confirmed(persisted_drawing))
+                plan_dpi = getattr(persisted_drawing, "scale_dpi", None) if persisted_drawing else None
+                enriched = enrich_takeoff_result(
+                    json.dumps(raw_detection), raster_path,
+                    scale_ratio=persisted_drawing.scale_ratio if trusted else None,
+                    plan_dpi=plan_dpi if trusted else None,
+                )
+                if not trusted:
+                    enriched["quantities"] = []
             finally:
                 if raster_path != local_path and os.path.exists(raster_path):
                     os.remove(raster_path)
 
         # Step 3: Save to database
-        db_result = models.TakeoffResult(
-            drawing_id=drawing_id,
-            detection_data=json.dumps(enriched["detection"]),
-            quantities_data=json.dumps(enriched["quantities"]),
-            confidence_scores=json.dumps({"avg": analysis.confidence_avg}),
-            processing_time_ms=analysis.processing_time_ms,
-            ai_model_version=analysis.ai_model_version,
-        )
-        db.add(db_result)
+        db_result = _takeoff_result_for_job(db, drawing_id, job_id)
+        db_result.detection_data = json.dumps(enriched["detection"])
+        db_result.quantities_data = json.dumps(enriched["quantities"])
+        db_result.confidence_scores = json.dumps({"avg": analysis.confidence_avg})
+        db_result.processing_time_ms = analysis.processing_time_ms
+        db_result.ai_model_version = analysis.ai_model_version
 
         # Step 4: Mark drawing as completed
         drawing = db.query(models.Drawing).filter(
             models.Drawing.id == drawing_id
         ).first()
         if drawing:
-            drawing.processing_status = models.ProcessingStatus.COMPLETED
-            drawing.processed_at = datetime.now(timezone.utc)
-
             # Plan-set title-block naming (memory/TOGAL_PARITY_REAUDIT.md
             # #13) — best-effort; only overwrites sheet_name if it's still
             # the numbered placeholder ingest_plan_set() gave it, never a
@@ -186,6 +272,7 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
 
         db.commit()
         db.refresh(db_result)
+        report(75)
         logger.info(f"[AI] Done: drawing_id={drawing_id} | "
                     f"{analysis.processing_time_ms}ms | "
                     f"conf={analysis.confidence_avg:.2f}")
@@ -194,33 +281,66 @@ async def _run_ai_analysis(drawing_id: int, file_path: str, db: Session, page_nu
         # detections into the PostGIS-backed Detection/Measurement tables,
         # not just the JSON blob above. Best-effort: a failure here shouldn't
         # take down the primary TakeoffResult save.
+        trusted_scale = bool(drawing and is_scale_confirmed(drawing))
         try:
-            created = persist_detection_geometries(
-                db, drawing.project_id, drawing_id, enriched["detection"], source="ai"
-            )
+            created = _replace_ai_geometry_projection(db, drawing, enriched["detection"])
             logger.info(f"[AI] Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
         except Exception as geo_err:
             logger.warning(f"[AI] Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
+            if raise_errors and trusted_scale:
+                raise
+        report(85)
 
         # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — build CLIP
         # patch embeddings on ingest. No-ops (returns 0) if CLIP isn't
         # installed; best-effort like the geometry persistence above.
         try:
             indexed = index_drawing_embeddings(
-                db, drawing.project_id, drawing_id, file_path, enriched["detection"]
+                db, drawing.project_id, drawing_id, file_path, enriched["detection"],
+                page_number=page_number,
             )
             if indexed:
                 logger.info(f"[AI] Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
         except Exception as embed_err:
             logger.warning(f"[AI] Embedding index failed for drawing_id={drawing_id}: {embed_err}")
+            if raise_errors:
+                raise
 
-    except Exception as e:
-        logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
+        drawing = db.query(models.Drawing).filter(models.Drawing.id == drawing_id).first()
+        if drawing:
+            drawing.processing_status = models.ProcessingStatus.COMPLETED
+            drawing.processed_at = datetime.now(timezone.utc)
+            drawing.processing_error = None
+            db.commit()
+        report(95)
+
+    except ModelUnavailableError as e:
+        # No trained raster model installed — do NOT fabricate detections
+        # (the old mock path did). Mark failed with a clear, actionable reason;
+        # vector PDFs still get real results via the /autodetect path.
+        logger.warning(
+            f"[AI] Raster model unavailable for drawing_id={drawing_id}: {e} "
+            f"Install trained weights or use vector AUTODETECT."
+        )
+        if raise_errors:
+            raise
         drawing = db.query(models.Drawing).filter(
             models.Drawing.id == drawing_id
         ).first()
         if drawing:
             drawing.processing_status = models.ProcessingStatus.FAILED
+            drawing.processing_error = str(e)[:2000]
+            db.commit()
+    except Exception as e:
+        logger.error(f"[AI] Failed: drawing_id={drawing_id} | {e}")
+        if raise_errors:
+            raise
+        drawing = db.query(models.Drawing).filter(
+            models.Drawing.id == drawing_id
+        ).first()
+        if drawing:
+            drawing.processing_status = models.ProcessingStatus.FAILED
+            drawing.processing_error = str(e)[:2000]
             db.commit()
 
 
@@ -253,14 +373,18 @@ def _parse_scale_ratio(scale_text):
 
 
 def _scale_ratio_for(drawing, override=None):
-    """Resolve the scale ratio: explicit override → calibrated → stored → default 96."""
-    return (
-        override
-        or getattr(drawing, "scale_ratio", None)
-        or _parse_scale_ratio(getattr(drawing, "scale", None))
-        or _parse_scale_ratio(getattr(drawing, "ocr_scale_text", None))
-        or 96.0
-    )
+    """Return only a persisted, user-confirmed ratio.
+
+    The legacy query override is rejected so callers cannot bypass the
+    auditable calibration endpoints.
+    """
+    ratio = require_confirmed_scale(drawing)
+    if override is not None and abs(float(override) - ratio) > 1e-9:
+        raise HTTPException(
+            status_code=400,
+            detail="Set scale through the calibration endpoint before takeoff; ad-hoc overrides are not accepted.",
+        )
+    return ratio
 
 
 @router.post("/drawings/{drawing_id}/autodetect")
@@ -318,8 +442,8 @@ async def autodetect_drawing(
         geom = room.pop("geometry", None)
         room["geojson"] = to_geojson(geom) if geom is not None else None
 
-    result = autodetect_from_measure(measure)
     symbol_counts = symbols.get("symbol_counts", {}) if symbols else {}
+    result = autodetect_from_measure(measure, symbol_counts)
     result["symbol_counts"] = symbol_counts
     result["symbol_groups"] = symbols.get("groups", []) if symbols else []
     result["drawing_id"] = drawing_id
@@ -438,10 +562,12 @@ async def save_detection_results(
     # enforcement point, not just analyze_drawing's background-job trigger.
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
+    from scale_validation import is_scale_confirmed
+    trusted_scale = is_scale_confirmed(drawing)
     db_result = models.TakeoffResult(
         drawing_id=drawing_id,
         detection_data=result_data.detection_data,
-        quantities_data=result_data.quantities_data,
+        quantities_data=result_data.quantities_data if trusted_scale else "[]",
         confidence_scores=result_data.confidence_scores,
         processing_time_ms=result_data.processing_time_ms,
         ai_model_version="yolov8m-seg-v1.0"
@@ -465,7 +591,7 @@ async def save_detection_results(
 
     if detection is not None:
         try:
-            created = persist_detection_geometries(db, drawing.project_id, drawing_id, detection, source="ai")
+            created = _replace_ai_geometry_projection(db, drawing, detection)
             logger.info(f"Persisted {created} Detection/Measurement rows for drawing_id={drawing_id}")
         except Exception as geo_err:
             logger.warning(f"Geometry persistence failed for drawing_id={drawing_id}: {geo_err}")
@@ -473,7 +599,10 @@ async def save_detection_results(
         # AI Search index (memory/TOGAL_PARITY_REAUDIT.md #7) — same
         # best-effort rule as geometry persistence above.
         try:
-            indexed = index_drawing_embeddings(db, drawing.project_id, drawing_id, drawing.file_path, detection)
+            indexed = index_drawing_embeddings(
+                db, drawing.project_id, drawing_id, drawing.file_path, detection,
+                page_number=drawing.page_number or 0,
+            )
             if indexed:
                 logger.info(f"Indexed {indexed} embeddings for AI Search, drawing_id={drawing_id}")
         except Exception as embed_err:
@@ -504,9 +633,183 @@ async def get_detection_results(
         return {
             "message": "No AI results yet",
             "drawing_id": drawing_id,
-            "processing_status": drawing.processing_status.value
+            "processing_status": drawing.processing_status.value,
+            "processing_job_id": drawing.processing_job_id,
+            "processing_attempts": drawing.processing_attempts or 0,
+            "processing_started_at": drawing.processing_started_at,
+            "processing_error": drawing.processing_error,
         }
     return result
+
+
+@router.get("/drawings/{drawing_id}/annotations")
+async def get_annotation_state(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return {
+        "drawing_id": drawing_id,
+        "saved": drawing.annotations_data is not None,
+        "annotations": json.loads(drawing.annotations_data) if drawing.annotations_data else [],
+    }
+
+
+@router.put("/drawings/{drawing_id}/annotations")
+async def save_annotation_state(
+    drawing_id: int,
+    payload: schemas.AnnotationStateUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).with_for_update().first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+
+    submitted = json.dumps(payload.annotations, separators=(",", ":"))
+    if len(submitted.encode("utf-8")) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Annotation document exceeds 5 MiB")
+    try:
+        projection = synchronize_corrected_takeoff(db, drawing, payload.annotations)
+        encoded = json.dumps(projection["annotations"], separators=(",", ":"))
+        unchanged = drawing.annotations_data == encoded
+        drawing.annotations_data = encoded
+        if not unchanged:
+            db.add(models.AnnotationRevision(
+                drawing_id=drawing_id,
+                created_by_id=current_user.id,
+                annotations_data=encoded,
+                annotation_count=len(projection["annotations"]),
+            ))
+            db.flush()
+            stale_revisions = db.query(models.AnnotationRevision).filter(
+                models.AnnotationRevision.drawing_id == drawing_id,
+            ).order_by(models.AnnotationRevision.created_at.desc(), models.AnnotationRevision.id.desc()).offset(50).all()
+            for stale_revision in stale_revisions:
+                db.delete(stale_revision)
+        db.commit()
+    except CanonicalAnnotationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    # Search is a rebuildable projection. Old rows were removed in the atomic
+    # transaction above, so a failed encoder can never return stale geometry.
+    search_indexed = False
+    try:
+        index_drawing_embeddings(
+            db, drawing.project_id, drawing.id, drawing.file_path,
+            projection["detection"], drawing.page_number or 0,
+        )
+        search_indexed = True
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Corrected annotation search reindex failed for drawing %s: %s", drawing.id, exc)
+
+    return {
+        "drawing_id": drawing_id,
+        "saved": True,
+        "count": len(projection["annotations"]),
+        "active_count": projection["active_count"],
+        "unchanged": unchanged,
+        "quantities": projection["quantities"],
+        "summary": projection["detection"]["summary"],
+        "search_indexed": search_indexed,
+    }
+
+
+@router.get("/drawings/{drawing_id}/annotations/history")
+async def list_annotation_history(
+    drawing_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    revisions = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).order_by(models.AnnotationRevision.created_at.desc()).limit(50).all()
+    return [{
+        "id": revision.id,
+        "annotation_count": revision.annotation_count,
+        "created_by_id": revision.created_by_id,
+        "created_at": revision.created_at,
+    } for revision in revisions]
+
+
+@router.post("/drawings/{drawing_id}/annotations/history/{revision_id}/restore")
+async def restore_annotation_history(
+    drawing_id: int,
+    revision_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    drawing = db.query(models.Drawing).join(models.Project).filter(
+        models.Drawing.id == drawing_id,
+        models.Project.organization_id == current_user.organization_id,
+    ).with_for_update().first()
+    if not drawing:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    revision = db.query(models.AnnotationRevision).filter(
+        models.AnnotationRevision.id == revision_id,
+        models.AnnotationRevision.drawing_id == drawing_id,
+    ).first()
+    if not revision:
+        raise HTTPException(status_code=404, detail="Annotation version not found")
+    try:
+        projection = synchronize_corrected_takeoff(db, drawing, json.loads(revision.annotations_data))
+        encoded = json.dumps(projection["annotations"], separators=(",", ":"))
+        drawing.annotations_data = encoded
+        db.add(models.AnnotationRevision(
+            drawing_id=drawing_id,
+            created_by_id=current_user.id,
+            annotations_data=encoded,
+            annotation_count=len(projection["annotations"]),
+        ))
+        db.flush()
+        stale_revisions = db.query(models.AnnotationRevision).filter(
+            models.AnnotationRevision.drawing_id == drawing_id,
+        ).order_by(models.AnnotationRevision.created_at.desc(), models.AnnotationRevision.id.desc()).offset(50).all()
+        for stale_revision in stale_revisions:
+            db.delete(stale_revision)
+        db.commit()
+    except (CanonicalAnnotationError, json.JSONDecodeError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=f"Annotation version is invalid: {exc}") from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    try:
+        index_drawing_embeddings(
+            db, drawing.project_id, drawing.id, drawing.file_path,
+            projection["detection"], drawing.page_number or 0,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Restored annotation search reindex failed for drawing %s: %s", drawing.id, exc)
+    return {
+        "drawing_id": drawing_id,
+        "restored_from": revision_id,
+        "annotations": projection["annotations"],
+        "quantities": projection["quantities"],
+        "summary": projection["detection"]["summary"],
+    }
 
 
 @router.get("/drawings/{drawing_id}/detections")
@@ -542,6 +845,19 @@ async def list_drawing_detections(
             "source": det.source,
             "condition_id": det.condition_id,
             "geometry": json.loads(geojson),
+            # Canonical annotation projections preserve viewer plan space
+            # (PDF points or raster pixels). Legacy AI/vector rows used the
+            # explicit 300-DPI raster space.
+            "plan_units_per_inch": (
+                72.0
+                if drawing.annotations_data is not None
+                and str(drawing.file_type or "").upper() == "PDF"
+                else (
+                    drawing.scale_dpi
+                    if drawing.annotations_data is not None
+                    else 300.0  # legacy Detection.geom is explicitly stored in 300-DPI plan space
+                )
+            ),
         }
         for det, geojson in rows
     ]

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float
+from sqlalchemy import Column, Index, Integer, String, DateTime, ForeignKey, Text, Boolean, Enum as SQLEnum, Float, UniqueConstraint
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
 from pgvector.sqlalchemy import Vector
@@ -11,6 +11,14 @@ class ProcessingStatus(enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class JobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    RETRYING = "retrying"
 
 class UserRole(enum.Enum):
     """
@@ -116,7 +124,7 @@ class Drawing(Base):
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False)  # Local path or S3 URL
+    file_path = Column(String(500), nullable=False)  # Durable s3:// object ref; local path only in dev/tests
     file_size = Column(Integer)  # in bytes
     file_type = Column(String(50))  # PDF, TIFF, PNG, JPG
     sheet_name = Column(String(255))  # e.g., "A-101 Level 12"
@@ -135,19 +143,36 @@ class Drawing(Base):
     discipline = Column(String(10), nullable=True)  # OCR-derived from sheet_number's leading letter(s), e.g. "A"
     upload_batch_id = Column(String(64), nullable=True, index=True)  # groups sheets split from the same upload
 
-    # Scale calibration — see routes/scale_routes.py. scale_ratio is paper-inches
-    # per real-foot (×12), expressed in the same 300-DPI pixel space
-    # ai/preprocessing.py rasterizes drawings into, so it plugs directly into
-    # ai/preprocessing.pixels_to_feet()/pixels_to_sqft() unchanged.
+    # Scale calibration — see routes/scale_routes.py. ``scale_ratio`` is real
+    # inches per paper inch. ``scale_dpi`` records the coordinate density used
+    # by raster measurements; PDF-native geometry is always 72 points/inch.
     scale_ratio = Column(Float, nullable=True)
     scale_source = Column(String(20), nullable=True)  # 'manual' | 'ocr' | 'default'
     scale_calibrated_at = Column(DateTime(timezone=True), nullable=True)
+    # Provenance/trust for the *active* per-page scale. ``scale_dpi`` is the
+    # plan-coordinate density used for raster drawings; PDFs always use their
+    # native 72 points/inch coordinate space.
+    scale_detection_method = Column(String(50), nullable=True)
+    scale_confidence = Column(Float, nullable=True)
+    scale_requires_confirmation = Column(Boolean, nullable=False, default=True)
+    scale_dpi = Column(Float, nullable=True)
     # Cached OCR suggestion so GET /scale doesn't re-run OCR on every request.
     ocr_scale_ratio = Column(Float, nullable=True)
     ocr_scale_text = Column(String(255), nullable=True)  # raw matched OCR text, e.g. '1/8" = 1\'-0"'
     ocr_scale_confidence = Column(Float, nullable=True)
+    ocr_scale_method = Column(String(50), nullable=True)
+    ocr_scale_conflict = Column(Boolean, nullable=False, default=False)
+    ocr_scale_candidates = Column(Text, nullable=True)
+
+    # User-reviewed unified annotation document (AI + manual shapes). Kept on
+    # Drawing so it survives new AI result rows and page refreshes.
+    annotations_data = Column(Text, nullable=True)
 
     processing_status = Column(SQLEnum(ProcessingStatus), default=ProcessingStatus.PENDING)
+    processing_job_id = Column(String(64), nullable=True)
+    processing_attempts = Column(Integer, nullable=False, default=0)
+    processing_started_at = Column(DateTime(timezone=True), nullable=True)
+    processing_error = Column(Text, nullable=True)
     uploaded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     processed_at = Column(DateTime(timezone=True), nullable=True)
     
@@ -155,6 +180,58 @@ class Drawing(Base):
     project = relationship("Project", back_populates="drawings")
     takeoff_results = relationship("TakeoffResult", back_populates="drawing", cascade="all, delete-orphan")
     detections = relationship("Detection", back_populates="drawing", cascade="all, delete-orphan")
+    annotation_revisions = relationship("AnnotationRevision", back_populates="drawing", cascade="all, delete-orphan")
+    text_chunks = relationship("DrawingTextChunk", back_populates="drawing", cascade="all, delete-orphan")
+
+
+class ProcessingJob(Base):
+    """Durable PostgreSQL state for every production worker operation."""
+    __tablename__ = "processing_jobs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key", name="uq_processing_jobs_org_idempotency"),
+        Index("ix_processing_jobs_recovery", "status", "updated_at"),
+        Index("ix_processing_jobs_drawing_type", "drawing_id", "job_type"),
+    )
+
+    id = Column(String(64), primary_key=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    job_type = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False, default=JobStatus.QUEUED.value)
+    progress = Column(Integer, nullable=False, default=0)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=3)
+    error = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    idempotency_key = Column(String(255), nullable=False)
+    celery_task_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    organization = relationship("Organization")
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    requested_by = relationship("User")
+
+
+class AnnotationRevision(Base):
+    __tablename__ = "annotation_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    annotations_data = Column(Text, nullable=False)
+    annotation_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    drawing = relationship("Drawing", back_populates="annotation_revisions")
+    created_by = relationship("User")
 
 class Detection(Base):
     """
@@ -162,9 +239,8 @@ class Detection(Base):
     manual — stored as real PostGIS geometry, not a JSON blob. This is the
     server-side counterpart to the frontend's unified Annotation model
     (frontend/src/annotations/types.js); annotation_id is the join key
-    between the two, since annotations aren't the system of record here —
-    TakeoffResult.detection_data still is, this is the geometry-first mirror
-    of it.
+    between the two. Drawing.annotations_data is the authoritative reviewed
+    document; this table is its geometry-first, rebuildable projection.
 
     geom is plan-space (source-raster pixel coordinates — the same space
     ai/preprocessing.py rasterizes drawings into), not geographic, hence
@@ -235,6 +311,7 @@ class DrawingEmbedding(Base):
     drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=False)
     annotation_id = Column(String(64), nullable=True)  # matching Detection.annotation_id, when this patch came from one
     label_hint = Column(String(100), nullable=True)     # e.g. detected class, for a readable result list
+    encoder = Column(String(50), nullable=False, default="legacy")
     geom = Column(Geometry(geometry_type="GEOMETRY", srid=0), nullable=False)  # patch bbox, plan-space pixels
     embedding = Column(Vector(512), nullable=False)     # CLIP ViT-B/32 image/text embedding dim
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -255,6 +332,43 @@ class DrawingEmbedding(Base):
     project = relationship("Project")
     drawing = relationship("Drawing")
 
+
+class DrawingTextChunk(Base):
+    """Searchable PDF text/OCR block with its sheet location."""
+    __tablename__ = "drawing_text_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number = Column(Integer, nullable=False, default=0)
+    source_kind = Column(String(30), nullable=False, default="drawing")
+    text = Column(Text, nullable=False)
+    bbox_json = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    project = relationship("Project")
+    drawing = relationship("Drawing", back_populates="text_chunks")
+
+
+class SearchReview(Base):
+    """Human accept/reject feedback for AI Search candidates."""
+    __tablename__ = "search_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id", ondelete="CASCADE"), nullable=False, index=True)
+    reviewed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    query_kind = Column(String(20), nullable=False)
+    query_text = Column(Text, nullable=True)
+    detection_id = Column(String(64), nullable=True)
+    similarity = Column(Float, nullable=True)
+    decision = Column(String(20), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    project = relationship("Project")
+    drawing = relationship("Drawing")
+    reviewed_by = relationship("User")
+
 class TakeoffResult(Base):
     __tablename__ = "takeoff_results"
     
@@ -264,7 +378,8 @@ class TakeoffResult(Base):
     quantities_data = Column(Text)  # JSON string with trade quantities
     confidence_scores = Column(Text)  # JSON string with confidence metrics
     processing_time_ms = Column(Integer)
-    ai_model_version = Column(String(50), default="mock_v1")
+    ai_model_version = Column(String(50), default="pending")
+    processing_job_id = Column(String(64), nullable=True, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
@@ -577,4 +692,217 @@ class MasterUnit(Base):
 
     __table_args__ = (
         Index("ux_master_units_drawing_id", "drawing_id", unique=True),
+    )
+
+
+class Assembly(Base):
+    """A persisted, org-editable trade assembly (one measured qty -> many lines).
+
+    The code library (estimating/assemblies.ASSEMBLY_LIBRARY) is the default seed;
+    this table lets an org store and edit its own assemblies. `key` is unique per
+    org so it can be referenced by the same expansion engine.
+    """
+    __tablename__ = "assemblies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    key = Column(String(100), nullable=False)
+    name = Column(String(255), nullable=False)
+    trade = Column(String(100), nullable=False)
+    driver_unit = Column(String(20), nullable=False)  # 'sf' | 'lf' | 'ea'
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    components = relationship("AssemblyComponent", back_populates="assembly",
+                              cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ux_assemblies_org_key", "organization_id", "key", unique=True),
+    )
+
+
+class AssemblyComponent(Base):
+    """One line item an assembly produces per unit of its driver."""
+    __tablename__ = "assembly_components"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assembly_id = Column(Integer, ForeignKey("assemblies.id"), nullable=False, index=True)
+    item = Column(String(255), nullable=False)
+    unit = Column(String(20), nullable=False)          # sf | lf | ea | cy | gal | bf | lot
+    factor = Column(Float, nullable=False)             # output qty per 1 driver unit
+    waste_pct = Column(Float, nullable=False, default=0)
+    trade = Column(String(100), nullable=True)         # optional per-component trade
+
+    assembly = relationship("Assembly", back_populates="components")
+
+
+class CostBook(Base):
+    """A named unit-price list (org/regional) applied when expanding assemblies."""
+    __tablename__ = "cost_books"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    currency = Column(String(10), nullable=False, default="USD")
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    items = relationship("CostItem", back_populates="cost_book", cascade="all, delete-orphan")
+
+
+class CostItem(Base):
+    """One unit price in a cost book (item -> unit_cost)."""
+    __tablename__ = "cost_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id"), nullable=False, index=True)
+    item = Column(String(255), nullable=False)
+    unit = Column(String(20), nullable=True)
+    unit_cost = Column(Float, nullable=False, default=0)
+
+    cost_book = relationship("CostBook", back_populates="items")
+
+    __table_args__ = (
+        Index("ux_cost_items_book_item", "cost_book_id", "item", unique=True),
+    )
+
+
+class Estimate(Base):
+    """A saved, named snapshot of a priced assemblies estimate.
+
+    Turns an on-the-fly takeoff → assemblies calculation into a durable artifact
+    an estimator can name, re-open, and export. `data` is the JSON snapshot
+    (drivers / line_items / by_trade / total) so the estimate is reproducible
+    even if the drawing or cost book changes later.
+    """
+    __tablename__ = "estimates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id"), nullable=True)
+    name = Column(String(255), nullable=False)
+    total = Column(Float, nullable=False, default=0)
+    data = Column(Text, nullable=False)  # JSON snapshot of the estimate
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class IntegrationConnection(Base):
+    """An org's connection to an external estimating/PM system (Procore, PlanSwift…).
+
+    One row per (org, provider). Stores OAuth/API credentials and account
+    identity so quantities/estimates can be pushed to the provider.
+
+    SECURITY: access_token/refresh_token contain versioned Fernet ciphertext.
+    Provider adapters only receive a short-lived decrypted view; API responses
+    expose only the boolean ``has_credentials`` flag.
+    """
+    __tablename__ = "integration_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)      # 'procore' | 'planswift' | 'generic'
+    status = Column(String(20), nullable=False, default="disconnected")  # disconnected|connected|error
+    external_account_id = Column(String(255), nullable=True)
+    external_account_name = Column(String(255), nullable=True)
+    access_token = Column(Text, nullable=True)         # enc:v1 Fernet ciphertext
+    refresh_token = Column(Text, nullable=True)        # enc:v1 Fernet ciphertext
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    config = Column(Text, nullable=True)               # JSON: provider-specific settings
+    last_error = Column(String(500), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_integration_org_provider", "organization_id", "provider", unique=True),
+    )
+
+
+class ProjectShare(Base):
+    """External collaboration — share a project with someone who has no account.
+
+    A tokenized link grants scoped, account-free access (view or comment), like
+    Togal's "collaborate with users outside your account." The token is the
+    bearer credential; guests never authenticate. Revoke or expire to cut access.
+    """
+    __tablename__ = "project_shares"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    token = Column(String(64), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True)          # optional — link can be email-less
+    role = Column(String(20), nullable=False, default="viewer")  # 'viewer' | 'commenter'
+    revoked = Column(Boolean, nullable=False, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+
+    project = relationship("Project")
+
+
+class ClassificationTemplate(Base):
+    """A reusable, org-level library of classifications (Togal's "classification
+    library template"). Each item is a named measurable condition (trade, unit,
+    annotation type, color) an estimator applies to a project in one click,
+    creating Condition rows. `data` is a JSON list of items.
+    """
+    __tablename__ = "classification_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    data = Column(Text, nullable=False, default="[]")   # JSON: [{name, trade, annotation_type, unit, color, waste_percent}]
+    is_default = Column(Boolean, nullable=False, default=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+class ActivityLog(Base):
+    """General org-scoped audit trail — who did what, when (enterprise ask).
+
+    Complements the scoped correction/handoff logs with a single activity feed.
+    `details` is optional JSON (name avoids SQLAlchemy's reserved `metadata`).
+    """
+    __tablename__ = "activity_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String(50), nullable=False)          # 'login' | 'share.created' | 'template.applied' | ...
+    entity_type = Column(String(50), nullable=True)      # 'project' | 'share' | ...
+    entity_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)                # optional JSON
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class SSOConnection(Base):
+    """Per-org SAML SSO configuration (enterprise auth). One row per org.
+
+    Stores IdP metadata (entity id, SSO URL, x509 cert — all public) so the login
+    flow can redirect to the IdP and validate assertions. Disabled until
+    `enabled` is set and the IdP fields are filled.
+    """
+    __tablename__ = "sso_connections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(20), nullable=False, default="saml")
+    enabled = Column(Boolean, nullable=False, default=False)
+    idp_entity_id = Column(String(255), nullable=True)
+    idp_sso_url = Column(String(500), nullable=True)
+    idp_x509_cert = Column(Text, nullable=True)          # IdP signing cert (public)
+    sp_entity_id = Column(String(255), nullable=True)    # our SP identifier
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ux_sso_connections_org", "organization_id", unique=True),
     )

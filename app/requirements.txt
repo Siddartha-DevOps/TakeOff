@@ -58,6 +58,11 @@ flower==2.0.1  # Celery monitoring
 boto3==1.34.131
 sagemaker==2.224.1
 
+# Modal (cloud GPU training entrypoint — training/modal_gpu.py). Only needed
+# on the machine that launches training (`modal run ...`), not in the served
+# app; the GPU container gets its own deps from modal_gpu.py's Image spec.
+modal==0.64.49
+
 # Data / training utilities
 albumentations==1.4.8     # augmentation
 pycocotools==2.0.7        # COCO format annotation parsing
