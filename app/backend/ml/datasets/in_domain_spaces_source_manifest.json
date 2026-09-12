@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "dataset_name": "takeoff-in-domain-spaces-v1",
+  "status": "EMPTY_AWAITING_RIGHTS_CLEARED_SOURCES",
+  "classes": [
+    "living",
+    "bedroom",
+    "bathroom",
+    "kitchen",
+    "balcony",
+    "stair",
+    "storage"
+  ],
+  "eligibility_policy": {
+    "rights_verified": true,
+    "commercial_ml_training_allowed": true,
+    "provenance_recorded": true,
+    "deidentification_complete_when_required": true,
+    "file_integrity_passed": true,
+    "project_identity_known": true
+  },
+  "samples": [],
+  "audit": {
+    "real_in_domain_sheets_found": 0,
+    "rights_cleared_usable_sheets": 0,
+    "annotated_sheets": 0,
+    "notes": [
+      "No local customer or real AEC floor-plan corpus with commercial-training rights evidence was found.",
+      "takeoff-house-plan-test.jpg and output/pdf/takeoff-dimensioned-floor-plan.pdf are test/generated assets with no source-rights record and are excluded.",
+      "ResPlan spaces_v1 remains valid licensed pretraining data but is synthetic/vector-derived and is not counted as in-domain fine-tuning data.",
+      "CubiCasa5K, RPLAN, Structured3D, CVC-FP, and SESYD references are not locally available approved in-domain samples and are not counted."
+    ]
+  }
+}

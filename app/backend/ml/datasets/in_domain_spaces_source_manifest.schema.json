@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://takeoff.ai/schemas/in-domain-spaces-source-manifest-v2.json",
+  "title": "TakeOff in-domain spaces source manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "dataset_name", "classes", "samples"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "dataset_name": {"const": "takeoff-in-domain-spaces-v1"},
+    "status": {"type": "string"},
+    "classes": {
+      "const": ["living", "bedroom", "bathroom", "kitchen", "balcony", "stair", "storage"]
+    },
+    "eligibility_policy": {"type": "object"},
+    "audit": {"type": "object"},
+    "samples": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sample"}
+    }
+  },
+  "$defs": {
+    "sample": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sample_id", "project_id", "source_owner", "permission_basis",
+        "commercial_ml_training_allowed", "redistribution_allowed",
+        "confidentiality_restrictions", "deidentification_required",
+        "deidentification_status", "deidentification", "drawing_type", "discipline", "revision",
+        "page_sheet_number", "source_file_sha256", "eligible_file_sha256",
+        "source_path", "eligible_path", "intake_date", "rights", "provenance",
+        "file_integrity"
+      ],
+      "properties": {
+        "sample_id": {"type": "string", "minLength": 1},
+        "project_id": {"type": "string", "minLength": 1},
+        "source_owner": {"type": "string", "minLength": 1},
+        "permission_basis": {"enum": ["owned", "customer_consent", "written_license", "contract_data_terms"]},
+        "commercial_ml_training_allowed": {"type": "boolean"},
+        "redistribution_allowed": {"type": "boolean"},
+        "confidentiality_restrictions": {"type": "string"},
+        "deidentification_required": {"type": "boolean"},
+        "deidentification_status": {"enum": ["not_required", "pending", "complete", "failed_review"]},
+        "deidentification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["performed_by", "reviewed_by", "completed_at", "redaction_log_ref", "geometry_preserved"],
+          "properties": {
+            "performed_by": {"type": "string"},
+            "reviewed_by": {"type": "string"},
+            "completed_at": {"type": ["string", "null"], "format": "date-time"},
+            "redaction_log_ref": {"type": "string"},
+            "geometry_preserved": {"type": "boolean"}
+          }
+        },
+        "drawing_type": {"enum": ["residential_single_family", "apartment_multi_unit", "commercial_retail", "office", "hospitality", "other"]},
+        "discipline": {"enum": ["architectural_floor_plan", "architectural_reflected_ceiling", "structural", "mep", "other"]},
+        "revision": {"type": "string", "minLength": 1},
+        "page_sheet_number": {"type": "string", "minLength": 1},
+        "source_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "eligible_file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_path": {"type": "string", "minLength": 1},
+        "eligible_path": {"type": "string", "minLength": 1},
+        "intake_date": {"type": "string", "format": "date"},
+        "requested_split": {"enum": ["train", "val", "test", "golden", null]},
+        "rights": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "evidence_ref", "verified_by", "verified_at"],
+          "properties": {
+            "status": {"enum": ["pending", "approved", "rejected", "expired"]},
+            "evidence_ref": {"type": "string"},
+            "verified_by": {"type": "string"},
+            "verified_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "source_reference", "recorded_by", "recorded_at"],
+          "properties": {
+            "status": {"enum": ["pending", "recorded", "rejected"]},
+            "source_reference": {"type": "string"},
+            "recorded_by": {"type": "string"},
+            "recorded_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        },
+        "file_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "verified_at"],
+          "properties": {
+            "status": {"enum": ["pending", "passed", "failed"]},
+            "verified_at": {"type": ["string", "null"], "format": "date-time"}
+          }
+        },
+        "intake_eligibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "validated_at", "report_ref"],
+          "properties": {
+            "status": {"enum": ["eligible", "blocked"]},
+            "validated_at": {"type": "string", "format": "date-time"},
+            "report_ref": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "plan_version": "swiss-dwellings-rooms-maskrcnn-r50fpnv2-pretrain-v1",
+  "status": "POC_ONLY_DO_NOT_TRAIN",
+  "architecture": "torchvision-maskrcnn-resnet50-fpn-v2",
+  "label_format": "COCO instance segmentation uncompressed RLE",
+  "class_count_including_background": 15,
+  "pretrained_initialization": "MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT",
+  "input": {"min_size": 1024, "max_size": 1600, "preserve_aspect_ratio": true},
+  "training": {
+    "epochs": 80,
+    "batch_size_per_gpu": 2,
+    "gradient_accumulation_steps": 2,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "scheduler": "cosine_with_linear_warmup",
+    "warmup_iterations": 1000,
+    "mixed_precision": true,
+    "deterministic_seed": 42,
+    "early_stopping_patience_epochs": 15,
+    "checkpoint_frequency_epochs": 1,
+    "checkpoint_retention": 3
+  },
+  "augmentation": {
+    "horizontal_flip": 0.5,
+    "vertical_flip": 0.5,
+    "right_angle_rotation": true,
+    "mild_brightness_contrast": true,
+    "perspective_or_elastic_distortion": false,
+    "arbitrary_crop": false
+  },
+  "sampling": {
+    "strategy": "building-aware repeat-factor sampling after measured class-frequency review",
+    "maximum_repeat_factor": 3.0,
+    "negative_floor_cap_per_batch": 0.1,
+    "do_not_duplicate_shared_geometry_across_splits": true
+  },
+  "selection_metric": "validation_mask_AP",
+  "metrics": ["mask_AP", "mask_AP50", "mask_AP75", "per_class_precision", "per_class_recall", "per_class_IoU", "confusion_matrix", "validation_loss"],
+  "output_directory": "E:\\Takeoff_datasets\\swiss_dwellings\\training\\runs\\swiss-dwellings-rooms-maskrcnn-r50fpnv2-pretrain-v1",
+  "test_split_policy": "untouched until final locked evaluation",
+  "domain_warning": "Swiss validation is geometry-domain validation, not customer AEC drawing production validation."
+}
