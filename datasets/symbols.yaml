@@ -1,0 +1,52 @@
+# TakeOff.ai — YOLOv8 (bbox detection, not segmentation) data config for
+# door/window/MEP symbol detection.
+#
+# Companion to rooms.yaml — see that file's header for why this is a
+# separate two-model split (CLAUDE.md §3: spaces vs. symbols are distinct
+# model families) alongside the single combined 27-class model that
+# app/training/train.py and app/backend/ai/detection_engine.py already
+# ship and load ("rooms_doors_windows_v1.pt"). This does not replace that
+# model — it's the data config for training a dedicated symbols-only
+# detector, e.g. a smaller/faster YOLOv8s tuned for small-object recall
+# per AI_TRAINING_GUIDE.md Features 2/3/5.
+#
+# Class ids here are LOCAL to this file (0-17) and intentionally do not
+# reuse the 9-26 offsets from detection_engine.py's combined CLASS_NAMES —
+# names match exactly, so re-deriving the offset mapping is a one-line
+# dict comprehension if these two taxonomies ever need to be reconciled.
+#
+# Directory layout (images/{split}, labels/{split}) and class list/order
+# match app/backend/training/train_yolov8_seg.py's SYMBOL_CLASSES and
+# build_data_yaml() exactly — this file is an explicit, checked-in,
+# editable equivalent of the data.yaml that script otherwise generates
+# on the fly, usable as an override or just for human inspection.
+
+path: /data/symbols
+train: images/train
+val: images/val
+test: images/test
+
+nc: 18
+names:
+  # Doors
+  0: standard_door
+  1: bifold_door
+  2: sliding_door
+  3: double_door
+  4: pocket_door
+  # Windows
+  5: fixed_window
+  6: casement_window
+  7: sliding_window
+  8: transom_window
+  9: bay_window
+  # MEP — plumbing
+  10: toilet
+  11: sink
+  12: shower
+  13: bathtub
+  # MEP — electrical
+  14: outlet
+  15: switch
+  16: light_fixture
+  17: smoke_detector

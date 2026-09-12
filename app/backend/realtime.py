@@ -162,6 +162,12 @@ hub = PresenceHub()
 
 
 def comment_to_dict(comment) -> dict:
+    # display_name/is_guest let the frontend render "Jane Smith" vs.
+    # "Alex (Guest)" without needing to know the author_id/guest_name split
+    # itself — comment.author_id and comment.guest_name are mutually
+    # exclusive (see models.Comment's docstring).
+    is_guest = comment.author_id is None
+    display_name = comment.guest_name if is_guest else (comment.author.full_name or comment.author.email if comment.author else None)
     return {
         "id": comment.id,
         "project_id": comment.project_id,
@@ -172,6 +178,9 @@ def comment_to_dict(comment) -> dict:
         "body": comment.body,
         "author_id": comment.author_id,
         "author_email": comment.author.email if comment.author else None,
+        "guest_name": comment.guest_name,
+        "is_guest": is_guest,
+        "display_name": display_name,
         "resolved": comment.resolved,
         "resolved_by": comment.resolved_by,
         "resolved_at": comment.resolved_at.isoformat() if comment.resolved_at else None,

@@ -37,18 +37,29 @@ from typing import Optional
 import models
 from canonical_takeoff import canonical_quantities_for_drawing
 
-GROUP_DIMENSIONS = ("drawing", "trade", "item")
-_GROUP_FIELD = {"drawing": "drawing_name", "trade": "trade", "item": "item"}
+GROUP_DIMENSIONS = ("drawing", "trade", "item", "folder")
+_GROUP_FIELD = {"drawing": "drawing_name", "trade": "trade", "item": "item", "folder": "folder_name"}
 
 
 def extract_rows(db, drawing: "models.Drawing") -> list[dict]:
     """
     One row per canonical corrected quantity for the given drawing. A drawing
     with no result or annotation state contributes zero rows.
+
+    folder_name/folder_id (Togal parity: "Breakdowns — phase/floor/unit")
+    ride along on every row so build_grouped_sections() can group by
+    folder without a second query — DrawingFolder (routes/folder_routes.py)
+    is exactly the "which phase/floor is this sheet in" data a breakdown
+    needs, so this reuses it rather than adding a separate phase/floor
+    field. A drawing with no folder assigned groups under "Unfiled", same
+    label the Drawings sidebar uses for it.
     """
     quantities = canonical_quantities_for_drawing(db, drawing)
 
     drawing_name = drawing.sheet_number or drawing.sheet_name or drawing.original_filename
+    folder_id = getattr(drawing, "folder_id", None)
+    folder = getattr(drawing, "folder", None)
+    folder_name = folder.name if folder else "Unfiled"
     rows = []
     for i, item in enumerate(quantities):
         if not isinstance(item, dict):
@@ -61,6 +72,8 @@ def extract_rows(db, drawing: "models.Drawing") -> list[dict]:
             "row_id": f"{drawing.id}:{i}",
             "drawing_id": drawing.id,
             "drawing_name": drawing_name,
+            "folder_id": folder_id,
+            "folder_name": folder_name,
             "trade": item.get("trade") or "Uncategorized",
             "item": item.get("item") or "Untitled",
             "quantity": quantity,

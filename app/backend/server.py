@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 import os
 import logging
 from pathlib import Path
-
 # Environment must be loaded before importing auth/routes: auth resolves the
 # JWT signing key at import time and previously missed values stored in .env.
 ROOT_DIR = Path(__file__).parent
@@ -44,6 +43,9 @@ from routes import (
     audit_routes,
     sso_routes,
     job_routes,
+    folder_routes,
+    template_routes,
+    share_routes,
 )
 
 # Import models so every relationship("ClassName") string reference across
@@ -159,6 +161,10 @@ app.include_router(realtime_routes.collab_router, prefix="/api")
 app.include_router(team_routes.router, prefix="/api")
 app.include_router(repeating_routes.router, prefix="/api")
 app.include_router(webhook_routes.router, prefix="/api")
+app.include_router(folder_routes.router, prefix="/api")
+app.include_router(template_routes.router, prefix="/api")
+app.include_router(share_routes.router, prefix="/api")
+app.include_router(share_routes.guest_router, prefix="/api")
 app.include_router(india_routes.router, prefix="/api")
 app.include_router(active_learning_routes.router, prefix="/api")
 app.include_router(assemblies_routes.router, prefix="/api")
