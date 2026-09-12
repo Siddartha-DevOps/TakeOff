@@ -1,0 +1,8 @@
+
+# Environment / secrets (Prisma DATABASE_URL, API keys) — never commit
+.env
+.env.*
+!.env.example
+
+# Prisma generated client (regenerated from prisma/schema.prisma)
+generated/
