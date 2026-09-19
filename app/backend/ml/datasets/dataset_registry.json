@@ -1,0 +1,35 @@
+{
+  "datasets": [
+    {
+      "annotation_count": 133905,
+      "annotation_format": "YOLOv8 instance-segmentation polygons",
+      "checksum": "191feee10ea1d5d5a528cb443247a768a3a03b62fd0919cbd2cca30c0cb35dad",
+      "classes": [
+        "living",
+        "bedroom",
+        "bathroom",
+        "kitchen",
+        "balcony",
+        "stair",
+        "storage"
+      ],
+      "created_at": "2026-08-22T16:30:00Z",
+      "dataset_id": "resplan-spaces-v1",
+      "image_count": 16296,
+      "license": "CC BY 4.0",
+      "metadata": {
+        "content_addressed_id": "097a39c19c57a208",
+        "manifest_dataset_id": "1de1c507874f9e66",
+        "upstream_commit": "e2b78fe069aee1ab1e1828a612743f308e3c32a7"
+      },
+      "provenance": "ResPlan official archive and official split.json, pinned to upstream commit e2b78fe069aee1ab1e1828a612743f308e3c32a7",
+      "source": "https://github.com/m-agour/ResPlan",
+      "split_policy": "source-drawing-level",
+      "test_count": 1621,
+      "train_count": 13053,
+      "validation_count": 1622,
+      "version": "097a39c19c57a208"
+    }
+  ],
+  "schema_version": 1
+}

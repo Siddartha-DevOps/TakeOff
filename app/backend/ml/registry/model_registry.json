@@ -1,0 +1,45 @@
+{
+  "models": [
+    {
+      "architecture": "YOLOv8m-seg",
+      "artifact_location": "models/best.pt",
+      "checksum": "2cc2cfffaa294f9915a2fddab9812f06b10450e8149e75d5d3361f5b792c9acd",
+      "classes": [
+        "living",
+        "bedroom",
+        "bathroom",
+        "kitchen",
+        "balcony",
+        "stair",
+        "storage"
+      ],
+      "created_at": "2026-08-22T21:47:27.4479956Z",
+      "dataset_version": "097a39c19c57a208",
+      "deployment_status": "CANDIDATE",
+      "evaluation_version": null,
+      "input_resolution": 640,
+      "metadata": {
+        "epochs": 12,
+        "hf_repository": "Siddartha96/takeoff-spaces-yolov8m-seg",
+        "hf_revision": "e6eed685f498e8a5af8ee16481840f115de287fd",
+        "pinned_by_serving": true,
+        "promotion_note": "Serving configuration pin is not evidence of passing the independent production promotion gate",
+        "training_validation_metrics": {
+          "box_map50": 0.79503,
+          "box_map50_95": 0.73603,
+          "box_precision": 0.8094,
+          "box_recall": 0.78199,
+          "mask_map50": 0.80127,
+          "mask_map50_95": 0.68738,
+          "mask_precision": 0.81441,
+          "mask_recall": 0.78461
+        }
+      },
+      "model_id": "takeoff-spaces-resplan",
+      "model_name": "TakeOff room/space segmentation",
+      "task": "room-instance-segmentation",
+      "version": "resplan-yolov8m-seg-12ep-640-v1"
+    }
+  ],
+  "schema_version": 1
+}
