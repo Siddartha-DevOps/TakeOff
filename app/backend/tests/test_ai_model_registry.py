@@ -52,5 +52,9 @@ def test_committed_resplan_model_record_matches_checkpoint():
     record = load_registry(backend / "ml" / "registry" / "model_registry.json")[0]
     assert record.deployment_status == DeploymentStatus.CANDIDATE
     assert record.evaluation_version is None
-    assert verify_artifact(record, backend / record.artifact_location) is True
+    # Model binaries are intentionally external to Git. Verify the pinned
+    # checkpoint when present without requiring it in source-only CI.
+    artifact = backend / record.artifact_location
+    if artifact.exists():
+        assert verify_artifact(record, artifact) is True
     assert record.classes == ["living", "bedroom", "bathroom", "kitchen", "balcony", "stair", "storage"]
