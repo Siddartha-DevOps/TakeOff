@@ -1,0 +1,17 @@
+{
+  "benchmark_id": "takeoff-ai-golden-v1",
+  "evaluation_status": "NOT_EVALUATED",
+  "external_asset_root": null,
+  "license_rule": "Only rights-cleared benchmark assets may be referenced; no private customer drawings are committed.",
+  "required_coverage": [
+    "simple_floor_plan",
+    "complex_floor_plan",
+    "scanned_plan",
+    "vector_origin_plan",
+    "multiple_scales",
+    "multiple_drawing_styles"
+  ],
+  "samples": [],
+  "schema_version": 1,
+  "status_reason": "BLOCKED — NO VALID TEST SET"
+}
