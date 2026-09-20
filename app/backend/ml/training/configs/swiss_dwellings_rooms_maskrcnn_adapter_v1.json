@@ -1,0 +1,28 @@
+{
+  "adapter_version": "swiss-dwellings-rooms-maskrcnn-coco-rle-full-v1",
+  "architecture_target": "torchvision-maskrcnn-resnet50-fpn-v2",
+  "expected_floor_count": 13902,
+  "label_format": "sharded COCO instance segmentation with uncompressed RLE",
+  "output_directory": "E:\\Takeoff_datasets\\swiss_dwellings\\processed\\full-v1\\mask-native\\rooms-maskrcnn-coco-rle-full-v1",
+  "source_manifest": "E:\\Takeoff_datasets\\swiss_dwellings\\processed\\full-v1\\manifests\\swiss_dwellings_training_manifest_v1.json",
+  "source_manifest_sha256": "6375b709932223b328de146282549807c4e2555526d4a2654ff216c68b377c4b",
+  "taxonomy": [
+    "bedroom",
+    "bathroom",
+    "kitchen",
+    "living",
+    "living_dining",
+    "corridor",
+    "storage",
+    "balcony",
+    "office",
+    "utility",
+    "stairs",
+    "entry_lobby",
+    "generic_room",
+    "shaft"
+  ],
+  "excluded_floors": ["5593", "5639", "5640"],
+  "split_policy": "use frozen building-level train/val/test assignment without reshuffling",
+  "training_authorized": false
+}

@@ -494,8 +494,16 @@ Planned hyperparameters are 1280-pixel input, batch 4, 100 epochs, AdamW with in
 
 The read-only preflight verified the exact manifest SHA-256, all 12,699 selected train/validation image-mask pairs, mask class IDs 0–14, all fourteen class IDs represented, three intentional negative masks with zero TRAIN room records, no unexpected empty mask, no excluded-floor inclusion, zero building/duplicate-cluster leakage, and the initialization checkpoint SHA-256. Focused configuration/training tests passed 20/20.
 
-**Start-readiness: NO.** The frozen dataset references semantic PNG room masks, while the repository's proven YOLOv8m-seg trainer requires instance polygon TXT labels. Adjacent immutable `room_instance.png` and `supervision.json.gz` artifacts contain sufficient source information, but a deterministic, separately versioned manifest-to-YOLO adapter output has not been materialized or frozen. Training must remain blocked until that adapter preserves IDs/splits, remaps mask IDs 1–14 to training IDs 0–13, validates every polygon, and produces its own content hash. Swiss-only validation will remain geometry-pretraining evidence, never a claim of production accuracy; rights-cleared customer drawings and a customer-domain golden set are still required for promotion.
+**YOLO start-readiness: NO.** The lossless Mask R-CNN path below supersedes the lossy YOLO polygon-label path for the first full-fidelity Swiss room experiment. Swiss-only validation remains geometry-pretraining evidence, never a claim of production accuracy; rights-cleared customer drawings and a customer-domain golden set are still required for promotion.
+
+### Frozen full Mask R-CNN COCO-RLE adapter
+
+The full adapter is frozen externally at `E:\\Takeoff_datasets\\swiss_dwellings\\processed\\full-v1\\mask-native\\rooms-maskrcnn-coco-rle-full-v1`. It uses canonical room WKT directly and writes one deterministic COCO uncompressed-RLE shard per floor, retaining interior holes exactly and recording every source instance and checksum. SQLite is the durable floor-level checkpoint; a rerun verifies completed files rather than rebuilding them.
+
+Both complete adapter passes produced byte-identical manifest SHA-256 `61966eb947ba0ffc2dbc094c33142246b2be3a9cdba085c9f0cb36e93279ce29`. Pass 2 processed zero floors, wrote zero outputs, and found zero content/checksum mismatches. All 13,902 eligible floors reconcile: train 11,337, validation 1,362, test 1,203. All 495,835 authoritative room instances became 495,835 COCO-RLE annotations with zero rejection. The adapter preserves 7,669 hole-containing rooms and 9,841 interior rings, plus four intentional negative floors.
+
+Every referenced image and annotation shard exists and matches its recorded hash. Excluded source-exception floors are absent. Building leakage, cross-split duplicate relationships, and duplicate-connected clusters crossing splits are all zero. This authorizes the isolated GPU/framework preflight only; it does not authorize model training or production promotion.
 
 ## Required next action
 
-Create and validate a rights-cleared, project-split in-domain room/space fine-tuning dataset (300-500 representative sheets with a 20-40-sheet/project untouched golden set). Then use the current 12-epoch ResPlan checkpoint as the initialization for Phase A fine-tuning and require the formal golden/promotion gate before calling the room model done.
+Run the isolated Mask R-CNN GPU/framework preflight against the frozen adapter, then seek explicit authorization before any training. In parallel, obtain the rights-cleared, project-split customer-domain room dataset and untouched golden set required for eventual production promotion.
