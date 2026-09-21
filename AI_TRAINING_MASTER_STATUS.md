@@ -504,6 +504,16 @@ Both complete adapter passes produced byte-identical manifest SHA-256 `61966eb94
 
 Every referenced image and annotation shard exists and matches its recorded hash. Excluded source-exception floors are absent. Building leakage, cross-split duplicate relationships, and duplicate-connected clusters crossing splits are all zero. This authorizes the isolated GPU/framework preflight only; it does not authorize model training or production promotion.
 
+### Task 6 Mask R-CNN GPU/framework preflight
+
+**Result date:** 2026-09-21. **Status: PASS; TASK 6 COMPLETE.** The bounded Kaggle preflight ran on a Tesla T4 using CUDA 12.1, PyTorch 2.5.1+cu121, torchvision 0.20.1+cu121, and the Python 3.12-compatible V2 package. The immutable report is external at `E:\Takeoff_datasets\maskrcnn-gpu-preflight-report.json`; its SHA-256 is `be5beded0d1f946cc2a1cd7e8d2d27b46566507fb32e2d245086a8dea8668e8b`.
+
+The preflight loaded three checksum-verified real samples from the frozen adapter: a train floor with two hole-containing room instances, a validation-positive floor, and an intentional train negative. It preserved the holes, accepted the empty negative target, and did not start an epoch-based training run. The V2 loader verified the frozen full-adapter manifest SHA-256 before any framework operation.
+
+Mask R-CNN `maskrcnn_resnet50_fpn_v2` with 15 classes completed one training forward pass, produced all five finite losses, completed backward propagation, and performed one bounded SGD optimizer step. Total loss was 5.184700965881348. Peak GPU memory was 3.850 GiB allocated and 4.705 GiB reserved against 14.56 GiB available. A subsequent inference pass produced the required TakeOff `label`, `score`, `bbox`, and two-dimensional `mask` contract. The persisted report passed the committed strict evidence validator; it rejects missing dataset, loss, backward, optimizer, memory, inference, or no-training guarantees.
+
+This result proves framework/runtime compatibility and full-fidelity COCO-RLE adapter usability on the target GPU class. It is not model-accuracy evidence, does not promote a checkpoint, and does not authorize training by itself. Task 7 may now be planned or explicitly authorized, but no training has started.
+
 ## Required next action
 
-Run the isolated Mask R-CNN GPU/framework preflight against the frozen adapter, then seek explicit authorization before any training. In parallel, obtain the rights-cleared, project-split customer-domain room dataset and untouched golden set required for eventual production promotion.
+Seek explicit authorization and resource limits for Task 7 before launching any Mask R-CNN training. In parallel, obtain the rights-cleared, project-split customer-domain room dataset and untouched golden set required for eventual production promotion.
