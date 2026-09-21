@@ -40,7 +40,10 @@ class CocoRLEMaskDataset:
 
         floor_row = self.images[index]
         if self.sharded:
-            shard = json.loads(Path(floor_row["annotation_path"]).read_text(encoding="utf-8"))
+            shard_path = Path(floor_row["annotation_path"])
+            if not shard_path.is_absolute():
+                shard_path = self.annotation_path.parent / shard_path
+            shard = json.loads(shard_path.read_text(encoding="utf-8"))
             image_row = shard["image"]
             annotations = sorted(shard["annotations"], key=lambda row: int(row["id"]))
             image_id = index + 1
@@ -48,7 +51,10 @@ class CocoRLEMaskDataset:
             image_row = floor_row
             annotations = sorted(self.annotations[int(image_row["id"])], key=lambda row: int(row["id"]))
             image_id = int(image_row["id"])
-        path = (self.annotation_path.parent / image_row["file_name"]).resolve()
+        path = Path(image_row["file_name"])
+        if not path.is_absolute():
+            path = self.annotation_path.parent / path
+        path = path.resolve()
         if not path.is_file():
             path = self.image_root / Path(image_row["file_name"]).name
         with Image.open(path) as image:
