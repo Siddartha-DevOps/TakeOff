@@ -35,6 +35,7 @@ def parse_args(argv=None):
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--heartbeat-every-batches", type=int, default=HEARTBEAT_INTERVAL_BATCHES)
     parser.add_argument("--checkpoint-every-optimizer-updates", type=int, default=50)
+    parser.add_argument("--stop-file")
     return parser.parse_args(argv)
 
 
@@ -210,6 +211,16 @@ def _should_emit_heartbeat(*, completed_batches: int, interval: int, final_batch
     return interval > 0 and (final_batch or completed_batches % interval == 0)
 
 
+def _stop_requested(stop_file: str | Path | None) -> bool:
+    """Return true only for an explicitly configured stop-request marker."""
+    return bool(stop_file) and Path(stop_file).is_file()
+
+
+def _should_stop_at_boundary(*, stop_file: str | Path | None, optimizer_boundary: bool) -> bool:
+    """Never checkpoint a partial gradient-accumulation window."""
+    return optimizer_boundary and _stop_requested(stop_file)
+
+
 def _loader_process_options(num_workers: int) -> dict:
     """Use bounded prefetch only when multiprocessing is explicitly requested."""
     if num_workers < 0:
@@ -302,7 +313,7 @@ def train(
     config_path, adapter_root, initialization, output, resume=None, *,
     diagnostic_max_batches=None, diagnostic_num_workers=0,
     data_loader_num_workers=0, heartbeat_every_batches=HEARTBEAT_INTERVAL_BATCHES,
-    checkpoint_every_optimizer_updates=50,
+    checkpoint_every_optimizer_updates=50, stop_file=None,
 ):
     import torch
     from torch.utils.data import DataLoader
@@ -445,7 +456,10 @@ def train(
                 )
             batch_loss = _unscaled_loss_value(loss, accumulation)
             running += batch_loss
-            if (batch_index + 1) % accumulation == 0 or batch_index + 1 == len(train_loader):
+            optimizer_boundary = (
+                (batch_index + 1) % accumulation == 0 or batch_index + 1 == len(train_loader)
+            )
+            if optimizer_boundary:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), training["gradient_clip_norm"])
                 if diagnostic_mode:
@@ -533,6 +547,34 @@ def train(
                     "elapsed_since_epoch_start_seconds": round(time.monotonic() - heartbeat_started, 3),
                     **_memory_snapshot(torch, device),
                 }, sort_keys=True), flush=True)
+            if _should_stop_at_boundary(
+                stop_file=stop_file, optimizer_boundary=optimizer_boundary,
+            ):
+                checkpoint_path = output / "checkpoint-progress.pt"
+                _save_checkpoint(
+                    checkpoint_path, model=model, optimizer=optimizer,
+                    scheduler=scheduler, scaler=scaler, epoch=epoch,
+                    best_metric=best_metric, stale_epochs=stale_epochs,
+                    optimizer_attempts=optimizer_attempts,
+                    optimizer_updates=optimizer_updates,
+                    skipped_optimizer_updates=skipped_optimizer_updates,
+                    config=config, epoch_complete=False,
+                    next_batch_index=batch_index + 1,
+                    epoch_running_loss=running,
+                )
+                print(json.dumps({
+                    "event": "interrupted_checkpoint_complete",
+                    "epoch": epoch + 1,
+                    "batch": batch_index + 1,
+                    "optimizer_updates": optimizer_updates,
+                    "path": str(checkpoint_path),
+                }, sort_keys=True), flush=True)
+                return {
+                    "status": "INTERRUPTED_CHECKPOINT_COMPLETE",
+                    "epoch": epoch,
+                    "next_batch_index": batch_index + 1,
+                    "optimizer_updates": optimizer_updates,
+                }
             if diagnostic_mode:
                 diagnostic_batches_processed += 1
                 if diagnostic_batches_processed >= diagnostic_max_batches:
@@ -594,6 +636,7 @@ def main(argv=None):
         data_loader_num_workers=args.num_workers,
         heartbeat_every_batches=args.heartbeat_every_batches,
         checkpoint_every_optimizer_updates=args.checkpoint_every_optimizer_updates,
+        stop_file=args.stop_file,
     )
     return 0
 
