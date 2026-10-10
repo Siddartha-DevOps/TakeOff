@@ -155,3 +155,25 @@ def test_source_manifest_and_exclusions_are_immutable_guards(tmp_path, monkeypat
     source = _manifest(tmp_path, monkeypatch, rows)
     with pytest.raises(ValueError, match="excluded source-exception"):
         adapter.build_full_adapter(source, tmp_path / "adapter")
+
+
+def test_dataset_relocates_external_manifest_paths_and_filters_split(tmp_path, monkeypatch):
+    source = _manifest(tmp_path, monkeypatch, _three_floors(tmp_path))
+    output = tmp_path / "adapter"
+    result = adapter.build_full_adapter(source, output)
+    manifest = json.loads(Path(result["manifest_path"]).read_text())
+    for floor in manifest["floors"]:
+        floor["image_path"] = f"Z:\\unavailable\\{Path(floor['image_path']).name}"
+        floor["annotation_path"] = f"Z:\\unavailable\\{Path(floor['annotation_path']).name}"
+    val_shard = next((output / "annotations" / "val").glob("*.json"))
+    shard_payload = json.loads(val_shard.read_text())
+    shard_payload["image"]["file_name"] = f"Z:\\unavailable\\{Path(shard_payload['image']['file_name']).name}"
+    val_shard.write_text(json.dumps(shard_payload))
+    Path(result["manifest_path"]).write_text(json.dumps(manifest))
+    dataset = CocoRLEMaskDataset(result["manifest_path"], output / "images", split="val")
+    assert len(dataset) == 1
+    floor = dataset.images[0]
+    shard = dataset._shard_path(floor)
+    assert shard.is_file()
+    image_row = json.loads(shard.read_text())["image"]
+    assert dataset._image_path(floor, image_row).is_file()

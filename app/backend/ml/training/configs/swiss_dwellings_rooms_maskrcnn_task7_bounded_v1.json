@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "run_id": "swiss-dwellings-rooms-maskrcnn-r50fpnv2-task7-bounded-v1",
+  "status": "FROZEN_NOT_STARTED",
+  "architecture": {
+    "family": "Mask R-CNN",
+    "implementation": "torchvision.maskrcnn_resnet50_fpn_v2",
+    "backbone": "ResNet-50-FPN-v2",
+    "num_classes_including_background": 15,
+    "input_min_size": 1024,
+    "input_max_size": 1600,
+    "preserve_aspect_ratio": true
+  },
+  "dataset": {
+    "version": "swiss-dwellings-takeoff-training-v1",
+    "adapter_version": "swiss-dwellings-rooms-maskrcnn-coco-rle-full-v1",
+    "adapter_manifest_filename": "full-adapter-manifest.json",
+    "adapter_manifest_sha256": "61966eb947ba0ffc2dbc094c33142246b2be3a9cdba085c9f0cb36e93279ce29",
+    "source_training_manifest_sha256": "6375b709932223b328de146282549807c4e2555526d4a2654ff216c68b377c4b",
+    "splits": {"train": 11337, "val": 1362, "test": 1203},
+    "buildings": {"train": 2596, "val": 309, "test": 278},
+    "authoritative_instances": 495835,
+    "hole_instances": 7669,
+    "intentional_negative_floors": 4,
+    "test_policy": "LOCKED_UNTOUCHED_UNTIL_FINAL_EVALUATION"
+  },
+  "taxonomy": [
+    "bedroom", "bathroom", "kitchen", "living", "living_dining",
+    "corridor", "storage", "balcony", "office", "utility", "stairs",
+    "entry_lobby", "generic_room", "shaft"
+  ],
+  "initialization": {
+    "artifact": "maskrcnn_resnet50_fpn_v2_coco-73cbd019.pth",
+    "source": "https://download.pytorch.org/models/maskrcnn_resnet50_fpn_v2_coco-73cbd019.pth",
+    "sha256": "73cbd0190fcbe3ba339921fbce2c3a0b6bb9126c9a133c85e43a2a8e060a109e",
+    "policy": "load complete COCO checkpoint before replacing predictors with 15-class heads"
+  },
+  "runtime": {
+    "python": "3.12",
+    "torch": "2.5.1+cu121",
+    "torchvision": "0.20.1+cu121",
+    "numpy": "2.0.2",
+    "torchmetrics": "1.6.1",
+    "pycocotools": "2.0.10",
+    "minimum_gpu": "NVIDIA T4 16 GB",
+    "mixed_precision": true,
+    "deterministic_algorithms": true,
+    "cudnn_benchmark": false,
+    "seed": 42,
+    "num_workers": 2
+  },
+  "training": {
+    "max_epochs": 12,
+    "batch_size_per_gpu": 1,
+    "gradient_accumulation_steps": 4,
+    "effective_batch_size": 4,
+    "optimizer": "AdamW",
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "gradient_clip_norm": 5.0,
+    "scheduler": "linear_warmup_then_cosine",
+    "warmup_optimizer_steps": 1000,
+    "sampling": "deterministic_uniform_floor_sampling",
+    "class_weights": null,
+    "negative_floor_policy": "preserve all intentional negatives",
+    "checkpoint_every_epochs": 1,
+    "checkpoint_every_optimizer_steps": null,
+    "checkpoint_retention": 3,
+    "resume_required": true
+  },
+  "augmentation": {
+    "horizontal_flip_probability": 0.5,
+    "vertical_flip_probability": 0.5,
+    "rotation_degrees": 0,
+    "crop": false,
+    "perspective": false,
+    "elastic": false,
+    "color_jitter": false
+  },
+  "evaluation": {
+    "validation_every_epochs": 1,
+    "selection_metric": "val_mask_map_50_95",
+    "score_threshold": 0.5,
+    "early_stopping": {
+      "enabled": true,
+      "minimum_epochs": 6,
+      "patience_epochs": 4,
+      "minimum_improvement": 0.002
+    },
+    "metrics": [
+      "mask_map_50", "mask_map_50_95", "per_class_precision",
+      "per_class_recall", "per_class_iou", "per_class_dice",
+      "room_count_mae", "room_count_mape", "validation_loss"
+    ]
+  },
+  "acceptance": {
+    "scope": "Swiss geometry-domain pretraining candidate; not production promotion",
+    "mask_map_50_min": 0.70,
+    "mask_map_50_95_min": 0.45,
+    "mean_matched_iou_min": 0.65,
+    "mean_dice_min": 0.78,
+    "macro_recall_min": 0.70,
+    "minimum_supported_class_recall": 0.40,
+    "room_count_mape_max": 0.10,
+    "finite_losses_required": true,
+    "zero_dataset_reconciliation_errors_required": true,
+    "test_split_untouched_required": true
+  },
+  "output": {
+    "kaggle_path": "/kaggle/working/takeoff-training/swiss-dwellings-rooms-maskrcnn-r50fpnv2-task7-bounded-v1",
+    "external_archive_path": "E:\\Takeoff_datasets\\swiss_dwellings\\training\\runs\\swiss-dwellings-rooms-maskrcnn-r50fpnv2-task7-bounded-v1",
+    "artifact_prefix": "takeoff-rooms-maskrcnn-r50fpnv2-swiss-pretrain-v1"
+  }
+}

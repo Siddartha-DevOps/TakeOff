@@ -1,0 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1
+torchvision==0.20.1
+torchmetrics[detection]==1.6.1
+pycocotools==2.0.10
+numpy==2.0.2
