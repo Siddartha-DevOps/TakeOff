@@ -95,6 +95,28 @@ async def analyze_drawing(
     require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
 
+    # Explicit test-only execution keeps the browser acceptance test on the
+    # real upload/rasterization/persistence API without requiring Redis or a
+    # GPU service. Production remains durable-Celery-only.
+    from analysis_jobs import analysis_disabled
+    if analysis_disabled():
+        if os.environ.get("ENVIRONMENT", "").lower() != "test":
+            raise HTTPException(status_code=503, detail="Background analysis is disabled")
+        await _run_ai_analysis(
+            drawing.id,
+            drawing.file_path,
+            db,
+            page_number=drawing.page_number or 0,
+            raise_errors=True,
+        )
+        return {
+            "status": "completed",
+            "drawing_id": drawing_id,
+            "async_mode": "test-sync",
+            "job_id": None,
+            "message": "AI analysis completed in the test harness.",
+        }
+
     # Celery is preferred when Redis is configured. Otherwise a database-
     # recoverable single worker persists the job before enqueueing and resumes
     # unfinished rows after restart. Never retain this request's DB session in

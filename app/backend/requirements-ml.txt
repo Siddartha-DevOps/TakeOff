@@ -15,6 +15,7 @@
 
 # --- core deep-learning stack --------------------------------------------
 torch>=2.2,<2.7
+torchvision>=0.17,<0.22       # Mask R-CNN R50-FPN v2 serving/training
 ultralytics>=8.2,<9            # YOLOv8/v11-seg train + predict
 opencv-python-headless>=4.9,<5 # rasterization / preprocessing (cv2)
 pillow>=10.2                   # image IO

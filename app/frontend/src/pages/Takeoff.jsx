@@ -447,7 +447,9 @@ export default function Takeoff() {
           } catch { quantities = []; }
           return {
             rooms: det.rooms || [], walls: det.walls || [], doors: det.doors || [],
-            windows: det.windows || [], summary: det.summary || {},
+            windows: det.windows || [], mep: det.mep || [],
+            wall_segments: det.wall_segments || [], summary: det.summary || {},
+            ai_model_version: data.ai_model_version,
             quantities, method: 'raster',
             scale: '—', sheet: drawing?.sheet_name || drawing?.original_filename || '',
             processingTimeMs: data.processing_time_ms || 0,

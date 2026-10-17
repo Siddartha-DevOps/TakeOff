@@ -35,6 +35,7 @@ from .engine import (
     TakeoffAnalysis,
 )
 from .remote_space import RemoteInferenceError, RemoteSpaceInference
+from .maskrcnn import MaskRCNNInference, ROOM_CLASSES, maskrcnn_output_to_detections
 
 __all__ = [
     "CLASSES",
@@ -46,4 +47,7 @@ __all__ = [
     "TakeoffAnalysis",
     "RemoteInferenceError",
     "RemoteSpaceInference",
+    "MaskRCNNInference",
+    "ROOM_CLASSES",
+    "maskrcnn_output_to_detections",
 ]
