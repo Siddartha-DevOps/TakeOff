@@ -56,7 +56,12 @@ function ManualTakeoffOverlay({
   const dragDeltaRef = useRef(null);
   const dragPreviewRef = useRef(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
-  const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
+  // AI detections and hand-drawn takeoffs intentionally share the same
+  // Annotation model.  Rendering only `source === 'manual'` made persisted AI
+  // rooms invisible and, more importantly, impossible for an estimator to
+  // correct.  Rejected annotations remain audit/history records and must stay
+  // out of the active overlay.
+  const editableAnnotations = annotations.filter((annotation) => !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
 
   useEffect(() => {
@@ -173,7 +178,7 @@ function ManualTakeoffOverlay({
 
   return (
     <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
-      {manualAnnotations.map(renderShape)}
+      {editableAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
           <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
@@ -299,7 +304,7 @@ export default function DrawingRenderer({
 
   const snapManualPoint = useCallback((point, anchor = null, excludedId = null) => {
     const vertices = annotationsRef.current
-      .filter((annotation) => annotation.source === 'manual' && annotation.id !== excludedId)
+      .filter((annotation) => !annotation.meta?.rejected && annotation.id !== excludedId)
       .flatMap((annotation) => annotation.geometry || []);
     return snapPoint(point, {
       anchor,
