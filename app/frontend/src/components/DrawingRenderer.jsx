@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -274,6 +274,19 @@ export default function DrawingRenderer({
   const onManualAnnotationRef = useRef(onManualAnnotation);
   const annotationsRef = useRef(annotations);
   const snapToleranceRef = useRef(8);
+  // react-pdf reloads whenever the `file` object identity changes. Keep this
+  // stable across tool/annotation state updates so selecting an overlay cannot
+  // put a completed page back behind an input-blocking "Loading PDF" layer.
+  const pdfFile = useMemo(() => {
+    if (!drawing?.id) return null;
+    const apiUrl = import.meta.env.VITE_BACKEND_URL
+      || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
+    const token = getAuthToken();
+    return {
+      url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`,
+      httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+    };
+  }, [drawing?.id]);
 
   useEffect(() => {
     calibratingRef.current = calibrating;
@@ -927,10 +940,6 @@ export default function DrawingRenderer({
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
-    const token = getAuthToken();
-    const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
-
     return (
       <div className="w-full h-full overflow-auto flex flex-col items-center bg-slate-800">
         {/* PDF Controls */}
@@ -988,11 +997,11 @@ export default function DrawingRenderer({
           }}
         >
           <Document
-            file={fileUrl}
+            file={pdfFile}
             onLoadSuccess={onDocumentLoadSuccess}
             onLoadError={onDocumentLoadError}
             loading={
-              <div className="flex items-center justify-center p-8">
+              <div className="flex items-center justify-center p-8 pointer-events-none">
                 <div className="text-white text-sm">Loading PDF...</div>
               </div>
             }
