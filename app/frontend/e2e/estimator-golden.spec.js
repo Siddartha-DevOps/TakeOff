@@ -181,9 +181,9 @@ test.describe('TakeOff estimator golden workflow', () => {
     expect((await annotationsResponse).ok()).toBeTruthy();
     await expect(page.getByText(/AI complete/)).toBeVisible({ timeout: 45_000 });
     await expectDisplayedQuantity(page, 'Manual area', editedArea);
-    await expect(page.locator('[data-annotation-type="area"]')).toHaveCount(1);
-    await expect(page.locator('[data-annotation-type="line"]')).toHaveCount(1);
-    await expect(page.locator('[data-annotation-type="count"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-source="manual"][data-annotation-type="area"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-source="manual"][data-annotation-type="line"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-source="manual"][data-annotation-type="count"]')).toHaveCount(1);
 
     for (const format of ['CSV', 'Excel']) {
       const downloadPromise = page.waitForEvent('download');

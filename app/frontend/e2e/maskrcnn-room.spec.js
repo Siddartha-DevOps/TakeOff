@@ -38,7 +38,7 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     const projection = await initialSave;
     expect(projection.quantities.find((row) => row.item === 'living area')?.quantity).toBeGreaterThan(0);
 
-    const room = page.locator('[data-annotation-type="area"]').first();
+    const room = page.locator('[data-annotation-source="ai"][data-annotation-type="area"]').first();
     await expect(room).toBeVisible();
     const pathData = await room.getByTestId('manual-annotation-shape').getAttribute('d');
     expect((pathData.match(/M /g) || []).length).toBeGreaterThanOrEqual(2);
@@ -62,7 +62,7 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     expect(correctedArea).not.toBe(originalArea);
 
     await page.reload();
-    await expect(page.locator('[data-annotation-type="area"]')).toHaveCount(1);
+    await expect(page.locator('[data-annotation-source="ai"][data-annotation-type="area"]')).toHaveCount(1);
     const persistedQuantity = page.locator('[data-quantity-item="living area"] .mono');
     await expect.poll(async () => Number((await persistedQuantity.innerText()).replaceAll(',', ''))).toBeCloseTo(correctedArea, 3);
 
@@ -78,7 +78,7 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     if (projectId) {
       await request.delete(`${API_URL}/api/projects/${projectId}`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
-      });
+      }).catch(() => {});
     }
   }
 });

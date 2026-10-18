@@ -140,7 +140,7 @@ function ManualTakeoffOverlay({
     const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
 
     return (
-      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
+      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-annotation-source={annotation.source} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
         {annotation.type === 'area' && (
           <path data-testid="manual-annotation-shape" d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
             style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
