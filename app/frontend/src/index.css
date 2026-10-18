@@ -86,6 +86,20 @@ code, .mono {
     pointer-events: none;
 }
 
+/*
+ * The PDF is the visual base layer of the takeoff editor. Native PDF canvas,
+ * text, and link layers must not capture pointer input that belongs to scale
+ * calibration or editable takeoff overlays. Keep the layers rendered for
+ * visual fidelity and scope hit-testing changes to this editor surface only.
+ */
+.takeoff-pdf-surface .react-pdf__Page__canvas,
+.takeoff-pdf-surface .react-pdf__Page__textContent,
+.takeoff-pdf-surface .react-pdf__Page__annotations,
+.takeoff-pdf-surface .textLayer,
+.takeoff-pdf-surface .annotationLayer {
+    pointer-events: none;
+}
+
 /* Animations */
 @keyframes fade-up {
     from { opacity: 0; transform: translateY(20px); }

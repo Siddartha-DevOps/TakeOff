@@ -984,7 +984,7 @@ export default function DrawingRenderer({
           data-plan-ready={pageNativeSize ? 'true' : 'false'}
           data-renderer="pdf"
           data-calibrating={calibrating ? 'true' : 'false'}
-          className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
+          className={`takeoff-pdf-surface relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
