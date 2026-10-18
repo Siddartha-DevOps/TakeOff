@@ -43,7 +43,9 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     const pathData = await room.getByTestId('manual-annotation-shape').getAttribute('d');
     expect((pathData.match(/M /g) || []).length).toBeGreaterThanOrEqual(2);
 
-    await page.getByTitle('Select, move, or edit annotation vertices').click();
+    const selectTool = page.getByTitle('Select, move, or edit annotation vertices');
+    await selectTool.click();
+    await expect(selectTool).toHaveAttribute('aria-pressed', 'true');
     await room.getByTestId('manual-annotation-shape').click();
     const handle = room.getByTestId('manual-annotation-handle').first();
     const handleBox = await handle.boundingBox();

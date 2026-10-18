@@ -1006,16 +1006,7 @@ export default function DrawingRenderer({
               </div>
             }
           >
-            <Page
-              pageNumber={pageNumber}
-              scale={scale}
-              onLoadSuccess={onPageLoadSuccess}
-              // The takeoff canvas is an editor, not a PDF text/link viewer.
-              // react-pdf's auxiliary layers sit above the page canvas and
-              // otherwise intercept calibration and annotation pointer input.
-              renderTextLayer={false}
-              renderAnnotationLayer={false}
-            />
+            <Page pageNumber={pageNumber} scale={scale} onLoadSuccess={onPageLoadSuccess} />
           </Document>
           <CalibrationMarkers />
           {(() => {
