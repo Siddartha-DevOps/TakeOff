@@ -63,6 +63,10 @@ function ManualTakeoffOverlay({
   // out of the active overlay.
   const editableAnnotations = annotations.filter((annotation) => !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
+  const paintOrderedAnnotations = [
+    ...editableAnnotations.filter((annotation) => !selectedSet.has(annotation.id)),
+    ...editableAnnotations.filter((annotation) => selectedSet.has(annotation.id)),
+  ];
 
   // Install global drag listeners in the same commit as pointer-down. A
   // passive effect can miss a fast move/up sequence before it is registered.
@@ -180,7 +184,7 @@ function ManualTakeoffOverlay({
 
   return (
     <svg data-testid="manual-takeoff-overlay" data-dragging={drag ? 'true' : 'false'} className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
-      {editableAnnotations.map(renderShape)}
+      {paintOrderedAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
           <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
