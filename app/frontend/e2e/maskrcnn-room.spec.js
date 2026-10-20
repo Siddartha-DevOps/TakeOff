@@ -52,7 +52,16 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     const selectTool = page.getByTitle('Select, move, or edit annotation vertices');
     await selectTool.click();
     await expect(selectTool).toHaveAttribute('aria-pressed', 'true');
-    await room.getByTestId('manual-annotation-shape').click();
+    const roomShape = room.getByTestId('manual-annotation-shape');
+    const roomShapeBox = await roomShape.boundingBox();
+    expect(roomShapeBox).not.toBeNull();
+    // The authoritative room includes an interior hole at its bounding-box
+    // centre. Click a filled part of the room so the hole remains correctly
+    // non-interactive while the surrounding room is editable.
+    await roomShape.click({
+      position: { x: roomShapeBox.width * 0.1, y: roomShapeBox.height * 0.8 },
+    });
+    await expect(room).toHaveAttribute('data-selected', 'true');
     const handle = room.getByTestId('manual-annotation-handle').first();
     const handleBox = await handle.boundingBox();
     expect(handleBox).not.toBeNull();
