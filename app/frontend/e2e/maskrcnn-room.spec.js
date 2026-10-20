@@ -70,10 +70,12 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
       const value = saved.quantities.find((row) => row.item === 'living area')?.quantity;
       return value > 0 && value !== originalArea;
     });
-    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await handle.hover();
     await page.mouse.down();
+    await expect(page.getByTestId('manual-takeoff-overlay')).toHaveAttribute('data-dragging', 'true');
     await page.mouse.move(handleBox.x - 25, handleBox.y - 15, { steps: 5 });
     await page.mouse.up();
+    await expect(page.getByTestId('manual-takeoff-overlay')).toHaveAttribute('data-dragging', 'false');
     const corrected = await correctionSave;
     const correctedArea = corrected.quantities.find((row) => row.item === 'living area').quantity;
     expect(correctedArea).not.toBe(originalArea);

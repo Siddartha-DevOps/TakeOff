@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -64,7 +64,9 @@ function ManualTakeoffOverlay({
   const editableAnnotations = annotations.filter((annotation) => !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
 
-  useEffect(() => {
+  // Install global drag listeners in the same commit as pointer-down. A
+  // passive effect can miss a fast move/up sequence before it is registered.
+  useLayoutEffect(() => {
     if (!drag) return undefined;
     const handleMove = (event) => {
       const raw = planPointForScreen?.(event.clientX, event.clientY);
@@ -177,7 +179,7 @@ function ManualTakeoffOverlay({
   const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
 
   return (
-    <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+    <svg data-testid="manual-takeoff-overlay" data-dragging={drag ? 'true' : 'false'} className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
       {editableAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
