@@ -67,6 +67,57 @@ def _takeoff_result_for_job(db: Session, drawing_id: int, job_id: str | None):
     return result
 
 
+def _scale_detection_to_plan_space(detection: dict, scale_x: float, scale_y: float) -> None:
+    """Convert one raster-model detection to the drawing's canonical coordinates."""
+    if isinstance(detection.get("bbox"), list) and len(detection["bbox"]) == 4:
+        x1, y1, x2, y2 = detection["bbox"]
+        detection["bbox"] = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+    if isinstance(detection.get("polygon"), list):
+        detection["polygon"] = [
+            [point[0] * scale_x, point[1] * scale_y]
+            for point in detection["polygon"]
+        ]
+    if isinstance(detection.get("holes"), list):
+        detection["holes"] = [
+            [[point[0] * scale_x, point[1] * scale_y] for point in ring]
+            for ring in detection["holes"]
+        ]
+    if detection.get("area") is not None:
+        detection["area"] = float(detection["area"]) * scale_x * scale_y
+
+
+def _normalize_pdf_analysis_to_plan_space(
+    analysis, local_path: str, page_number: int, raster_path: str
+) -> None:
+    """Map PDF raster inference pixels back to native PDF points exactly.
+
+    Manual calibration, annotation editing, PostGIS geometry and exports all
+    use native PDF points. Model inference operates on a rendered bitmap, so
+    persisting its pixel coordinates directly both misplaces overlays and
+    overstates measured area. Derive the transform from actual dimensions
+    rather than assuming a render DPI.
+    """
+    if not str(local_path).lower().endswith(".pdf"):
+        return
+    import fitz
+    from PIL import Image
+
+    with fitz.open(local_path) as document:
+        if page_number < 0 or page_number >= len(document):
+            raise ValueError(f"PDF page {page_number} is out of range")
+        page_rect = document[page_number].rect
+    with Image.open(raster_path) as raster:
+        raster_width, raster_height = raster.size
+    if raster_width <= 0 or raster_height <= 0 or page_rect.width <= 0 or page_rect.height <= 0:
+        raise ValueError("PDF/raster dimensions must be positive")
+
+    scale_x = float(page_rect.width) / float(raster_width)
+    scale_y = float(page_rect.height) / float(raster_height)
+    for collection_name in ("rooms", "walls", "doors", "windows", "balconies"):
+        for detection in getattr(analysis, collection_name, []) or []:
+            _scale_detection_to_plan_space(detection, scale_x, scale_y)
+
+
 # ── NEW: Real AI analyze endpoint ────────────────────────────────
 @router.post("/drawings/{drawing_id}/analyze",
              dependencies=[Depends(RateLimit("ai_analyze", limit=20, window_s=60))])
@@ -94,6 +145,28 @@ async def analyze_drawing(
 
     require_confirmed_scale(drawing)
     _require_ai_takeoff_entitlement(db, current_user.organization_id)
+
+    # Explicit test-only execution keeps the browser acceptance test on the
+    # real upload/rasterization/persistence API without requiring Redis or a
+    # GPU service. Production remains durable-Celery-only.
+    from analysis_jobs import analysis_disabled
+    if analysis_disabled():
+        if os.environ.get("ENVIRONMENT", "").lower() != "test":
+            raise HTTPException(status_code=503, detail="Background analysis is disabled")
+        await _run_ai_analysis(
+            drawing.id,
+            drawing.file_path,
+            db,
+            page_number=drawing.page_number or 0,
+            raise_errors=True,
+        )
+        return {
+            "status": "completed",
+            "drawing_id": drawing_id,
+            "async_mode": "test-sync",
+            "job_id": None,
+            "message": "AI analysis completed in the test harness.",
+        }
 
     # Celery is preferred when Redis is configured. Otherwise a database-
     # recoverable single worker persists the job before enqueueing and resumes
@@ -212,6 +285,9 @@ async def _run_ai_analysis(
             try:
                 # Step 1: YOLOv8 inference
                 analysis = ai_engine.analyze(raster_path, drawing_id)
+                _normalize_pdf_analysis_to_plan_space(
+                    analysis, local_path, page_number, raster_path
+                )
                 report(65)
 
                 # Step 2: Spatial reasoning layer (room graph, quantities, scale)

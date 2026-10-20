@@ -24,7 +24,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: 'python -m uvicorn server:app --host 127.0.0.1 --port 8000',
+      command: 'python -m uvicorn testsupport.maskrcnn_e2e_server:app --host 127.0.0.1 --port 8000',
       cwd: '../backend',
       url: `${backendUrl}/api/live`,
       timeout: 120_000,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -56,10 +56,21 @@ function ManualTakeoffOverlay({
   const dragDeltaRef = useRef(null);
   const dragPreviewRef = useRef(null);
   const toScreen = ([x, y]) => screenPointFor(x * planScale, y * planScale);
-  const manualAnnotations = annotations.filter((annotation) => annotation.source === 'manual' && !annotation.meta?.rejected);
+  // AI detections and hand-drawn takeoffs intentionally share the same
+  // Annotation model.  Rendering only `source === 'manual'` made persisted AI
+  // rooms invisible and, more importantly, impossible for an estimator to
+  // correct.  Rejected annotations remain audit/history records and must stay
+  // out of the active overlay.
+  const editableAnnotations = annotations.filter((annotation) => !annotation.meta?.rejected);
   const selectedSet = new Set(selectedAnnotationIds);
+  const paintOrderedAnnotations = [
+    ...editableAnnotations.filter((annotation) => !selectedSet.has(annotation.id)),
+    ...editableAnnotations.filter((annotation) => selectedSet.has(annotation.id)),
+  ];
 
-  useEffect(() => {
+  // Install global drag listeners in the same commit as pointer-down. A
+  // passive effect can miss a fast move/up sequence before it is registered.
+  useLayoutEffect(() => {
     if (!drag) return undefined;
     const handleMove = (event) => {
       const raw = planPointForScreen?.(event.clientX, event.clientY);
@@ -135,7 +146,7 @@ function ManualTakeoffOverlay({
     const label = `${measuredValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${MANUAL_STYLE[annotation.type].unit}`;
 
     return (
-      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
+      <g key={annotation.id} data-testid="manual-annotation" data-annotation-id={annotation.id} data-annotation-type={annotation.type} data-annotation-source={annotation.source} data-selected={selectedSet.has(annotation.id) ? 'true' : 'false'}>
         {annotation.type === 'area' && (
           <path data-testid="manual-annotation-shape" d={[`M ${points.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`, ...(annotation.holes || []).map((ring) => `M ${ring.map(toScreen).filter(Boolean).map((p) => `${p.x} ${p.y}`).join(' L ')} Z`)].join(' ')} fill={style.fill} fillOpacity="0.2" fillRule="evenodd" stroke={style.stroke} strokeWidth={selectedSet.has(annotation.id) ? "4" : "2"}
             style={{ pointerEvents: tool === 'select' ? 'all' : 'none', cursor: tool === 'select' ? 'move' : undefined }}
@@ -172,8 +183,8 @@ function ManualTakeoffOverlay({
   const previewPoints = previewPlanPoints.map(toScreen).filter(Boolean);
 
   return (
-    <svg data-testid="manual-takeoff-overlay" className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
-      {manualAnnotations.map(renderShape)}
+    <svg data-testid="manual-takeoff-overlay" data-dragging={drag ? 'true' : 'false'} className="fixed inset-0 pointer-events-none z-[45]" width="100%" height="100%" aria-hidden="true">
+      {paintOrderedAnnotations.map(renderShape)}
       {(tool === 'area' || tool === 'hole') && previewPoints.length > 0 && (
         <>
           <polyline points={previewPoints.map((p) => `${p.x},${p.y}`).join(' ')} fill={draftPoints.length >= 3 ? '#ec4899' : 'none'} fillOpacity="0.12" stroke="#ec4899" strokeWidth="2" strokeDasharray="6 4" />
@@ -269,6 +280,19 @@ export default function DrawingRenderer({
   const onManualAnnotationRef = useRef(onManualAnnotation);
   const annotationsRef = useRef(annotations);
   const snapToleranceRef = useRef(8);
+  // react-pdf reloads whenever the `file` object identity changes. Keep this
+  // stable across tool/annotation state updates so selecting an overlay cannot
+  // put a completed page back behind an input-blocking "Loading PDF" layer.
+  const pdfFile = useMemo(() => {
+    if (!drawing?.id) return null;
+    const apiUrl = import.meta.env.VITE_BACKEND_URL
+      || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
+    const token = getAuthToken();
+    return {
+      url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`,
+      httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+    };
+  }, [drawing?.id]);
 
   useEffect(() => {
     calibratingRef.current = calibrating;
@@ -299,7 +323,7 @@ export default function DrawingRenderer({
 
   const snapManualPoint = useCallback((point, anchor = null, excludedId = null) => {
     const vertices = annotationsRef.current
-      .filter((annotation) => annotation.source === 'manual' && annotation.id !== excludedId)
+      .filter((annotation) => !annotation.meta?.rejected && annotation.id !== excludedId)
       .flatMap((annotation) => annotation.geometry || []);
     return snapPoint(point, {
       anchor,
@@ -922,10 +946,6 @@ export default function DrawingRenderer({
 
   // Render PDF
   if (drawing.file_type === 'PDF') {
-    const apiUrl = import.meta.env.VITE_BACKEND_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin);
-    const token = getAuthToken();
-    const fileUrl = { url: `${apiUrl}/api/uploads/drawings/${drawing.id}/file`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : {} };
-
     return (
       <div className="w-full h-full overflow-auto flex flex-col items-center bg-slate-800">
         {/* PDF Controls */}
@@ -970,7 +990,7 @@ export default function DrawingRenderer({
           data-plan-ready={pageNativeSize ? 'true' : 'false'}
           data-renderer="pdf"
           data-calibrating={calibrating ? 'true' : 'false'}
-          className={`relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
+          className={`takeoff-pdf-surface relative inline-block ${calibrating || commentMode || manualTool ? 'cursor-crosshair' : ''}`}
           onClick={(e) => {
             if (!pageWrapRef.current || !pageNativeSize) return;
             const rect = pageWrapRef.current.getBoundingClientRect();
@@ -983,11 +1003,11 @@ export default function DrawingRenderer({
           }}
         >
           <Document
-            file={fileUrl}
+            file={pdfFile}
             onLoadSuccess={onDocumentLoadSuccess}
             onLoadError={onDocumentLoadError}
             loading={
-              <div className="flex items-center justify-center p-8">
+              <div className="flex items-center justify-center p-8 pointer-events-none">
                 <div className="text-white text-sm">Loading PDF...</div>
               </div>
             }

@@ -5,8 +5,18 @@
 // After this runs, an AI-produced shape and a hand-drawn shape are the same
 // Annotation object — there is no separate "AI layer".
 
-import { getRoomColor } from '../mock/mockAI';
-import { computeMeasuredValue, rectFromBbox } from './geometry';
+import { computeMeasuredValue, rectFromBbox } from './geometry.js';
+
+const ROOM_COLORS = {
+  living: '#818cf8', living_dining: '#818cf8', bedroom: '#c4b5fd',
+  bathroom: '#22d3ee', kitchen: '#fbbf24', balcony: '#34d399',
+  office: '#34d399', corridor: '#94a3b8', storage: '#cbd5e1',
+  utility: '#fb7185', stairs: '#f472b6', entry_lobby: '#fcd34d',
+};
+
+function getRoomColor(label) {
+  return ROOM_COLORS[String(label || '').toLowerCase()] || '#818cf8';
+}
 
 function finalize(annotation, measurementContext) {
   annotation.measuredValue = computeMeasuredValue(annotation, measurementContext);
@@ -14,10 +24,17 @@ function finalize(annotation, measurementContext) {
 }
 
 function roomToAnnotation(room, detectionMeta, measurementContext) {
+  const polygon = Array.isArray(room.polygon) && room.polygon.length >= 3
+    ? room.polygon
+    : rectFromBbox(room.bbox);
+  const holes = Array.isArray(room.holes)
+    ? room.holes.filter((ring) => Array.isArray(ring) && ring.length >= 3)
+    : [];
   return finalize({
     id: room.id,
     type: 'area',
-    geometry: rectFromBbox(room.bbox),
+    geometry: polygon,
+    holes,
     style: { stroke: getRoomColor(room.label), fill: getRoomColor(room.label), fillOpacity: 0.22 },
     layerId: 'rooms',
     source: 'ai',

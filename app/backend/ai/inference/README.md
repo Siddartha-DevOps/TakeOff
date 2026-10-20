@@ -15,6 +15,7 @@ import the same names (`TakeoffAIInference`, `TakeoffAnalysis`, `CLASSES`) from
 | Module | Mission item | What it does | Heavy deps |
 |--------|--------------|--------------|------------|
 | `engine.py` | #1 (mock removal), multi-model | `InferenceEngine` + `ModelRegistry` (task→model), `ModelUnavailableError`, result partitioning/quantities | ultralytics/torch/cv2 (lazy) |
+| `maskrcnn.py` | room instance masks | `MaskRCNNInference` converts Torchvision boxes/classes/masks into the existing takeoff contract, including polygon holes | torch/torchvision (lazy) |
 | `device.py` | #8 GPU/CPU | `resolve_device("auto"\|"cpu"\|"cuda:N"\|"mps")` with injectable probe | torch (lazy) |
 | `confidence.py` | #9 confidence | per-class thresholds, NMS, temperature calibration, ECE | none |
 | `tiling.py` | large drawings | overlapping tile grid + cross-seam NMS merge | none |

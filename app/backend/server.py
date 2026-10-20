@@ -66,7 +66,6 @@ try:
         print(f"[TakeOff.ai] AI engine configured: {ai_engine.backend}")
     else:
         from ai.inference.artifacts import provision_hf_model
-        from ai.inference_api import TakeoffAIInference
 
         _configured_model_path = Path(os.environ.get("AI_MODEL_PATH", "models/best.pt"))
         AI_MODEL_PATH = str(
@@ -82,7 +81,21 @@ try:
                 expected_sha256=os.environ.get("AI_MODEL_SHA256", ""),
                 token=os.environ.get("HF_TOKEN"),
             )
-        ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
+        if os.environ.get("AI_INFERENCE_BACKEND", "yolo").lower() == "maskrcnn":
+            from ai.inference import MaskRCNNInference
+
+            ai_engine = MaskRCNNInference(
+                AI_MODEL_PATH,
+                score_threshold=float(os.environ.get("AI_SCORE_THRESHOLD", "0.5")),
+                mask_threshold=float(os.environ.get("AI_MASK_THRESHOLD", "0.5")),
+                model_version=os.environ.get(
+                    "AI_MODEL_VERSION", "maskrcnn-resnet50-fpn-v2-rooms-v1"
+                ),
+            )
+        else:
+            from ai.inference_api import TakeoffAIInference
+
+            ai_engine = TakeoffAIInference.get_instance(AI_MODEL_PATH)
         status = "loaded" if ai_engine.available else "unavailable"
         print(f"[TakeOff.ai] AI engine {status}: {AI_MODEL_PATH}")
 except Exception as e:

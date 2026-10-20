@@ -31,6 +31,23 @@ def _bbox_to_wkt_polygon(bbox: list) -> WKTElement:
     return WKTElement(f"POLYGON(({ring}))", srid=GEOM_SRID)
 
 
+def _room_to_wkt_polygon(room: dict) -> WKTElement:
+    """Prefer authoritative mask rings; retain bbox compatibility for YOLO."""
+    polygon = room.get("polygon")
+    if not polygon or len(polygon) < 3:
+        return _bbox_to_wkt_polygon(room["bbox"])
+
+    def ring_text(points):
+        closed = list(points)
+        if closed[0] != closed[-1]:
+            closed.append(closed[0])
+        return ", ".join(f"{x} {y}" for x, y in closed)
+
+    rings = [ring_text(polygon)]
+    rings.extend(ring_text(hole) for hole in (room.get("holes") or []) if len(hole) >= 3)
+    return WKTElement(f"POLYGON({', '.join(f'({ring})' for ring in rings)})", srid=GEOM_SRID)
+
+
 def _points_to_wkt_linestring(points: list) -> WKTElement:
     coords = ", ".join(f"{x} {y}" for x, y in points)
     return WKTElement(f"LINESTRING({coords})", srid=GEOM_SRID)
@@ -67,7 +84,7 @@ def persist_detection_geometries(
     created = 0
 
     for room in detection.get("rooms") or []:
-        geom = _bbox_to_wkt_polygon(room["bbox"])
+        geom = _room_to_wkt_polygon(room)
         det = models.Detection(
             project_id=project_id,
             drawing_id=drawing_id,
@@ -82,7 +99,7 @@ def persist_detection_geometries(
         db.flush()  # need det.id for the Measurement FK
         db.add(models.Measurement(
             detection_id=det.id,
-            value=room.get("area", 0),
+            value=room.get("area_sqft") if room.get("area_sqft") is not None else room.get("area", 0),
             unit="sf",
             geom=geom,
         ))
