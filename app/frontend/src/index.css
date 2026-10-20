@@ -92,6 +92,8 @@ code, .mono {
  * calibration or editable takeoff overlays. Keep the layers rendered for
  * visual fidelity and scope hit-testing changes to this editor surface only.
  */
+.takeoff-pdf-surface .react-pdf__Document,
+.takeoff-pdf-surface .react-pdf__Page,
 .takeoff-pdf-surface .react-pdf__Page__canvas,
 .takeoff-pdf-surface .react-pdf__Page__textContent,
 .takeoff-pdf-surface .react-pdf__Page__annotations,

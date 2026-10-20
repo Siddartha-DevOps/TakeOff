@@ -28,6 +28,12 @@ test('raster upload produces calibrated editable Mask R-CNN room overlay and exp
     });
     await page.getByRole('button', { name: /upload 1 file/i }).click();
     await expect(page.getByTestId('plan-surface')).toHaveAttribute('data-plan-ready', 'true', { timeout: 30_000 });
+    const pdfBaseLayers = page.locator(
+      '.takeoff-pdf-surface .react-pdf__Document, .takeoff-pdf-surface .react-pdf__Page, .takeoff-pdf-surface .react-pdf__Page__canvas',
+    );
+    await expect(pdfBaseLayers).toHaveCount(3);
+    expect(await pdfBaseLayers.evaluateAll((elements) =>
+      elements.every((element) => getComputedStyle(element).pointerEvents === 'none'))).toBeTruthy();
 
     await page.getByRole('button', { name: /calibrate scale/i }).click();
     await clickPlan(page, [[0.2, 0.8], [0.8, 0.8]]);
