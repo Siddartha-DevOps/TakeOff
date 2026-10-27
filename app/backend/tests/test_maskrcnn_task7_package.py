@@ -149,6 +149,31 @@ def test_source_bundle_is_byte_deterministic(tmp_path):
     assert hashlib.sha256(one.read_bytes()).digest() == hashlib.sha256(two.read_bytes()).digest()
 
 
+def test_task7_trainer_bundle_is_reproducible_and_content_addressed(tmp_path):
+    repo = tmp_path / "repo"
+    for index, relative in enumerate(package.TASK7_KAGGLE_SOURCE_FILES):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"source-{index}\n", encoding="utf-8")
+    one = package.build_task7_trainer_bundle(
+        repo, tmp_path / "one.zip", source_commit="abc123",
+    )
+    two = package.build_task7_trainer_bundle(
+        repo, tmp_path / "two.zip", source_commit="abc123",
+    )
+    assert one["archive_sha256"] == two["archive_sha256"]
+    assert one["manifest_sha256"] == two["manifest_sha256"]
+    assert one["source_file_count"] == len(package.TASK7_KAGGLE_SOURCE_FILES)
+    assert one["archive_file_count"] == len(package.TASK7_KAGGLE_SOURCE_FILES) + 1
+    assert one["zip_crc"] == "PASS"
+    with zipfile.ZipFile(tmp_path / "one.zip") as archive:
+        manifest = json.loads(archive.read("PACKAGE_MANIFEST.json"))
+        assert manifest["source_commit"] == "abc123"
+        assert [row["path"] for row in manifest["files"]] == package.TASK7_KAGGLE_SOURCE_FILES
+        for row in manifest["files"]:
+            assert hashlib.sha256(archive.read(row["path"])).hexdigest() == row["sha256"]
+
+
 def test_external_package_manifest_is_content_addressed(tmp_path):
     artifact = tmp_path / "artifact.bin"
     artifact.write_bytes(b"verified")

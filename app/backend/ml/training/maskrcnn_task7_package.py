@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import zipfile
+import argparse
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,6 +16,17 @@ EXPECTED_TAXONOMY = [
     "entry_lobby", "generic_room", "shaft",
 ]
 EXPECTED_SPLITS = {"train": 11337, "val": 1362, "test": 1203}
+TASK7_KAGGLE_SOURCE_FILES = [
+    "app/backend/ml/__init__.py",
+    "app/backend/ml/training/__init__.py",
+    "app/backend/ml/training/maskrcnn_rooms.py",
+    "app/backend/ml/training/maskrcnn_task7_ops.py",
+    "app/backend/ml/training/maskrcnn_task7_package.py",
+    "app/backend/ml/training/maskrcnn_task7_train.py",
+    "app/backend/ml/training/requirements-maskrcnn-task7.txt",
+    "app/backend/ml/training/TASK7_KAGGLE_OPERATIONS.md",
+    "app/backend/ml/training/configs/swiss_dwellings_rooms_maskrcnn_task7_bounded_v1.json",
+]
 
 
 def sha256_file(path: Path) -> str:
@@ -207,3 +219,74 @@ def write_kaggle_package_manifest(path: str | Path, artifacts: dict[str, str | P
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def build_task7_trainer_bundle(
+    repo_root: str | Path, output_path: str | Path, *, source_commit: str,
+) -> dict:
+    """Build a byte-reproducible, source-only Task 7 Kaggle bundle."""
+    repo_root, output_path = Path(repo_root), Path(output_path)
+    if not source_commit or any(character.isspace() for character in source_commit):
+        raise ValueError("source_commit must be a non-empty Git revision")
+    rows = []
+    for relative in TASK7_KAGGLE_SOURCE_FILES:
+        source = repo_root / relative
+        if not source.is_file():
+            raise FileNotFoundError(f"missing Task 7 package source: {source}")
+        rows.append({
+            "path": relative.replace("\\", "/"),
+            "bytes": source.stat().st_size,
+            "sha256": sha256_file(source),
+        })
+    manifest = {
+        "schema_version": 2,
+        "package": "takeoff-task7-m76-kaggle-trainer",
+        "source_commit": source_commit,
+        "files": rows,
+    }
+    manifest_bytes = (
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(
+        output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9,
+    ) as archive:
+        for row in rows:
+            source = repo_root / row["path"]
+            info = zipfile.ZipInfo(row["path"], (2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, source.read_bytes())
+        info = zipfile.ZipInfo("PACKAGE_MANIFEST.json", (2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        archive.writestr(info, manifest_bytes)
+    with zipfile.ZipFile(output_path) as archive:
+        bad_member = archive.testzip()
+        if bad_member:
+            raise RuntimeError(f"Task 7 bundle CRC failure: {bad_member}")
+    return {
+        "archive": str(output_path.resolve()),
+        "archive_sha256": sha256_file(output_path),
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "source_commit": source_commit,
+        "source_file_count": len(rows),
+        "archive_file_count": len(rows) + 1,
+        "zip_crc": "PASS",
+    }
+
+
+def _main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Build the Task 7 Kaggle trainer bundle")
+    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--source-commit", required=True)
+    args = parser.parse_args(argv)
+    print(json.dumps(build_task7_trainer_bundle(
+        args.repo_root, args.output, source_commit=args.source_commit,
+    ), indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

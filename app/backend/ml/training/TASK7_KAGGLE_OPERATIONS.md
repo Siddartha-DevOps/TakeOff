@@ -5,6 +5,16 @@ adapter, taxonomy, splits, initialization, or acceptance criteria. Generated
 checkpoints, logs, locks, and backup state remain under `/kaggle/working` and
 must not be committed.
 
+Build the source-only Kaggle trainer from a clean Git commit. The builder uses
+fixed ZIP metadata and embeds `PACKAGE_MANIFEST.json` with the source commit
+and SHA-256 for every packaged source file:
+
+```bash
+python -m ml.training.maskrcnn_task7_package \
+  --repo-root "$REPO" --source-commit "$(git -C "$REPO" rev-parse HEAD)" \
+  --output "$PACKAGE_DIR/takeoff-task7-m76-kaggle-trainer.zip"
+```
+
 ## Safe migration from the active legacy session
 
 Do not replace or stop the currently running process merely to adopt this
