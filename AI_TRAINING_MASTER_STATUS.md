@@ -512,8 +512,46 @@ The preflight loaded three checksum-verified real samples from the frozen adapte
 
 Mask R-CNN `maskrcnn_resnet50_fpn_v2` with 15 classes completed one training forward pass, produced all five finite losses, completed backward propagation, and performed one bounded SGD optimizer step. Total loss was 5.184700965881348. Peak GPU memory was 3.850 GiB allocated and 4.705 GiB reserved against 14.56 GiB available. A subsequent inference pass produced the required TakeOff `label`, `score`, `bbox`, and two-dimensional `mask` contract. The persisted report passed the committed strict evidence validator; it rejects missing dataset, loss, backward, optimizer, memory, inference, or no-training guarantees.
 
-This result proves framework/runtime compatibility and full-fidelity COCO-RLE adapter usability on the target GPU class. It is not model-accuracy evidence, does not promote a checkpoint, and does not authorize training by itself. Task 7 may now be planned or explicitly authorized, but no training has started.
+This result proves framework/runtime compatibility and full-fidelity COCO-RLE adapter usability on the target GPU class. It is not model-accuracy evidence and does not promote a checkpoint.
+
+### Task 7 bounded Mask R-CNN run (frozen, not started)
+
+The first bounded training configuration is frozen as
+`swiss-dwellings-rooms-maskrcnn-r50fpnv2-task7-bounded-v1`. It uses the exact
+full-adapter SHA-256 `61966eb947ba0ffc2dbc094c33142246b2be3a9cdba085c9f0cb36e93279ce29`
+and source-manifest SHA-256
+`6375b709932223b328de146282549807c4e2555526d4a2654ff216c68b377c4b`.
+The official torchvision COCO initialization artifact is pinned by SHA-256
+`73cbd0190fcbe3ba339921fbce2c3a0b6bb9126c9a133c85e43a2a8e060a109e`.
+
+The immutable split remains train 11,337 / validation 1,362 / locked test
+1,203. Model selection cannot access test labels. The 12-epoch cap uses
+Mask R-CNN ResNet-50-FPN-v2, 1024/1600 aspect-preserving resize, batch size 1,
+four-step accumulation, AdamW at 1e-4, 1,000-step warmup then cosine decay,
+AMP, deterministic seed 42, per-epoch validation/checkpoints, and validation
+mask mAP50-95 early stopping after a minimum six epochs (patience four,
+minimum delta 0.002).
+
+The best currently accessible durable recovery artifact is
+`siddarthareddyc/takeoff-task7-durable-checkpoints/checkpoint-progress.pt`
+with SHA-256
+`f798c447bf24293f27a14fec3f951e6962445dd863716421b2ed98db8167ee26`.
+Its reported cursor is epoch 0, next batch index 1,216, with 304 optimizer
+attempts, 301 successful updates and three AMP-skipped attempts. This is a
+recoverable partial run, not a completed or evaluated model. A previously
+observed 510-update checkpoint is not currently accessible and must not be
+assumed available.
+
+Swiss acceptance gates are mask mAP50 >= 0.70, mask mAP50-95 >= 0.45,
+matched mean IoU >= 0.65, Dice >= 0.78, macro recall >= 0.70, supported-class
+recall >= 0.40, count MAPE <= 10%, finite losses, and zero reconciliation
+errors. Passing these gates will establish geometry-pretraining quality only;
+it will not replace customer-domain golden evaluation for production.
 
 ## Required next action
 
-Seek explicit authorization and resource limits for Task 7 before launching any Mask R-CNN training. In parallel, obtain the rights-cleared, project-split customer-domain room dataset and untouched golden set required for eventual production promotion.
+Run the fail-closed, read-only resume preflight against the accessible durable
+checkpoint and its pinned SHA-256. Resume only after run identity, optimizer,
+scheduler, AMP scaler, RNG, deterministic data cursor, and remote checkpoint
+ordering all pass. The locked test split remains untouched until final
+evaluation.

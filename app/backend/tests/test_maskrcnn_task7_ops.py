@@ -1,4 +1,5 @@
 import json
+import hashlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,35 @@ def checkpoint(run_id="run", epoch=0, batch=100, updates=25, complete=False):
         "run_id": run_id, "epoch": epoch, "next_batch_index": batch,
         "optimizer_updates": updates, "epoch_complete": complete,
     }
+
+
+def resumable_checkpoint(*, batch=1216, updates=301, skipped=3):
+    payload = checkpoint(batch=batch, updates=updates)
+    payload.update({
+        "model": {"weight": "present"},
+        "optimizer": {"state": {}, "param_groups": [{"lr": 0.0001}]},
+        "scheduler": {"last_epoch": updates},
+        "scaler": {"scale": 8192.0},
+        "rng_state": {
+            "python": (3, (), None), "numpy": ("MT19937",),
+            "torch_cpu": b"cpu", "torch_cuda": [b"cuda"],
+        },
+        "optimizer_attempts": updates + skipped,
+        "skipped_optimizer_updates": skipped,
+    })
+    return payload
+
+
+def task7_config(path):
+    path.write_text(json.dumps({
+        "run_id": "run",
+        "runtime": {"seed": 42, "mixed_precision": True},
+        "dataset": {"splits": {"train": 11337}},
+        "training": {
+            "batch_size_per_gpu": 1, "gradient_accumulation_steps": 4,
+        },
+    }))
+    return path
 
 
 def test_checkpoint_order_and_regression_protection(tmp_path, monkeypatch):
@@ -64,6 +94,67 @@ def test_resume_requires_matching_run_id(tmp_path):
         ops.assert_resume_is_current(
             resume, tmp_path / "out", config,
             loader=lambda _: checkpoint(run_id="wrong"),
+        )
+
+
+def test_full_resume_preflight_reconciles_state_and_next_batch(tmp_path):
+    resume = tmp_path / "checkpoint-progress.pt"
+    resume.write_bytes(b"immutable-checkpoint")
+    sha256 = hashlib.sha256(resume.read_bytes()).hexdigest()
+    config = task7_config(tmp_path / "config.json")
+    payload = resumable_checkpoint()
+
+    report = ops.validate_resume_checkpoint(
+        resume, tmp_path / "output", config, expected_sha256=sha256,
+        loader=lambda _path: payload,
+    )
+
+    assert report["status"] == "PASS"
+    assert report["position"] == {
+        "run_id": "run", "epoch": 0, "next_batch_index": 1216,
+        "optimizer_updates": 301, "epoch_complete": False,
+    }
+    assert report["optimizer_attempts"] == 304
+    assert report["skipped_optimizer_updates"] == 3
+    assert report["scheduler_last_epoch"] == 301
+    assert report["next_batch_index_zero_based"] == 1216
+    assert report["next_display_batch"] == 1217
+    assert report["duplicate_training_batches"] == 0
+    assert report["skipped_training_batches"] == 0
+    assert all(report["restorable_state"].values())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda row: row["rng_state"].pop("torch_cpu"), "missing torch_cpu"),
+        (lambda row: row["scheduler"].update(last_epoch=509), "scheduler last_epoch"),
+        (lambda row: row.update(next_batch_index=2051), "optimizer boundary"),
+        (lambda row: row.update(optimizer_attempts=512), "cursor-derived"),
+    ],
+)
+def test_resume_preflight_rejects_incomplete_or_inconsistent_state(
+    tmp_path, mutation, message,
+):
+    resume = tmp_path / "checkpoint-progress.pt"
+    resume.write_bytes(b"immutable-checkpoint")
+    sha256 = hashlib.sha256(resume.read_bytes()).hexdigest()
+    payload = resumable_checkpoint()
+    mutation(payload)
+    with pytest.raises(ValueError, match=message):
+        ops.validate_resume_checkpoint(
+            resume, tmp_path / "output", task7_config(tmp_path / "config.json"),
+            expected_sha256=sha256, loader=lambda _path: payload,
+        )
+
+
+def test_resume_preflight_refuses_checkpoint_hash_mismatch(tmp_path):
+    resume = tmp_path / "checkpoint-progress.pt"
+    resume.write_bytes(b"immutable-checkpoint")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        ops.validate_resume_checkpoint(
+            resume, tmp_path / "output", task7_config(tmp_path / "config.json"),
+            expected_sha256="0" * 64, loader=lambda _path: resumable_checkpoint(),
         )
 
 

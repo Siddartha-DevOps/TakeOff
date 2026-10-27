@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -181,6 +182,127 @@ def assert_resume_is_current(
     return candidate
 
 
+def validate_resume_checkpoint(
+    resume: str | Path, output: str | Path, config: str | Path,
+    backup_state: str | Path | None = None, *, expected_sha256: str,
+    loader=None, remote_reference: CheckpointPosition | None = None,
+) -> dict:
+    """Validate all Task 7 resume state without constructing or training a model."""
+    resume = Path(resume)
+    if not resume.is_file():
+        raise FileNotFoundError(f"resume checkpoint does not exist: {resume}")
+    actual_sha256 = _sha256(resume)
+    if actual_sha256.lower() != expected_sha256.lower():
+        raise ValueError(
+            "resume checkpoint SHA-256 mismatch: "
+            f"expected {expected_sha256.lower()}, found {actual_sha256}"
+        )
+    if loader is None:
+        import torch
+
+        loader = lambda value: torch.load(value, map_location="cpu", weights_only=False)
+    payload = loader(resume)
+    if not isinstance(payload, Mapping):
+        raise ValueError("resume checkpoint payload must be a mapping")
+
+    resume_identity = resume.resolve()
+
+    def checkpoint_loader(path):
+        path = Path(path)
+        return payload if path.resolve() == resume_identity else loader(path)
+
+    position = assert_resume_is_current(
+        resume, output, config, backup_state, loader=checkpoint_loader,
+        remote_reference=remote_reference,
+    )
+    config_payload = json.loads(Path(config).read_text(encoding="utf-8"))
+    required_mappings = ("model", "optimizer", "scheduler", "scaler", "rng_state")
+    for name in required_mappings:
+        if not isinstance(payload.get(name), Mapping):
+            raise ValueError(f"resume checkpoint has no valid {name} state")
+    if not payload["model"]:
+        raise ValueError("resume checkpoint model state is empty")
+    if not payload["optimizer"].get("param_groups"):
+        raise ValueError("resume checkpoint optimizer param_groups are missing")
+    if "last_epoch" not in payload["scheduler"]:
+        raise ValueError("resume checkpoint scheduler last_epoch is missing")
+    if config_payload["runtime"].get("mixed_precision") and not payload["scaler"]:
+        raise ValueError("resume checkpoint AMP scaler state is empty")
+    rng = payload["rng_state"]
+    for name in ("python", "numpy", "torch_cpu"):
+        if rng.get(name) is None:
+            raise ValueError(f"resume checkpoint RNG state is missing {name}")
+    if config_payload["runtime"].get("mixed_precision") and not rng.get("torch_cuda"):
+        raise ValueError("resume checkpoint RNG state is missing CUDA generators")
+
+    training = config_payload["training"]
+    train_samples = int(config_payload["dataset"]["splits"]["train"])
+    batch_size = int(training["batch_size_per_gpu"])
+    accumulation = int(training["gradient_accumulation_steps"])
+    batches_per_epoch = (train_samples + batch_size - 1) // batch_size
+    steps_per_epoch = (batches_per_epoch + accumulation - 1) // accumulation
+    next_batch = position.next_batch_index
+    if position.epoch_complete:
+        expected_attempts = (position.epoch + 1) * steps_per_epoch
+        next_epoch = position.epoch + 1
+        next_batch = 0
+    else:
+        if not 0 <= next_batch <= batches_per_epoch:
+            raise ValueError(
+                f"resume next_batch_index {next_batch} is outside epoch size {batches_per_epoch}"
+            )
+        if next_batch != batches_per_epoch and next_batch % accumulation:
+            raise ValueError("resume checkpoint was not saved at an optimizer boundary")
+        expected_attempts = position.epoch * steps_per_epoch + (
+            next_batch + accumulation - 1
+        ) // accumulation
+        next_epoch = position.epoch
+
+    optimizer_attempts = int(payload.get("optimizer_attempts", -1))
+    optimizer_updates = int(payload.get("optimizer_updates", -1))
+    skipped_updates = int(payload.get("skipped_optimizer_updates", -1))
+    if optimizer_attempts != expected_attempts:
+        raise ValueError(
+            f"optimizer_attempts {optimizer_attempts} does not match cursor-derived "
+            f"value {expected_attempts}"
+        )
+    if optimizer_updates + skipped_updates != optimizer_attempts:
+        raise ValueError("successful and AMP-skipped optimizer updates do not reconcile")
+    scheduler_epoch = int(payload["scheduler"]["last_epoch"])
+    if scheduler_epoch != optimizer_updates:
+        raise ValueError(
+            f"scheduler last_epoch {scheduler_epoch} does not match successful "
+            f"optimizer updates {optimizer_updates}"
+        )
+
+    return {
+        "status": "PASS",
+        "checkpoint": str(resume.resolve()),
+        "sha256": actual_sha256,
+        "position": asdict(position),
+        "restorable_state": {
+            "model": True, "optimizer": True, "scheduler": True,
+            "amp_scaler": True, "rng": True, "data_order": True,
+        },
+        "optimizer_attempts": optimizer_attempts,
+        "optimizer_updates": optimizer_updates,
+        "skipped_optimizer_updates": skipped_updates,
+        "scheduler_last_epoch": scheduler_epoch,
+        "batches_per_epoch": batches_per_epoch,
+        "next_epoch_zero_based": next_epoch,
+        "next_batch_index_zero_based": next_batch,
+        "next_display_batch": next_batch + 1,
+        "replayed_batches_for_sampler_position": next_batch,
+        "duplicate_training_batches": 0,
+        "skipped_training_batches": 0,
+        "data_order_seed": int(config_payload["runtime"]["seed"]) + next_epoch,
+        "data_order_contract": (
+            "recreate the epoch RandomSampler from seed+epoch, consume batches before "
+            "next_batch_index without model execution, then restore training at the cursor"
+        ),
+    }
+
+
 def _tee_output(stream, log_handle) -> None:
     for raw_line in iter(stream.readline, ""):
         line = raw_line.rstrip("\n")
@@ -206,10 +328,13 @@ def launch_training(args) -> int:
             args.remote_dataset, Path(directory),
             retries=args.remote_check_retries,
         )
-    position = assert_resume_is_current(
+    validation = validate_resume_checkpoint(
         args.resume, output, args.config, args.backup_state,
+        expected_sha256=args.resume_sha256,
         remote_reference=remote_reference,
     )
+    position = CheckpointPosition(**validation["position"])
+    print(json.dumps({"event": "resume_preflight", **validation}, sort_keys=True), flush=True)
     command = [
         sys.executable, "-m", "ml.training.maskrcnn_task7_train",
         "--config", args.config,
@@ -522,11 +647,20 @@ def parse_args(argv=None):
     for name in ("backend", "config", "adapter-root", "initialization", "output", "resume"):
         launch.add_argument(f"--{name}", required=True)
     launch.add_argument("--backup-state")
+    launch.add_argument("--resume-sha256", required=True)
     launch.add_argument("--remote-dataset", required=True)
     launch.add_argument("--remote-check-retries", type=int, default=3)
     launch.add_argument("--num-workers", type=int, default=0)
     launch.add_argument("--heartbeat-every-batches", type=int, default=10)
     launch.add_argument("--checkpoint-every-optimizer-updates", type=int, default=50)
+
+    validate_resume = subparsers.add_parser("validate-resume")
+    for name in ("config", "output", "resume"):
+        validate_resume.add_argument(f"--{name}", required=True)
+    validate_resume.add_argument("--backup-state")
+    validate_resume.add_argument("--remote-dataset")
+    validate_resume.add_argument("--remote-check-retries", type=int, default=3)
+    validate_resume.add_argument("--resume-sha256", required=True)
 
     status = subparsers.add_parser("status")
     status.add_argument("--output", required=True)
@@ -550,6 +684,25 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.command == "launch":
         return launch_training(args)
+    if args.command == "validate-resume":
+        remote_reference = None
+        output = Path(args.output)
+        if args.remote_dataset:
+            output.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="task7-remote-head-", dir=output,
+            ) as directory:
+                remote_reference = _download_remote_position(
+                    args.remote_dataset, Path(directory),
+                    retries=args.remote_check_retries,
+                )
+        report = validate_resume_checkpoint(
+            args.resume, output, args.config, args.backup_state,
+            expected_sha256=args.resume_sha256,
+            remote_reference=remote_reference,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     if args.command == "status":
         print(json.dumps(training_status(
             args.output, config=args.config, backup_state=args.backup_state,
