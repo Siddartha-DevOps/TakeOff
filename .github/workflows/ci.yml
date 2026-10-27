@@ -9,7 +9,10 @@ on:
 jobs:
   backend-e2e:
     name: Backend tests + PostGIS end-to-end
-    runs-on: ubuntu-latest
+    # PostgreSQL 16 + PostGIS + pgvector package names below are provided by
+    # the Ubuntu 24.04 runner. Pin the image so ubuntu-latest upgrades cannot
+    # break CI before application tests start.
+    runs-on: ubuntu-24.04
     services:
       redis:
         image: redis:7-alpine
