@@ -19,10 +19,17 @@ def checkpoint(run_id="run", epoch=0, batch=100, updates=25, complete=False):
 def resumable_checkpoint(*, batch=1216, updates=301, skipped=3):
     payload = checkpoint(batch=batch, updates=updates)
     payload.update({
-        "model": {"weight": "present"},
+        "model": {
+            "roi_heads.box_predictor.cls_score.weight": SimpleNamespace(shape=(15, 1024)),
+            "roi_heads.mask_predictor.mask_fcn_logits.weight": SimpleNamespace(shape=(15, 256, 1, 1)),
+        },
         "optimizer": {"state": {}, "param_groups": [{"lr": 0.0001}]},
         "scheduler": {"last_epoch": updates},
-        "scaler": {"scale": 8192.0},
+        "scaler": {
+            "scale": 8192.0, "growth_factor": 2.0,
+            "backoff_factor": 0.5, "growth_interval": 2000,
+            "_growth_tracker": 0,
+        },
         "rng_state": {
             "python": (3, (), None), "numpy": ("MT19937",),
             "torch_cpu": b"cpu", "torch_cuda": [b"cuda"],
@@ -36,6 +43,7 @@ def resumable_checkpoint(*, batch=1216, updates=301, skipped=3):
 def task7_config(path):
     path.write_text(json.dumps({
         "run_id": "run",
+        "architecture": {"num_classes_including_background": 15},
         "runtime": {"seed": 42, "mixed_precision": True},
         "dataset": {"splits": {"train": 11337}},
         "training": {
@@ -128,6 +136,12 @@ def test_full_resume_preflight_reconciles_state_and_next_batch(tmp_path):
     ("mutation", "message"),
     [
         (lambda row: row["rng_state"].pop("torch_cpu"), "missing torch_cpu"),
+        (
+            lambda row: row["model"][
+                "roi_heads.box_predictor.cls_score.weight"
+            ].__setattr__("shape", (14, 1024)),
+            "incompatible with 15 classes",
+        ),
         (lambda row: row["scheduler"].update(last_epoch=509), "scheduler last_epoch"),
         (lambda row: row.update(next_batch_index=2051), "optimizer boundary"),
         (lambda row: row.update(optimizer_attempts=512), "cursor-derived"),

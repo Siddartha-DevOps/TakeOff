@@ -222,12 +222,37 @@ def validate_resume_checkpoint(
             raise ValueError(f"resume checkpoint has no valid {name} state")
     if not payload["model"]:
         raise ValueError("resume checkpoint model state is empty")
+    expected_classes = int(
+        config_payload["architecture"]["num_classes_including_background"]
+    )
+    for key in (
+        "roi_heads.box_predictor.cls_score.weight",
+        "roi_heads.mask_predictor.mask_fcn_logits.weight",
+    ):
+        tensor = payload["model"].get(key)
+        shape = getattr(tensor, "shape", None)
+        if shape is None or not shape or int(shape[0]) != expected_classes:
+            raise ValueError(
+                f"resume checkpoint {key} is incompatible with "
+                f"{expected_classes} classes"
+            )
     if not payload["optimizer"].get("param_groups"):
         raise ValueError("resume checkpoint optimizer param_groups are missing")
+    if not isinstance(payload["optimizer"].get("state"), Mapping):
+        raise ValueError("resume checkpoint optimizer state is invalid")
     if "last_epoch" not in payload["scheduler"]:
         raise ValueError("resume checkpoint scheduler last_epoch is missing")
-    if config_payload["runtime"].get("mixed_precision") and not payload["scaler"]:
-        raise ValueError("resume checkpoint AMP scaler state is empty")
+    if config_payload["runtime"].get("mixed_precision"):
+        scaler_fields = {
+            "scale", "growth_factor", "backoff_factor", "growth_interval",
+            "_growth_tracker",
+        }
+        missing_scaler = scaler_fields - payload["scaler"].keys()
+        if missing_scaler:
+            raise ValueError(
+                "resume checkpoint AMP scaler state is missing "
+                + ", ".join(sorted(missing_scaler))
+            )
     rng = payload["rng_state"]
     for name in ("python", "numpy", "torch_cpu"):
         if rng.get(name) is None:
